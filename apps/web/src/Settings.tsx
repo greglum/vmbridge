@@ -12,6 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { useAction } from "@/hooks/use-action";
 import { api } from "./api.ts";
 import { CopyButton } from "./CopyButton.tsx";
+import { Private } from "./Private.tsx";
 import { Page, Section, type Tab } from "./Page.tsx";
 
 type SettingsTab = "vms" | "addresses" | "key";
@@ -50,7 +51,7 @@ function VmSettings({ overview }: { overview: Overview }) {
           <Field>
             <FieldLabel htmlFor="vm-size">Size for new VMs</FieldLabel>
             <Select value={form.vmSize} onValueChange={(value) => setForm({ ...form, vmSize: value as VmSize })}>
-              <SelectTrigger id="vm-size" className="h-9 w-full">
+              <SelectTrigger id="vm-size" className="w-full data-[size=default]:h-9">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -105,7 +106,9 @@ function Addresses() {
             <Item key={address.url} variant="outline" size="sm">
               <ItemContent className="min-w-0">
                 <ItemTitle>{address.label}</ItemTitle>
-                <ItemDescription className="truncate font-mono text-xs">{address.url}</ItemDescription>
+                <ItemDescription className="truncate font-mono text-xs">
+                  <Private>{address.url}</Private>
+                </ItemDescription>
               </ItemContent>
               <ItemActions>
                 <CopyButton value={address.url} />
@@ -122,7 +125,7 @@ function Addresses() {
                 <ItemTitle>
                   <label htmlFor="tailscale-https">HTTPS address</label>
                 </ItemTitle>
-                <ItemDescription>{tailscale.httpsUrl ?? "Serve VM Bridge over HTTPS on your tailnet."}</ItemDescription>
+                <ItemDescription>{tailscale.httpsUrl ? <Private>{tailscale.httpsUrl}</Private> : "Serve VM Bridge over HTTPS on your tailnet."}</ItemDescription>
               </ItemContent>
               <ItemActions>
                 <Switch
