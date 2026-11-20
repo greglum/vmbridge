@@ -106,9 +106,9 @@ async function run(options: { host: string; port: number }) {
 
   const network = await server.network();
   console.log(`VM Bridge ${version} is running.\n`);
-  for (const address of network.addresses) console.log(`  ${address.label.padEnd(20)} ${address.url}`);
+  for (const address of network.addresses) console.log(`  ${address.label.padEnd(20)} ${address.url}/dashboard`);
   if (network.tailscale.running && !network.tailscale.httpsUrl) console.log("\n  Turn on Tailscale HTTPS in the dashboard settings for an https:// address.");
-  console.log("\nOpen an address above to set up providers and pair devices. Press Ctrl+C to stop.");
+  console.log("\nOpen the dashboard to set up providers and pair devices. Press Ctrl+C to stop.");
 
   let stopping = false;
   const stop = async () => {
