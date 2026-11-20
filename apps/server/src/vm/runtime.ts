@@ -1,3 +1,4 @@
+import type { AgentSecrets } from "../agent-auth/profiles.ts";
 import type { Box } from "../providers/index.ts";
 
 /** Everything VM Bridge installs or keeps lives here, on the disk that survives sleep. */
@@ -9,14 +10,30 @@ export const checkoutRoot = "/workspace";
 
 export const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 
-/** Credentials VM Bridge passes into a VM. Unset values leave whatever the provider supplies. */
-export interface VmCredentials {
-  github?: { token: string; login: string; email: string };
-  anthropicApiKey?: string;
-  claudeOAuthToken?: string;
-  openaiApiKey?: string;
-  codexAuthJson?: string;
+const codexAuthPath = `${root}/codex/auth.json`;
+
+const gitConfigPath = `${root}/gitconfig`;
+const gitCredentialsPath = `${root}/git-credentials`;
+
+/** Credentials VM Bridge passes into a VM. Agents and git use only these, never the provider's. */
+export interface VmCredentials extends AgentSecrets {
+  github?: { token: string; login: string; name: string; email: string };
 }
+
+/** Sign-in variables a provider may set on its machines. VM Bridge clears them and sets its own. */
+const providerVars = [
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "OPENAI_API_KEY",
+  "CODEX_API_KEY",
+  "OPENCODE_API_KEY",
+];
 
 function envFile(credentials: VmCredentials) {
   const vars: Record<string, string | undefined> = {
@@ -24,18 +41,48 @@ function envFile(credentials: VmCredentials) {
     T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false",
     GH_TOKEN: credentials.github?.token,
     GITHUB_TOKEN: credentials.github?.token,
-    ANTHROPIC_API_KEY: credentials.anthropicApiKey,
+    // Agents run without a terminal: fail fast instead of waiting for a password.
+    GIT_TERMINAL_PROMPT: "0",
+    // gh, Codex and Claude keep sign-ins and sessions in these folders instead of the home folder,
+    // where a provider may have put its own sign-ins.
+    GH_CONFIG_DIR: `${root}/gh-config`,
+    CODEX_HOME: `${root}/codex`,
+    CLAUDE_CONFIG_DIR: `${root}/claude`,
     CLAUDE_CODE_OAUTH_TOKEN: credentials.claudeOAuthToken,
-    OPENAI_API_KEY: credentials.openaiApiKey,
-    // Codex reads auth.json from CODEX_HOME. Point there only when VM Bridge supplies one.
-    CODEX_HOME: credentials.codexAuthJson ? `${root}/codex` : undefined,
+    ANTHROPIC_AUTH_TOKEN: credentials.anthropicAuthToken,
+    ANTHROPIC_BASE_URL: credentials.anthropicBaseUrl,
+    OPENCODE_API_KEY: credentials.opencodeApiKey,
   };
-  const lines = [`export PATH="${root}/node/bin:${root}/npm/bin:$PATH"`];
+  const lines = [`unset ${providerVars.join(" ")}`, `export PATH="${root}/node/bin:${root}/npm/bin:${root}/gh/bin:$PATH"`];
   for (const [name, value] of Object.entries(vars)) if (value) lines.push(`export ${name}=${quote(value)}`);
   return `${lines.join("\n")}\n`;
 }
 
-/** Idempotent: installs Node when missing, the exact `t3` version, the agent CLIs, and Git access. */
+/** A git config value, quoted so names with spaces, quotes or `#` survive. */
+const gitValue = (value: string) => `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+
+/**
+ * Git setup every VM includes from its global config. The empty helper drops any credential helper
+ * the provider set for github.com, so git only ever uses VM Bridge's token.
+ */
+function gitConfig(github: VmCredentials["github"]) {
+  const lines = ['[credential "https://github.com"]', "\thelper ="];
+  if (github) {
+    lines.push(
+      `\thelper = store --file ${gitCredentialsPath}`,
+      "[user]",
+      `\tname = ${gitValue(github.name)}`,
+      `\temail = ${gitValue(github.email)}`,
+      // SSH remotes go over HTTPS with the token: VMs have no SSH key for GitHub.
+      '[url "https://github.com/"]',
+      "\tinsteadOf = git@github.com:",
+      "\tinsteadOf = ssh://git@github.com/",
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/** Idempotent: installs Node when missing, the exact `t3` version, the agent CLIs, gh, and Git access. */
 const setupScript = `#!/bin/bash
 set -euo pipefail
 umask 077
@@ -62,23 +109,27 @@ if ! command -v git >/dev/null; then
   else apt-get update -qq && apt-get install -y -qq git; fi
 fi
 
+# The GitHub CLI, for agents opening pull requests. It signs in with GH_TOKEN.
+if [ ! -x "$root/gh/bin/gh" ]; then
+  case "$(uname -m)" in x86_64) gharch=amd64 ;; aarch64|arm64) gharch=arm64 ;; *) echo "unsupported CPU" >&2; exit 70 ;; esac
+  tag="$(node -e 'fetch("https://api.github.com/repos/cli/cli/releases/latest",{headers:process.env.GH_TOKEN?{authorization:"Bearer "+process.env.GH_TOKEN}:{}}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(j=>process.stdout.write(j.tag_name),e=>{console.error("GitHub CLI release lookup failed:",e);process.exit(1)})')"
+  rm -rf "$root/gh" && mkdir -p "$root/gh"
+  fetch "https://github.com/cli/cli/releases/download/$tag/gh_\${tag#v}_linux_$gharch.tar.gz" | tar -xz -C "$root/gh" --strip-components=1
+fi
+mkdir -p "$root/gh-config"
+
 install() { npm install -g --prefix "$root/npm" --no-audit --no-fund --loglevel=error "$@"; }
 installed="$(node -p "require('$root/npm/lib/node_modules/t3/package.json').version" 2>/dev/null || true)"
 [ "$installed" = "$version" ] || install "t3@$version"
 command -v codex >/dev/null || install @openai/codex
 command -v claude >/dev/null || install @anthropic-ai/claude-code
+[ -z "\${OPENCODE_API_KEY:-}" ] || command -v opencode >/dev/null || install opencode-ai
+mkdir -p "$root/codex" "$root/claude"
+[ -n "\${CODEX_AUTH:-}" ] || rm -f "$root/codex/auth.json"
 # The npm launcher downloads the T3 runtime on first use. Do it now rather than during a request.
 t3 --version >/dev/null
 
-if [ -f "$root/github" ]; then
-  . "$root/github"
-  printf 'https://%s:%s@github.com\\n' "$GITHUB_LOGIN" "$GH_TOKEN" > "$root/git-credentials"
-  printf '[credential "https://github.com"]\\n\\thelper =\\n\\thelper = store --file %s\\n[user]\\n\\tname = %s\\n\\temail = %s\\n' \\
-    "$root/git-credentials" "$GITHUB_LOGIN" "$GITHUB_EMAIL" > "$root/gitconfig"
-  git config --global --get-all include.path | grep -Fxq "$root/gitconfig" || git config --global --add include.path "$root/gitconfig"
-else
-  rm -f "$root/git-credentials" "$root/gitconfig"
-fi
+git config --global --get-all include.path | grep -Fxq "$root/gitconfig" || git config --global --add include.path "$root/gitconfig"
 `;
 
 const startScript = `#!/bin/bash
@@ -128,18 +179,28 @@ export async function prepareVm(box: Box, t3Version: string, credentials: VmCred
     [`${root}/start-t3.sh`]: startScript,
   };
   const { github, codexAuthJson } = credentials;
-  if (github) {
-    files[`${root}/github`] = [
-      `GITHUB_LOGIN=${quote(github.login)}`,
-      `GITHUB_EMAIL=${quote(github.email)}`,
-      `GH_TOKEN=${quote(github.token)}`,
-      "",
-    ].join("\n");
-  }
-  if (codexAuthJson) files[`${root}/codex/auth.json`] = codexAuthJson;
+  files[gitConfigPath] = gitConfig(github);
+  if (github) files[gitCredentialsPath] = `https://${encodeURIComponent(github.login)}:${encodeURIComponent(github.token)}@github.com\n`;
+  if (codexAuthJson) files[codexAuthPath] = codexAuthJson;
   await box.files.write(files, { mode: 0o600 });
-  if (!github) await box.run(`rm -f ${root}/github`);
-  await check(box, `bash ${root}/setup.sh ${quote(t3Version)}`, "VM setup", 10 * 60_000);
+  // Older versions kept the token in this file too.
+  await box.run(`rm -f ${root}/github${github ? "" : ` ${gitCredentialsPath}`}`);
+  // Without a Codex profile, setup removes any auth.json left from an earlier one.
+  await check(box, `${codexAuthJson ? "CODEX_AUTH=1 " : ""}bash ${root}/setup.sh ${quote(t3Version)}`, "VM setup", 10 * 60_000);
+}
+
+/** The VM's Codex auth.json, which Codex rewrites when it refreshes its own tokens. */
+export async function readCodexAuth(box: Box): Promise<string | null> {
+  try {
+    return await box.files.read(codexAuthPath);
+  } catch {
+    return null;
+  }
+}
+
+/** Replaces the VM's Codex sign-in. Codex reads the file again before it next refreshes. */
+export async function writeCodexAuth(box: Box, authJson: string) {
+  await box.files.write({ [codexAuthPath]: authJson }, { mode: 0o600 });
 }
 
 export interface T3Server {

@@ -1,0 +1,226 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AgentAuth, InvalidSignIn } from "../src/agent-auth/profiles.ts";
+import type { CodexAuthFile } from "../src/agent-auth/codex.ts";
+import { openDatabase } from "../src/db.ts";
+import { Settings } from "../src/settings.ts";
+import { prepareVm } from "../src/vm/runtime.ts";
+import type { Box } from "../src/providers/index.ts";
+
+const realFetch = globalThis.fetch;
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
+
+/** Answers every request with `answer`, and records what was asked. */
+function fakeFetch(answer: (url: string, init?: RequestInit) => Response) {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    calls.push({ url, init });
+    return answer(url, init);
+  }) as typeof fetch;
+  return calls;
+}
+
+function setup() {
+  const dir = mkdtempSync(join(tmpdir(), "vmbridge-auths-"));
+  const db = openDatabase(":memory:");
+  const settings = new Settings(db);
+  return { dir, settings, auth: new AgentAuth(join(dir, "auths"), settings) };
+}
+
+const jwt = (claims: Record<string, unknown>) => `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
+
+function codexFile(account: string, refresh: string, expiresInMs: number, lastRefresh = new Date()): CodexAuthFile {
+  return {
+    auth_mode: "chatgpt",
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: jwt({ email: `${account}@example.com`, "https://api.openai.com/auth": { chatgpt_account_id: account } }),
+      access_token: jwt({ exp: Math.floor((Date.now() + expiresInMs) / 1000) }),
+      refresh_token: refresh,
+      account_id: account,
+    },
+    last_refresh: lastRefresh.toISOString(),
+  };
+}
+
+const day = 24 * 60 * 60_000;
+
+/** Signs in to Codex through the device flow, answering each OpenAI step. */
+async function signInCodex(auth: AgentAuth, file: CodexAuthFile) {
+  fakeFetch((url) => {
+    if (url.endsWith("/deviceauth/usercode")) return Response.json({ device_auth_id: "dev", user_code: "ABCD-1234", interval: "0" });
+    if (url.endsWith("/deviceauth/token")) return Response.json({ authorization_code: "code", code_challenge: "c", code_verifier: "v" });
+    return Response.json(file.tokens);
+  });
+  const login = await auth.startCodexLogin("");
+  for (let i = 0; i < 50 && auth.codexLogin(login.id)?.status === "pending"; i++) await Bun.sleep(5);
+  expect(auth.codexLogin(login.id)?.status).toBe("done");
+}
+
+describe("agent sign-in profiles", () => {
+  test("keeps tokens in private files and never lists them", async () => {
+    const { dir, auth } = setup();
+    fakeFetch(() => Response.json({ data: [] }));
+    const profile = await auth.addToken({ agent: "opencode", method: "api-key", name: "Work", token: "oc-secret" });
+
+    expect(profile).toMatchObject({ id: "opencode-work", agent: "opencode", inUse: true, error: null });
+    expect(JSON.stringify(auth.list())).not.toContain("oc-secret");
+    expect(statSync(join(dir, "auths")).mode & 0o777).toBe(0o700);
+    expect(statSync(join(dir, "auths", "opencode-work")).mode & 0o777).toBe(0o700);
+    expect(statSync(join(dir, "auths", "opencode-work", "profile.json")).mode & 0o777).toBe(0o600);
+    expect(await auth.vmSecrets()).toEqual({ opencodeApiKey: "oc-secret" });
+  });
+
+  test("rejects a token its service refuses", async () => {
+    const { auth } = setup();
+    const calls = fakeFetch(() => new Response("{}", { status: 401 }));
+    const adding = auth.addToken({ agent: "claude", method: "auth-token", name: "", token: "bad", baseUrl: "https://proxy.example.com/" });
+    expect(adding).rejects.toBeInstanceOf(InvalidSignIn);
+    await adding.catch(() => {});
+    expect(calls[0]?.url).toBe("https://proxy.example.com/v1/models");
+    expect(auth.list()).toEqual([]);
+  });
+
+  test("one Claude profile in use at a time, and removing it hands over to the next", async () => {
+    const { auth } = setup();
+    fakeFetch(() => Response.json({ data: [] }));
+    const subscription = await auth.addToken({ agent: "claude", method: "setup-token", name: "Personal", token: "sk-ant-oat01-x" });
+    const proxy = await auth.addToken({ agent: "claude", method: "auth-token", name: "Proxy", token: "proxy-token", baseUrl: "https://proxy.example.com" });
+    expect(await auth.vmSecrets()).toEqual({ claudeOAuthToken: "sk-ant-oat01-x" });
+
+    auth.use(proxy.id);
+    expect(await auth.vmSecrets()).toEqual({ anthropicAuthToken: "proxy-token", anthropicBaseUrl: "https://proxy.example.com" });
+
+    auth.remove(proxy.id);
+    expect(auth.list().map((profile) => [profile.id, profile.inUse])).toEqual([[subscription.id, true]]);
+  });
+});
+
+describe("Claude sign-in", () => {
+  test("swaps the pasted code for a one-year token, like claude setup-token", async () => {
+    const { auth } = setup();
+    const login = auth.startClaudeLogin();
+    const url = new URL(login.url);
+    expect(url.origin + url.pathname).toBe("https://claude.ai/oauth/authorize");
+    expect(url.searchParams.get("scope")).toBe("user:inference");
+    const state = url.searchParams.get("state")!;
+
+    const calls = fakeFetch((target) =>
+      target.endsWith("/oauth/token") ? Response.json({ access_token: "sk-ant-oat01-new", account: { email_address: "me@example.com" } }) : Response.json({ data: [] }),
+    );
+    const profile = await auth.finishClaudeLogin(login.id, ` the-code#${state} `, "");
+
+    const exchange = JSON.parse(String(calls[0]?.init?.body));
+    expect(exchange).toMatchObject({ grant_type: "authorization_code", code: "the-code", state, expires_in: 365 * 24 * 60 * 60 });
+    expect(calls[1]?.url).toBe("https://api.anthropic.com/v1/models");
+    expect(profile).toMatchObject({ agent: "claude", method: "setup-token", name: "Claude subscription", detail: "me@example.com", inUse: true });
+    expect(await auth.vmSecrets()).toEqual({ claudeOAuthToken: "sk-ant-oat01-new" });
+    // A code works once, so the sign-in is gone.
+    expect(auth.finishClaudeLogin(login.id, `the-code#${state}`, "")).rejects.toThrow("expired");
+  });
+
+  test("refuses a code from another sign-in without sending it", async () => {
+    const { auth } = setup();
+    const calls = fakeFetch(() => Response.json({}));
+    const login = auth.startClaudeLogin();
+    expect(auth.finishClaudeLogin(login.id, "the-code#someone-else", "")).rejects.toBeInstanceOf(InvalidSignIn);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("Codex sign-in", () => {
+  test("device sign-in saves a Codex auth.json", async () => {
+    const { dir, auth } = setup();
+    await signInCodex(auth, codexFile("acct-1", "refresh-1", 10 * day));
+    const [profile] = auth.list();
+    expect(profile).toMatchObject({ id: "codex-chatgpt-account", agent: "codex", method: "chatgpt", name: "ChatGPT account", detail: "acct-1@example.com", inUse: true });
+    const saved = JSON.parse(readFileSync(join(dir, "auths", profile!.id, "auth.json"), "utf8")) as CodexAuthFile;
+    expect(saved).toMatchObject({ auth_mode: "chatgpt", OPENAI_API_KEY: null, tokens: { refresh_token: "refresh-1", account_id: "acct-1" } });
+  });
+
+  test("refreshes once when close to expiry, and VMs get the new tokens", async () => {
+    const { auth } = setup();
+    await signInCodex(auth, codexFile("acct-1", "refresh-1", day));
+    expect(auth.codexDue()).toBe(true);
+    const fresh = codexFile("acct-1", "refresh-2", 10 * day);
+    const calls = fakeFetch(() => Response.json(fresh.tokens));
+
+    const [a, b] = await Promise.all([auth.refreshCodex(true), auth.refreshCodex(true)]);
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({ grant_type: "refresh_token", refresh_token: "refresh-1" });
+    expect(JSON.parse(a!).tokens.refresh_token).toBe("refresh-2");
+    expect(b).toBeUndefined();
+    expect(JSON.parse((await auth.vmSecrets()).codexAuthJson!).tokens.refresh_token).toBe("refresh-2");
+  });
+
+  test("a refresh token OpenAI retired marks the profile to sign in again", async () => {
+    const { auth } = setup();
+    await signInCodex(auth, codexFile("acct-1", "refresh-1", day));
+    fakeFetch(() => Response.json({ error: { code: "refresh_token_reused" } }, { status: 401 }));
+    expect(await auth.refreshCodex(true)).toBeUndefined();
+    expect(auth.list()[0]?.error).toContain("Sign in again");
+    expect(auth.codexDue()).toBe(false);
+  });
+
+  test("takes tokens a VM refreshed itself, only for the same account and only when newer", async () => {
+    const { auth } = setup();
+    await signInCodex(auth, codexFile("acct-1", "refresh-1", day));
+    auth.adoptCodex(JSON.stringify(codexFile("acct-2", "other", 10 * day)));
+    auth.adoptCodex(JSON.stringify(codexFile("acct-1", "older", 10 * day, new Date(Date.now() - 5 * day))));
+    expect(JSON.parse((await auth.vmSecrets()).codexAuthJson!).tokens.refresh_token).toBe("refresh-1");
+
+    auth.adoptCodex(JSON.stringify(codexFile("acct-1", "from-vm", 10 * day, new Date(Date.now() + 60_000))));
+    expect(auth.codexDue()).toBe(false);
+    expect(JSON.parse((await auth.vmSecrets()).codexAuthJson!).tokens.refresh_token).toBe("from-vm");
+  });
+});
+
+describe("VM sign-ins", () => {
+  test("VMs get only VM Bridge sign-ins, with provider ones cleared", async () => {
+    const written: Record<string, string> = {};
+    const commands: string[] = [];
+    const box = {
+      run: async (command: string) => {
+        commands.push(command);
+        return { ok: true, exitCode: 0, stdout: "", output: "" };
+      },
+      files: { write: async (files: Record<string, string>) => Object.assign(written, files) },
+    } as unknown as Box;
+
+    await prepareVm(box, "1.0.0", { claudeOAuthToken: "sk-ant-oat01-x", codexAuthJson: "{}" });
+    const env = written["/workspace/.vmbridge/env"]!;
+    expect(env.split("\n")[0]).toContain("GH_TOKEN GITHUB_TOKEN");
+    expect(env.split("\n")[0]).toContain("ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN OPENAI_API_KEY");
+    expect(env).toContain("export CLAUDE_CODE_OAUTH_TOKEN='sk-ant-oat01-x'");
+    expect(env).toContain("export CODEX_HOME='/workspace/.vmbridge/codex'");
+    expect(env).toContain("export CLAUDE_CONFIG_DIR='/workspace/.vmbridge/claude'");
+    expect(env).not.toContain("OPENCODE_API_KEY=");
+    expect(written["/workspace/.vmbridge/codex/auth.json"]).toBe("{}");
+    expect(commands.at(-1)).toStartWith("CODEX_AUTH=1 bash");
+    // Without a GitHub token, the provider's GitHub helpers are still switched off.
+    expect(written["/workspace/.vmbridge/gitconfig"]).toBe('[credential "https://github.com"]\n\thelper =\n');
+  });
+
+  test("git on the VM uses the GitHub token, the account's name and its noreply email", async () => {
+    const written: Record<string, string> = {};
+    const box = {
+      run: async () => ({ ok: true, exitCode: 0, stdout: "", output: "" }),
+      files: { write: async (files: Record<string, string>) => Object.assign(written, files) },
+    } as unknown as Box;
+
+    const github = { token: "github_pat_abc", login: "octo-cat", name: 'Mona "Octo" Lisa', email: "1+octo-cat@users.noreply.github.com" };
+    await prepareVm(box, "1.0.0", { github });
+    expect(written["/workspace/.vmbridge/git-credentials"]).toBe("https://octo-cat:github_pat_abc@github.com\n");
+    const config = written["/workspace/.vmbridge/gitconfig"]!;
+    expect(config).toContain("\thelper = store --file /workspace/.vmbridge/git-credentials");
+    expect(config).toContain('\tname = "Mona \\"Octo\\" Lisa"');
+    expect(config).toContain('\temail = "1+octo-cat@users.noreply.github.com"');
+    expect(config).toContain("\tinsteadOf = git@github.com:");
+    expect(written["/workspace/.vmbridge/env"]).toContain("export GH_TOKEN='github_pat_abc'");
+  });
+});

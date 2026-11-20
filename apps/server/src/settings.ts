@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { ProviderId, VmSize } from "@vmbridge/contracts";
+import type { AgentKind, GitHubAccount, ProviderId, VmSize } from "@vmbridge/contracts";
 
 export interface ProviderPreference {
   enabled?: boolean;
@@ -18,11 +18,13 @@ interface SettingValues {
   /** Exact npm `t3` version for new VMs; null resolves the latest release when a VM is created. */
   t3Version: string | null;
   /** The GitHub account VM Bridge's token belongs to. The token itself is the `github.token` secret. */
-  github: { login: string; email: string } | null;
+  github: GitHubAccount | null;
   /** T3 shell snapshot sequence. Only grows, across restarts, so clients never see it go back. */
   shellSequence: number;
   /** T3 agent provider switches and display names set from T3's settings screen. */
   agentPreferences: Record<string, ProviderPreference>;
+  /** The sign-in profile each agent uses on every VM. Profiles live under `<data dir>/auths`. */
+  agentProfiles: Partial<Record<AgentKind, string>>;
 }
 
 const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
@@ -36,6 +38,7 @@ const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
   github: () => null,
   shellSequence: () => 0,
   agentPreferences: () => ({}),
+  agentProfiles: () => ({}),
 };
 
 export class Settings {

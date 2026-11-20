@@ -9,8 +9,8 @@ VM Bridge runs every VM through `@opencoredev/sandbox-sdk` 1.2.0. One provider i
 | Wake | resume | resume | start | resume | new VM from checkpoint (new sandbox ID) |
 | Snapshot | no (SDK) | yes | yes (files only) | yes, and delete | checkpoint (files only) |
 | T3 port reachable through | preview host, `_port_auth` cookie | public default proxy | private preview, `X-Daytona-Preview-Token` header | public published port | public domain declared at create |
-| Agent sign-ins | Boat environment, or VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge |
-| GitHub | Boat environment, or VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge |
+| Agent sign-ins | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge |
+| GitHub | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge |
 | Provider safety net if VM Bridge is down | auto-stop 12 h after start | auto-suspend after 60 min idle | auto-stop after 60 min without preview or toolbox traffic | auto-suspend after 30 min idle | none |
 | Extra package | none | `@boxd-sh/sdk` | none | none | `railway` |
 
@@ -18,7 +18,7 @@ Public previews (boxd, Instabox, Railway) expose the T3 server port. The T3 serv
 
 ## Provider notes
 
-- **Boat**: the SDK creates Boat VMs with `noEnv: true`, which drops the Boat environment and its agent sign-ins. VM Bridge creates Boat VMs through Boat's API with the chosen environment and writes the SDK's name encoding so `connectSandbox` still attaches. Stop and resume use Boat's API, since the SDK has no pause for Boat.
+- **Boat**: the SDK creates Boat VMs with `noEnv: true`, which drops the Boat environment. VM Bridge creates Boat VMs through Boat's API with the chosen environment and writes the SDK's name encoding so `connectSandbox` still attaches. Stop and resume use Boat's API, since the SDK has no pause for Boat. Agent and GitHub sign-ins a Boat environment passes in are cleared on the VM, like every provider's.
 - **boxd**: reading a sleeping machine's labels wakes it, so the fleet listing uses the adapter's `listSleeping` and VM Bridge only connects when it means to wake.
 - **Daytona**: VM Bridge uses container sandboxes from Daytona's built-in `daytona-small`, `daytona-medium` and `daytona-large` snapshots. Containers cannot pause (only Daytona VM sandboxes can, and the `daytona-vm-*` snapshots are not offered in this account's regions), so sleep is a stop: files stay, memory and processes go, and T3 cold-starts on wake. VM Bridge creates sandboxes through Daytona's API with the SDK's labels, because the SDK always sends `target: "us"` (refused for orgs without that region) and resizes non-default sizes with an extra stop, resize and start. Leaving the target out uses the org's default region, set in the Daytona dashboard. Start and delete answer 409 while a stop is still running, so wake and delete wait for it. Stopped sandboxes are archived after Daytona's default 7 days; starting an archived one restores its files from object storage first. Daytona secrets only swap API keys into outbound HTTPS headers, so agent sign-ins and GitHub come from VM Bridge.
 - **Instabox**: the default template is `agent-browser`. Ports must be 1024 or higher (T3 uses 3773).

@@ -1,5 +1,8 @@
-import type { ProviderId } from "@vmbridge/contracts";
+import type { AgentKind, ProviderId } from "@vmbridge/contracts";
 import { cn } from "@/lib/utils";
+import claude from "./assets/agents/claude.svg";
+import codex from "./assets/agents/codex.svg";
+import opencode from "./assets/agents/opencode.svg";
 import boat from "./assets/providers/boat.svg";
 import boxd from "./assets/providers/boxd.svg";
 import daytona from "./assets/providers/daytona.png";
@@ -35,6 +38,22 @@ export function ProviderLogo({ id, className }: { id: ProviderId | string; class
   return (
     <span className={cn("grid size-6 shrink-0 place-items-center overflow-hidden rounded-md ring-1 ring-white/10", logo?.tile ?? "bg-muted", className)}>
       {logo ? <img src={logo.src} alt="" className={cn("size-full object-contain", logo.inset)} draggable={false} /> : null}
+    </span>
+  );
+}
+
+/** Each agent's own mark: OpenAI for Codex, Anthropic's Claude mark, and OpenCode. */
+const agentLogos: Record<AgentKind, { src: string; tile: string; inset: string }> = {
+  codex: { src: codex, tile: "bg-black", inset: "p-[18%]" },
+  claude: { src: claude, tile: "bg-[#262624]", inset: "p-[20%]" },
+  opencode: { src: opencode, tile: "bg-black", inset: "" },
+};
+
+export function AgentLogo({ agent, className }: { agent: AgentKind; className?: string }) {
+  const logo = agentLogos[agent];
+  return (
+    <span className={cn("grid size-6 shrink-0 place-items-center overflow-hidden rounded-md ring-1 ring-white/10", logo.tile, className)}>
+      <img src={logo.src} alt="" className={cn("size-full object-contain", logo.inset)} draggable={false} />
     </span>
   );
 }

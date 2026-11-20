@@ -1,0 +1,36 @@
+import type { GitHubAccount } from "@vmbridge/contracts";
+
+export class GitHubRejected extends Error {}
+
+/** Reads the account a personal access token belongs to, with the token's scopes and expiry. */
+export async function fetchGitHubAccount(token: string): Promise<GitHubAccount> {
+  let response: Response;
+  try {
+    response = await fetch("https://api.github.com/user", {
+      headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`, "x-github-api-version": "2022-11-28" },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    throw new GitHubRejected("Could not reach GitHub.");
+  }
+  if (response.status === 401) throw new GitHubRejected("GitHub rejected that token.");
+  if (!response.ok) throw new GitHubRejected(`GitHub answered ${response.status}.`);
+  const user = (await response.json()) as { id: number; login: string; name: string | null; avatar_url: string; html_url: string };
+  // Classic tokens list their scopes in this header. Fine-grained tokens send none.
+  const scopes = response.headers.get("x-oauth-scopes");
+  // For example "2026-12-21 10:00:00 UTC". Missing when the token never expires.
+  const expiration = response.headers.get("github-authentication-token-expiration");
+  const expiresAt = expiration ? Date.parse(expiration.replace(" UTC", "Z").replace(" ", "T")) : NaN;
+  return {
+    login: user.login,
+    name: user.name || null,
+    avatarUrl: user.avatar_url,
+    profileUrl: user.html_url,
+    // GitHub's private address for the account. Commits link to the account without exposing an email,
+    // and pushes still work when the account blocks pushes that expose a private email.
+    email: `${user.id}+${user.login}@users.noreply.github.com`,
+    scopes: scopes === null ? null : scopes.split(",").map((scope) => scope.trim()).filter(Boolean),
+    expiresAt: Number.isNaN(expiresAt) ? null : expiresAt,
+    checkedAt: Date.now(),
+  };
+}

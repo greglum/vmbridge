@@ -2,14 +2,15 @@ import type { Server } from "bun";
 import {
   providerIds,
   vmSizes,
-  type AgentCredentials,
   type LiveMessage,
   type Overview,
   type ProviderId,
   type ProviderInfo,
   type VmInfo,
 } from "@vmbridge/contracts";
+import { InvalidSignIn, type AgentAuth, type TokenInput } from "./agent-auth/profiles.ts";
 import { TooManyAttempts, type DashboardAuth } from "./auth/dashboard.ts";
+import { fetchGitHubAccount, GitHubRejected } from "./github.ts";
 import type { Clients } from "./auth/clients.ts";
 import { message, providerValues, type Fleet } from "./fleet.ts";
 import type { Hub } from "./gateway/hub.ts";
@@ -19,8 +20,6 @@ import { providers } from "./providers/index.ts";
 import type { Secrets, Settings } from "./settings.ts";
 import type { Store } from "./store.ts";
 import type { Traffic } from "./traffic.ts";
-
-export const agentSecrets = ["anthropicApiKey", "claudeOAuthToken", "openaiApiKey", "codexAuthJson"] as const satisfies readonly (keyof AgentCredentials)[];
 
 export interface AdminDeps {
   version: string;
@@ -36,6 +35,7 @@ export interface AdminDeps {
   clients: Clients;
   auth: DashboardAuth;
   gateway: T3Gateway;
+  agents: AgentAuth;
 }
 
 class BadRequest extends Error {}
@@ -81,13 +81,13 @@ export class Admin {
       return await this.route(request, path);
     } catch (error) {
       if (error instanceof TooManyAttempts) return json({ error: error.message }, 429);
-      if (error instanceof BadRequest) return json({ error: error.message }, 400);
+      if (error instanceof BadRequest || error instanceof InvalidSignIn || error instanceof GitHubRejected) return json({ error: error.message }, 400);
       return json({ error: message(error) }, 500);
     }
   }
 
   private async route(request: Request, path: string): Promise<Response> {
-    const { settings, secrets, store, fleet, hub, clients, auth, gateway } = this.deps;
+    const { settings, secrets, store, fleet, hub, clients, auth, gateway, agents } = this.deps;
     const method = request.method;
     const [, section, id, action] = path.split("/");
 
@@ -152,44 +152,72 @@ export class Admin {
 
     if (path === "/github" && method === "PUT") {
       const token = text((await body(request)).token, "The token");
-      const response = await fetch("https://api.github.com/user", {
-        headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!response.ok) throw new BadRequest(response.status === 401 ? "GitHub rejected that token." : `GitHub answered ${response.status}.`);
-      const user = (await response.json()) as { id: number; login: string };
+      if (!token) throw new BadRequest("Paste a personal access token.");
+      const account = await fetchGitHubAccount(token);
       secrets.set("github.token", token);
-      settings.set("github", { login: user.login, email: `${user.id}+${user.login}@users.noreply.github.com` });
+      settings.set("github", account);
       fleet.emit("changed");
       hub.emit("config");
-      return json({ login: user.login });
+      return json(account);
+    }
+    if (path === "/github/check" && method === "POST") {
+      const token = secrets.get("github.token");
+      if (!token) throw new BadRequest("Connect GitHub first.");
+      const account = await fetchGitHubAccount(token);
+      settings.set("github", account);
+      fleet.emit("changed");
+      hub.emit("config");
+      return json(account);
     }
     if (path === "/github" && method === "DELETE") {
       secrets.set("github.token", null);
       settings.set("github", null);
       fleet.emit("changed");
       hub.emit("config");
-      return json({ login: null });
+      return json({ ok: true });
     }
 
-    if (path === "/agents" && method === "PUT") {
+    if (path === "/agents" && method === "POST") {
       const input = await body(request);
-      for (const key of agentSecrets) {
-        const value = input[key];
-        if (value === undefined) continue;
-        if (value !== null && typeof value !== "string") throw new BadRequest(`${key} must be text.`);
-        const trimmed = value?.trim() ?? "";
-        if (key === "codexAuthJson" && trimmed) {
-          try {
-            JSON.parse(trimmed);
-          } catch {
-            throw new BadRequest("Paste the whole contents of ~/.codex/auth.json.");
-          }
-        }
-        if (value === null || trimmed) secrets.set(`agent.${key}`, value === null ? null : trimmed);
+      const name = input.name === undefined ? "" : text(input.name, "The name");
+      const token = text(input.token, "The token");
+      if (!token) throw new BadRequest("Paste the token.");
+      let profile: TokenInput;
+      if (input.agent === "claude" && input.method === "setup-token") profile = { agent: "claude", method: "setup-token", name, token };
+      else if (input.agent === "claude" && input.method === "auth-token") {
+        const baseUrl = input.baseUrl == null ? "" : text(input.baseUrl, "The base URL");
+        profile = { agent: "claude", method: "auth-token", name, token, baseUrl: baseUrl || null };
+      } else if (input.agent === "opencode" && input.method === "api-key") profile = { agent: "opencode", method: "api-key", name, token };
+      else throw new BadRequest("Unknown sign-in method.");
+      return json(await agents.addToken(profile));
+    }
+    if (section === "agents" && id && action === "use" && method === "POST") {
+      agents.use(id);
+      return json({ ok: true });
+    }
+    if (section === "agents" && id && !action && method === "DELETE") {
+      agents.remove(id);
+      return json({ ok: true });
+    }
+    if (path === "/claude-login" && method === "POST") return json(agents.startClaudeLogin());
+    if (section === "claude-login" && id && method === "POST") {
+      const input = await body(request);
+      const name = input.name === undefined ? "" : text(input.name, "The name");
+      return json(await agents.finishClaudeLogin(id, text(input.code, "The code"), name));
+    }
+    if (path === "/codex-login" && method === "POST") {
+      const { name } = await body(request);
+      return json(await agents.startCodexLogin(name === undefined ? "" : text(name, "The name")));
+    }
+    if (section === "codex-login" && id) {
+      if (method === "GET") {
+        const login = agents.codexLogin(id);
+        return login ? json(login) : json({ error: "That sign-in expired. Start again." }, 404);
       }
-      fleet.emit("changed");
-      return json(this.agentCredentials());
+      if (method === "DELETE") {
+        agents.cancelCodexLogin(id);
+        return json({ ok: true });
+      }
     }
 
     if (path === "/settings" && method === "PUT") {
@@ -277,7 +305,6 @@ export class Admin {
       id,
       label: definition.label,
       website: definition.website,
-      dashboardUrl: definition.dashboardUrl,
       fields: definition.fields,
       features: definition.features,
       sizes: definition.sizes,
@@ -288,21 +315,11 @@ export class Admin {
     };
   }
 
-  private agentCredentials(): AgentCredentials {
-    const has = (key: (typeof agentSecrets)[number]) => this.deps.secrets.has(`agent.${key}`);
-    return {
-      anthropicApiKey: has("anthropicApiKey"),
-      claudeOAuthToken: has("claudeOAuthToken"),
-      openaiApiKey: has("openaiApiKey"),
-      codexAuthJson: has("codexAuthJson"),
-    };
-  }
-
   overview(): Overview {
     const { settings, secrets, store, fleet, hub, clients, gateway } = this.deps;
     const active = settings.get("activeProvider");
     const provider = active ? this.providerInfo(active) : null;
-    const credentials = this.agentCredentials();
+    const agents = this.deps.agents.list();
     const projects = store.projects();
     const idleMs = settings.get("idleMinutes") * 60_000;
     const vms = store
@@ -344,12 +361,12 @@ export class Admin {
       bridge: { id: settings.get("bridgeId"), version: this.deps.version, startedAt: this.deps.startedAt },
       setup: {
         provider: Boolean(provider?.configured && provider.active),
-        github: secrets.has("github.token") || Boolean(provider?.features.providerGitHub),
-        agents: Object.values(credentials).some(Boolean) || Boolean(provider?.features.providerAgentCredentials),
+        github: secrets.has("github.token"),
+        agents: agents.some((profile) => profile.inUse),
       },
       provider,
-      github: settings.get("github")?.login ?? null,
-      agents: credentials,
+      github: secrets.has("github.token") ? settings.get("github") : null,
+      agents,
       settings: { vmSize: settings.get("vmSize"), idleMinutes: settings.get("idleMinutes"), t3Version: settings.get("t3Version") },
       clients: clients.list(gateway.connected()),
       vms,

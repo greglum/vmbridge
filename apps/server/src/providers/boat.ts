@@ -9,8 +9,6 @@ interface BoatEnvironment {
   id: string;
   name: string;
   isDefault: boolean;
-  passGithub: boolean;
-  passAgentsCredentials: boolean;
 }
 
 interface BoatSandbox {
@@ -41,7 +39,6 @@ export const boatProvider: ProviderDefinition = {
   id: "boat",
   label: "Boat",
   website: "https://boat.dev",
-  dashboardUrl: "https://boat.dev/dashboard",
   fields: [
     { key: "apiKey", label: "API key", kind: "secret", required: true, placeholder: "boat_..." },
     {
@@ -49,15 +46,13 @@ export const boatProvider: ProviderDefinition = {
       label: "Environment",
       kind: "select",
       required: false,
-      help: "A Boat environment can pass your Boat agent sign-ins and GitHub access to each VM.",
+      help: "The Boat environment new VMs start in.",
     },
   ],
   features: {
     sleep: "stop",
     keepsDisk: true,
     keepsMemory: false,
-    providerAgentCredentials: true,
-    providerGitHub: true,
   },
   sizes: { small: "2 vCPU, 4 GB", medium: "4 vCPU, 8 GB", large: "8 vCPU, 16 GB" },
 
@@ -99,15 +94,11 @@ export const boatProvider: ProviderDefinition = {
         return (await environments()).map((environment) => ({
           value: environment.name,
           label: environment.isDefault ? `${environment.name} (default)` : environment.name,
-          detail:
-            [environment.passAgentsCredentials && "agent sign-ins", environment.passGithub && "GitHub"]
-              .filter(Boolean)
-              .join(", ") || "no shared credentials",
         }));
       },
 
-      // The SDK creates Boat VMs with `noEnv: true`, which drops the environment and its
-      // credentials, so VM Bridge creates them through Boat's API and attaches with the SDK.
+      // The SDK creates Boat VMs with `noEnv: true`, which drops the environment, so VM Bridge
+      // creates them through Boat's API and attaches with the SDK.
       async create(input) {
         const environment = config.values.environment || undefined;
         const { sandbox } = await api.request<{ sandbox: BoatSandbox }>("POST", "/sandboxes", {

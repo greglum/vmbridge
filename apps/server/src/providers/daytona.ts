@@ -22,7 +22,6 @@ export const daytonaProvider: ProviderDefinition = {
   id: "daytona",
   label: "Daytona",
   website: "https://daytona.io",
-  dashboardUrl: "https://app.daytona.io/dashboard",
   fields: [{ key: "apiKey", label: "API key", kind: "secret", required: true, placeholder: "dtn_..." }],
   features: {
     // Container sandboxes cannot pause. Stop keeps the filesystem and clears memory.
@@ -30,8 +29,6 @@ export const daytonaProvider: ProviderDefinition = {
     keepsDisk: true,
     keepsMemory: false,
     // Daytona secrets only swap API keys into outbound HTTPS headers. There are no agent sign-ins or GitHub link.
-    providerAgentCredentials: false,
-    providerGitHub: false,
   },
   sizes: { small: "1 vCPU, 1 GB", medium: "2 vCPU, 4 GB", large: "4 vCPU, 8 GB" },
 

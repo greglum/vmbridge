@@ -24,18 +24,12 @@ export interface ProviderFeatures {
   keepsDisk: boolean;
   /** Memory and running processes survive sleep. */
   keepsMemory: boolean;
-  /** Agent sign-ins come from the provider account instead of VM Bridge settings. */
-  providerAgentCredentials: boolean;
-  /** Repositories come from the provider's own GitHub connection. */
-  providerGitHub: boolean;
 }
 
 export interface ProviderInfo {
   id: ProviderId;
   label: string;
   website: string;
-  /** The provider page where agent sign-ins and integrations are managed. */
-  dashboardUrl: string;
   fields: ProviderField[];
   features: ProviderFeatures;
   sizes: Record<VmSize, string>;
@@ -137,11 +131,57 @@ export interface Setup {
   agents: boolean;
 }
 
-export interface AgentCredentials {
-  anthropicApiKey: boolean;
-  claudeOAuthToken: boolean;
-  openaiApiKey: boolean;
-  codexAuthJson: boolean;
+export const agentKinds = ["codex", "claude", "opencode"] as const;
+export type AgentKind = (typeof agentKinds)[number];
+
+/**
+ * How a profile signs its agent in. `chatgpt`: Codex device sign-in. `setup-token`: `claude setup-token`.
+ * `auth-token`: ANTHROPIC_AUTH_TOKEN, optionally sent to an Anthropic-compatible base URL. `api-key`: OpenCode key.
+ */
+export type AgentAuthMethod = "chatgpt" | "setup-token" | "auth-token" | "api-key";
+
+/** An agent sign-in saved in VM Bridge. Each agent uses one profile at a time on every VM. */
+export interface AgentProfile {
+  id: string;
+  agent: AgentKind;
+  method: AgentAuthMethod;
+  name: string;
+  /** The ChatGPT account email, or the base URL an Anthropic token goes to. */
+  detail: string | null;
+  createdAt: number;
+  inUse: boolean;
+  /** Set when the sign-in stopped working, such as a Codex sign-in that can no longer refresh. */
+  error: string | null;
+}
+
+/** A Codex device sign-in in progress. */
+/** A Claude sign-in waiting for the code claude.ai shows after approval. */
+export interface ClaudeLogin {
+  id: string;
+  url: string;
+}
+
+export interface CodexLogin {
+  id: string;
+  userCode: string;
+  verificationUrl: string;
+  expiresAt: number;
+  status: "pending" | "done" | "failed";
+  error: string | null;
+}
+
+/** The GitHub account VM Bridge's personal access token belongs to. */
+export interface GitHubAccount {
+  login: string;
+  name: string | null;
+  avatarUrl: string;
+  profileUrl: string;
+  /** The address VMs commit with: GitHub's private noreply address for the account. */
+  email: string;
+  /** A classic token's scopes. Null for fine-grained tokens, which have no scope list. */
+  scopes: string[] | null;
+  expiresAt: number | null;
+  checkedAt: number;
 }
 
 export interface BridgeSettings {
@@ -154,9 +194,8 @@ export interface Overview {
   bridge: { id: string; version: string; startedAt: number };
   setup: Setup;
   provider: ProviderInfo | null;
-  /** The GitHub account VM Bridge's token belongs to. */
-  github: string | null;
-  agents: AgentCredentials;
+  github: GitHubAccount | null;
+  agents: AgentProfile[];
   settings: BridgeSettings;
   clients: ClientInfo[];
   vms: VmInfo[];

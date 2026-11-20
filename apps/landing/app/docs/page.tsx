@@ -176,11 +176,10 @@ bun run build          # dist/vmbridge
                     <strong>Provider.</strong> Pick a provider and paste its key. VM Bridge checks the key before saving it.
                   </>,
                   <>
-                    <strong>GitHub.</strong> A token so agents can clone, push and open pull requests. Skipped when the provider supplies GitHub
-                    itself.
+                    <strong>GitHub.</strong> A personal access token so agents can clone, push and open pull requests.
                   </>,
                   <>
-                    <strong>Agent sign-in.</strong> Keys or tokens for Claude and Codex. Skipped when the provider supplies them.
+                    <strong>Agent sign-in.</strong> Sign in to Codex with ChatGPT and to Claude with your Claude account, or add a token or an OpenCode key.
                   </>,
                 ]}
               />
@@ -273,7 +272,7 @@ bun run build          # dist/vmbridge
                     <strong>Daytona</strong> uses container sandboxes, which stop rather than pause. Files stay, and T3 starts fresh on wake.
                   </>,
                   <>
-                    <strong>Boat</strong> VMs are created with your Boat environment, so its agent sign-ins and GitHub carry over.
+                    <strong>Boat</strong> VMs start in the Boat environment you choose.
                   </>,
                   <>
                     <strong>Railway</strong> has no pause. Sleep saves a checkpoint and removes the VM. Wake creates a new VM from it. Railway needs
@@ -288,20 +287,32 @@ bun run build          # dist/vmbridge
 
             <Section id="sign-in" title="Agent sign-ins and GitHub">
               <p>
-                Agents on a VM need to sign in to their model provider, and to GitHub to push code. Where a provider can supply these itself, as
-                Boat does through its environments, manage them there. VM Bridge links to the provider&apos;s dashboard from Setup.
+                Agents and git sign in only with what you add in Setup, never with sign-ins from the VM provider. Each agent sign-in is a profile saved under{" "}
+                <Code>~/.vmbridge/auths</Code>, readable only by you. Each agent uses one profile at a time, and VMs get it when they start.
               </p>
-              <p>Otherwise, VM Bridge writes what you enter in Setup into each VM as environment variables, readable only by the VM user:</p>
               <Table
-                head={["Setting", "Set on the VM as"]}
+                head={["Sign-in", "Set on the VM as"]}
                 rows={[
+                  ["Codex, signed in with ChatGPT", "auth.json in a private CODEX_HOME"],
+                  ["Claude account or subscription token", <Code key="c">CLAUDE_CODE_OAUTH_TOKEN</Code>],
+                  ["Claude auth token", <Code key="a">ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL</Code>],
+                  ["OpenCode API key", <Code key="o">OPENCODE_API_KEY</Code>],
                   ["GitHub token", <Code key="g">GH_TOKEN, GITHUB_TOKEN</Code>],
-                  ["Anthropic API key", <Code key="a">ANTHROPIC_API_KEY</Code>],
-                  ["Claude sign-in token", <Code key="c">CLAUDE_CODE_OAUTH_TOKEN</Code>],
-                  ["OpenAI API key", <Code key="o">OPENAI_API_KEY</Code>],
-                  ["Codex auth.json", "A private CODEX_HOME holding the file"],
                 ]}
               />
+              <p>
+                Git on each VM signs in to GitHub with the token and commits as your GitHub account, using GitHub&apos;s private noreply email.
+                SSH remotes such as <Code>git@github.com:you/app.git</Code> go over HTTPS with the token. The GitHub CLI, <Code>gh</Code>, is
+                installed and signed in, so agents can open pull requests.
+              </p>
+              <p>
+                VM Bridge refreshes the Codex sign-in before it expires and gives the new tokens to every awake VM, so VMs never sign each
+                other out.
+              </p>
+              <p>
+                Signing in with your Claude account makes the same one-year token as <Code>claude setup-token</Code>. Approve on claude.ai, then
+                paste the code it shows into the dashboard.
+              </p>
             </Section>
 
             <Section id="network" title="Addresses and Tailscale">

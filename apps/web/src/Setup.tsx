@@ -1,40 +1,26 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { GithubIcon, LinkSquare02Icon, Plug01Icon, Robot01Icon } from "@hugeicons/core-free-icons";
-import type { AgentCredentials, Overview, ProviderId, ProviderInfo, SelectOption } from "@vmbridge/contracts";
+import { agentKinds, type AgentAuthMethod, type AgentKind, type AgentProfile, type ClaudeLogin, type CodexLogin, type GitHubAccount, type Overview, type ProviderId, type ProviderInfo, type SelectOption } from "@vmbridge/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ButtonGroup } from "@/components/ui/button-group";
 import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import { useAction } from "@/hooks/use-action";
-import { api } from "./api.ts";
-import { ProviderLogo } from "./brand.tsx";
+import { ago, api } from "./api.ts";
+import { AgentLogo, ProviderLogo } from "./brand.tsx";
+import { CopyButton } from "./CopyButton.tsx";
 import { Page, Section, type Tab } from "./Page.tsx";
+import { Private } from "./Private.tsx";
 
 type SetupTab = "provider" | "github" | "agents";
 
 const sleepModes = { pause: "Pauses: memory and disk kept", stop: "Stops: disk kept", checkpoint: "Checkpoints: disk kept, new sandbox on wake" };
 
-/** Where, in each provider's own dashboard, its account sign-ins are set up. */
-const accountHints: Partial<Record<ProviderId, { agents: string; github?: string }>> = {
-  boat: {
-    agents: "Turn on agent sign-ins in the Boat environment you chose under Provider.",
-    github: "Turn on GitHub in the Boat environment you chose under Provider.",
-  },
-  boxd: {
-    agents: "Connect Claude Code and Codex under Integrations in boxd.",
-    github: "Connect Git under Integrations in boxd.",
-  },
-  instabox: {
-    agents: "Sign-ins saved in your Instabox Vault reach every new machine.",
-  },
-};
 
 export function Setup({ overview }: { overview: Overview }) {
   const [tab, setTab] = useState<SetupTab>(overview.setup.provider ? "agents" : "provider");
@@ -47,8 +33,8 @@ export function Setup({ overview }: { overview: Overview }) {
   return (
     <Page title="Setup" tabs={tabs} tab={tab} onTab={setTab}>
       {tab === "provider" && <Providers active={provider?.id ?? null} />}
-      {tab === "github" && <GitHub login={overview.github} provider={provider?.features.providerGitHub ? provider : null} />}
-      {tab === "agents" && <Agents credentials={overview.agents} provider={provider?.features.providerAgentCredentials ? provider : null} />}
+      {tab === "github" && <GitHub account={overview.github} />}
+      {tab === "agents" && <Agents profiles={overview.agents} />}
     </Page>
   );
 }
@@ -128,8 +114,6 @@ function ProviderForm({ provider, onSaved }: { provider: ProviderInfo; onSaved: 
       >
         <div className="flex flex-wrap gap-1.5">
           <Badge variant="secondary">{sleepModes[provider.features.sleep]}</Badge>
-          {provider.features.providerAgentCredentials && <Badge variant="secondary">Agent sign-in from {provider.label}</Badge>}
-          {provider.features.providerGitHub && <Badge variant="secondary">GitHub from {provider.label}</Badge>}
         </div>
         <FieldGroup>
           {provider.fields.map((field) => {
@@ -140,9 +124,9 @@ function ProviderForm({ provider, onSaved }: { provider: ProviderInfo; onSaved: 
               return (
                 <Field key={field.key}>
                   <FieldLabel htmlFor={id}>{field.label}</FieldLabel>
-                  <ButtonGroup className="w-full">
+                  <div className="flex gap-2">
                     <Select value={current} onValueChange={(value) => setValues({ ...values, [field.key]: value === defaultOption ? "" : value })}>
-                      <SelectTrigger id={id} className="h-9 flex-1">
+                      <SelectTrigger id={id} className="flex-1 data-[size=default]:h-9">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -156,10 +140,10 @@ function ProviderForm({ provider, onSaved }: { provider: ProviderInfo; onSaved: 
                         ))}
                       </SelectContent>
                     </Select>
-                    <Button type="button" variant="outline" size="lg" className="h-9" disabled={save.busy} onClick={() => void loadOptions(field.key)}>
+                    <Button type="button" variant="outline" size="lg" className="px-4" disabled={save.busy} onClick={() => void loadOptions(field.key)}>
                       Load
                     </Button>
-                  </ButtonGroup>
+                  </div>
                   {field.help && <FieldDescription>{field.help}</FieldDescription>}
                 </Field>
               );
@@ -203,184 +187,426 @@ function ProviderForm({ provider, onSaved }: { provider: ProviderInfo; onSaved: 
   );
 }
 
-/** Points to the provider's own dashboard, for sign-ins it manages itself. */
-function FromProvider({ provider, title, hint }: { provider: ProviderInfo; title: string; hint?: string }) {
-  return (
-    <Item variant="outline">
-      <ItemMedia>
-        <ProviderLogo id={provider.id} className="size-9 rounded-lg" />
-      </ItemMedia>
-      <ItemContent>
-        <ItemTitle>{title}</ItemTitle>
-        {hint && <ItemDescription>{hint}</ItemDescription>}
-      </ItemContent>
-      <ItemActions>
-        <Button asChild variant="outline" size="lg" className="h-9">
-          <a href={provider.dashboardUrl} target="_blank" rel="noreferrer">
-            Open {provider.label}
-            <HugeiconsIcon icon={LinkSquare02Icon} data-icon="inline-end" strokeWidth={1.75} />
-          </a>
-        </Button>
-      </ItemActions>
-    </Item>
-  );
-}
-
-function GitHub({ login, provider }: { login: string | null; provider: ProviderInfo | null }) {
+function GitHub({ account }: { account: GitHubAccount | null }) {
   const [token, setToken] = useState("");
   const action = useAction();
-  const disconnect = (
-    <Button variant="destructive" size="lg" className="h-9" disabled={action.busy} onClick={() => void action.run(() => api("/github", { method: "DELETE" }))}>
-      Disconnect
-    </Button>
-  );
+  const now = Date.now();
+  const expiresSoon = account?.expiresAt != null && account.expiresAt - now < 7 * 24 * 60 * 60_000;
   return (
-    <Section title="GitHub" actions={login ? <Badge variant="secondary">Connected as {login}</Badge> : undefined}>
-      {provider && <FromProvider provider={provider} title={`GitHub comes from your ${provider.label} account`} hint={accountHints[provider.id]?.github} />}
-      {provider && login && (
-        <Item variant="muted">
-          <ItemContent>
-            <ItemTitle>A token is also saved in VM Bridge</ItemTitle>
-            <ItemDescription>VM Bridge uses it to list branches. VMs use your {provider.label} connection.</ItemDescription>
-          </ItemContent>
-          <ItemActions>{disconnect}</ItemActions>
-        </Item>
-      )}
-      {!provider && (
-        <form
-          className="flex flex-col gap-6"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void action.run(() => api("/github", { method: "PUT", body: { token } })).then((ok) => {
-              if (!ok) return;
-              setToken("");
-              toast.success("GitHub connected.");
-            });
-          }}
-        >
-          <Field data-invalid={Boolean(action.error)}>
-            <FieldLabel htmlFor="github-token">{login ? "Replace token" : "Personal access token"}</FieldLabel>
-            <Input id="github-token" className="h-9" type="password" autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)} placeholder="github_pat_..." />
-            <FieldDescription>Needs read and write access to repository contents.</FieldDescription>
-            {action.error && <FieldError>{action.error}</FieldError>}
-          </Field>
-          <div className="flex gap-2">
-            <Button type="submit" size="lg" className="h-9 px-4" disabled={action.busy || !token.trim()}>
-              Connect
-            </Button>
-            {login && disconnect}
-          </div>
-        </form>
-      )}
-    </Section>
-  );
-}
-
-const agentFields: { key: keyof AgentCredentials; label: string; hint: ReactNode; multiline?: boolean }[] = [
-  {
-    key: "claudeOAuthToken",
-    label: "Claude subscription token",
-    hint: (
-      <>
-        Run <code>claude setup-token</code> and paste the token.
-      </>
-    ),
-  },
-  { key: "anthropicApiKey", label: "Anthropic API key", hint: "Used by Claude when no subscription token is set." },
-  {
-    key: "codexAuthJson",
-    label: "Codex sign-in",
-    hint: (
-      <>
-        Paste <code>~/.codex/auth.json</code> after <code>codex login</code>.
-      </>
-    ),
-    multiline: true,
-  },
-  { key: "openaiApiKey", label: "OpenAI API key", hint: "Used by Codex when no sign-in is set." },
-];
-
-function Agents({ credentials, provider }: { credentials: AgentCredentials; provider: ProviderInfo | null }) {
-  const [values, setValues] = useState<Partial<Record<keyof AgentCredentials, string>>>({});
-  const action = useAction();
-  const filled = Object.values(values).some((value) => value?.trim());
-  const saved = agentFields.filter((field) => credentials[field.key]);
-  const remove = (key: keyof AgentCredentials) => void action.run(() => api("/agents", { method: "PUT", body: { [key]: null } }));
-
-  if (provider) {
-    return (
-      <Section title="Agent sign-in">
-        <FromProvider provider={provider} title={`Agent sign-in comes from your ${provider.label} account`} hint={accountHints[provider.id]?.agents} />
-        {saved.length > 0 && (
-          <Item variant="muted">
+    <Section title="GitHub">
+      {account && (
+        <>
+          <Item variant="outline">
+            <ItemMedia>
+              <Private className="rounded-full">
+                <img src={account.avatarUrl} alt="" className="size-10 rounded-full" />
+              </Private>
+            </ItemMedia>
             <ItemContent>
-              <ItemTitle>Also saved in VM Bridge</ItemTitle>
-              <ItemDescription>{saved.map((field) => field.label).join(", ")}. VMs get these as well. Remove them to use only {provider.label}.</ItemDescription>
+              <ItemTitle>
+                <Private>{account.name ?? account.login}</Private>
+              </ItemTitle>
+              <ItemDescription>
+                <Private>@{account.login}</Private>
+              </ItemDescription>
             </ItemContent>
             <ItemActions>
-              <Button
-                variant="destructive"
-                size="lg"
-                className="h-9"
-                disabled={action.busy}
-                onClick={() => void action.run(() => api("/agents", { method: "PUT", body: Object.fromEntries(saved.map((field) => [field.key, null])) }))}
-              >
-                Remove
+              <Button variant="outline" size="sm" disabled={action.busy} onClick={() => void action.run(() => api("/github/check", { body: {} }))}>
+                Check again
+              </Button>
+              <Button variant="ghost" size="sm" className="text-destructive" disabled={action.busy} onClick={() => void action.run(() => api("/github", { method: "DELETE" }))}>
+                Disconnect
               </Button>
             </ItemActions>
           </Item>
-        )}
-        {action.error && <FieldError>{action.error}</FieldError>}
-      </Section>
-    );
-  }
-
-  return (
-    <Section title="Agent sign-in">
+          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-2 text-sm">
+            <dt className="text-muted-foreground">Commits as</dt>
+            <dd className="truncate font-mono text-xs leading-5">
+              <Private>
+                {account.name ?? account.login} &lt;{account.email}&gt;
+              </Private>
+            </dd>
+            <dt className="text-muted-foreground">Token</dt>
+            <dd>{account.scopes === null ? "Fine-grained" : `Classic${account.scopes.length ? `: ${account.scopes.join(", ")}` : ", no scopes"}`}</dd>
+            <dt className="text-muted-foreground">Expires</dt>
+            <dd className={expiresSoon ? "text-warning" : undefined}>{account.expiresAt ? dateFormat.format(account.expiresAt) : "Never"}</dd>
+            <dt className="text-muted-foreground">Checked</dt>
+            <dd>{ago(account.checkedAt, now)}</dd>
+          </dl>
+        </>
+      )}
       <form
         className="flex flex-col gap-6"
         onSubmit={(event) => {
           event.preventDefault();
-          void action.run(() => api("/agents", { method: "PUT", body: values })).then((ok) => {
+          void action.run(() => api("/github", { method: "PUT", body: { token } })).then((ok) => {
             if (!ok) return;
-            setValues({});
-            toast.success("Saved. VMs pick up changes the next time they start.");
+            setToken("");
+            toast.success("GitHub connected. VMs pick it up the next time they start.");
           });
         }}
       >
-        <FieldGroup>
-          {agentFields.map((field) => {
-            const isSet = credentials[field.key];
-            const id = `agent-${field.key}`;
-            const props = {
-              id,
-              value: values[field.key] ?? "",
-              placeholder: isSet ? "Saved. Type to replace it." : undefined,
-              onChange: (event: { target: { value: string } }) => setValues({ ...values, [field.key]: event.target.value }),
-            };
-            return (
-              <Field key={field.key}>
-                <div className="flex items-center justify-between gap-2">
-                  <FieldLabel htmlFor={id}>{field.label}</FieldLabel>
-                  {isSet && (
-                    <Button type="button" variant="ghost" size="xs" className="text-destructive" onClick={() => remove(field.key)}>
-                      Remove
-                    </Button>
-                  )}
-                </div>
-                {field.multiline ? <Textarea {...props} rows={3} spellCheck={false} className="font-mono text-xs" /> : <Input {...props} className="h-9" type="password" autoComplete="off" />}
-                <FieldDescription className="[&_code]:font-mono [&_code]:text-foreground">{field.hint}</FieldDescription>
-              </Field>
-            );
-          })}
-        </FieldGroup>
-        {action.error && <FieldError>{action.error}</FieldError>}
-        <div>
-          <Button type="submit" size="lg" className="h-9 px-4" disabled={action.busy || !filled}>
-            Save
+        <Field data-invalid={Boolean(action.error)}>
+          <FieldLabel htmlFor="github-token">{account ? "Replace token" : "Personal access token"}</FieldLabel>
+          <Input id="github-token" className="h-9" type="password" autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)} placeholder="github_pat_..." />
+          <FieldDescription>Needs read and write access to contents and pull requests.</FieldDescription>
+          {action.error && <FieldError>{action.error}</FieldError>}
+        </Field>
+        <div className="flex flex-wrap gap-2">
+          <Button type="submit" size="lg" className="h-9 px-4" disabled={action.busy || !token.trim()}>
+            {account ? "Replace" : "Connect"}
+          </Button>
+          <Button asChild variant="outline" size="lg" className="h-9 px-4">
+            <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">
+              Create a token on GitHub
+              <HugeiconsIcon icon={LinkSquare02Icon} data-icon="inline-end" strokeWidth={1.75} />
+            </a>
           </Button>
         </div>
       </form>
     </Section>
+  );
+}
+
+const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
+
+const agentNames: Record<AgentKind, string> = { codex: "Codex", claude: "Claude", opencode: "OpenCode" };
+const methodNames: Record<AgentAuthMethod, string> = {
+  chatgpt: "ChatGPT sign-in",
+  "setup-token": "Subscription token",
+  "auth-token": "Auth token",
+  "api-key": "API key",
+};
+const savedToast = "Saved. VMs pick it up the next time they start.";
+
+function Agents({ profiles }: { profiles: AgentProfile[] }) {
+  return agentKinds.map((agent) => <AgentSection key={agent} agent={agent} profiles={profiles.filter((profile) => profile.agent === agent)} />);
+}
+
+function AgentSection({ agent, profiles }: { agent: AgentKind; profiles: AgentProfile[] }) {
+  const [adding, setAdding] = useState(false);
+  const action = useAction();
+  const open = adding || profiles.length === 0;
+  const done = () => setAdding(false);
+  return (
+    <Section
+      title={agentNames[agent]}
+      icon={<AgentLogo agent={agent} className="size-7" />}
+      actions={
+        !open && (
+          <Button variant="outline" size="lg" className="h-9" onClick={() => setAdding(true)}>
+            Add sign-in
+          </Button>
+        )
+      }
+    >
+      {profiles.map((profile) => (
+        <Item key={profile.id} variant="outline">
+          <ItemContent>
+            <ItemTitle>{profile.name}</ItemTitle>
+            <ItemDescription className={profile.error ? "text-destructive" : undefined}>
+              {profile.error ?? (
+                <>
+                  {methodNames[profile.method]}
+                  {profile.detail && (
+                    <>
+                      , <Private>{profile.detail}</Private>
+                    </>
+                  )}
+                </>
+              )}
+            </ItemDescription>
+          </ItemContent>
+          <ItemActions>
+            {profile.inUse ? (
+              <Badge variant="secondary">In use</Badge>
+            ) : (
+              <Button variant="outline" size="sm" disabled={action.busy} onClick={() => void action.run(() => api(`/agents/${profile.id}/use`, { body: {} }))}>
+                Use
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-destructive"
+              disabled={action.busy}
+              onClick={() => void action.run(() => api(`/agents/${profile.id}`, { method: "DELETE" }))}
+            >
+              Remove
+            </Button>
+          </ItemActions>
+        </Item>
+      ))}
+      {action.error && <FieldError>{action.error}</FieldError>}
+      {open && agent === "codex" && <CodexForm onDone={done} onCancel={profiles.length ? done : undefined} />}
+      {open && agent === "claude" && <ClaudeForm onDone={done} onCancel={profiles.length ? done : undefined} />}
+      {open && agent === "opencode" && <OpenCodeForm onDone={done} onCancel={profiles.length ? done : undefined} />}
+    </Section>
+  );
+}
+
+interface FormProps {
+  onDone: () => void;
+  onCancel?: () => void;
+}
+
+function NameField({ id, value, onChange }: { id: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <Field>
+      <FieldLabel htmlFor={id}>Name</FieldLabel>
+      <Input id={id} className="h-9" value={value} onChange={(event) => onChange(event.target.value)} placeholder="Personal" autoComplete="off" />
+    </Field>
+  );
+}
+
+function FormButtons({ busy, disabled, label, onCancel }: { busy: boolean; disabled?: boolean; label: string; onCancel?: () => void }) {
+  return (
+    <div className="flex gap-2">
+      <Button type="submit" size="lg" className="h-9 px-4" disabled={busy || disabled}>
+        {label}
+      </Button>
+      {onCancel && (
+        <Button type="button" variant="ghost" size="lg" className="h-9" onClick={onCancel}>
+          Cancel
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function CodexForm({ onDone, onCancel }: FormProps) {
+  const [name, setName] = useState("");
+  const [login, setLogin] = useState<CodexLogin | null>(null);
+  const action = useAction();
+
+  // The server finishes the sign-in on its own once the code is approved; this only watches it.
+  useEffect(() => {
+    if (login?.status !== "pending") return;
+    const timer = setInterval(() => {
+      void api<CodexLogin>(`/codex-login/${login.id}`).then(
+        (next) => {
+          if (next.status === "pending") return;
+          setLogin(null);
+          if (next.status === "done") {
+            toast.success(savedToast);
+            onDone();
+          } else action.setError(next.error ?? "The sign-in failed.");
+        },
+        (error: unknown) => {
+          setLogin(null);
+          action.setError(error instanceof Error ? error.message : String(error));
+        },
+      );
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [login?.id, login?.status]);
+
+  if (login) {
+    return (
+      <Item variant="muted" className="flex-col items-stretch gap-4 sm:flex-row sm:items-center">
+        <ItemContent>
+          <ItemDescription>Open the link, sign in to ChatGPT, and enter this code.</ItemDescription>
+          <div className="flex items-center gap-1">
+            <span className="font-mono text-2xl font-semibold tracking-widest">{login.userCode}</span>
+            <CopyButton value={login.userCode} label="Copy code" />
+          </div>
+        </ItemContent>
+        <ItemActions>
+          <Button asChild size="lg" className="h-9">
+            <a href={login.verificationUrl} target="_blank" rel="noreferrer">
+              Open {new URL(login.verificationUrl).host}
+              <HugeiconsIcon icon={LinkSquare02Icon} data-icon="inline-end" strokeWidth={1.75} />
+            </a>
+          </Button>
+          <Button
+            variant="ghost"
+            size="lg"
+            className="h-9"
+            onClick={() => {
+              void api(`/codex-login/${login.id}`, { method: "DELETE" }).catch(() => {});
+              setLogin(null);
+            }}
+          >
+            Cancel
+          </Button>
+        </ItemActions>
+      </Item>
+    );
+  }
+
+  return (
+    <form
+      className="flex flex-col gap-6"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void action.run(async () => setLogin(await api<CodexLogin>("/codex-login", { body: { name: name.trim() } })));
+      }}
+    >
+      <NameField id="codex-name" value={name} onChange={setName} />
+      {action.error && <FieldError>{action.error}</FieldError>}
+      <FormButtons busy={action.busy} label="Sign in with ChatGPT" onCancel={onCancel} />
+    </form>
+  );
+}
+
+function ClaudeForm({ onDone, onCancel }: FormProps) {
+  const [method, setMethod] = useState<"sign-in" | "setup-token" | "auth-token">("sign-in");
+  const [name, setName] = useState("");
+  const [token, setToken] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [login, setLogin] = useState<ClaudeLogin | null>(null);
+  const [code, setCode] = useState("");
+  const action = useAction();
+  const methods = [
+    { id: "sign-in", title: "Claude account", description: "Sign in on claude.ai" },
+    { id: "setup-token", title: "Subscription token", description: "From claude setup-token" },
+    { id: "auth-token", title: "Auth token", description: "For a proxy or an Anthropic-compatible API" },
+  ] as const;
+  const saved = (ok: boolean) => {
+    if (!ok) return;
+    toast.success(savedToast);
+    onDone();
+  };
+
+  if (login) {
+    return (
+      <form
+        className="flex flex-col gap-6"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void action
+            .run(async () => {
+              try {
+                await api(`/claude-login/${login.id}`, { body: { code: code.trim(), name: name.trim() } });
+              } catch (error) {
+                // The server ends a sign-in once Claude sees its code, so the next try starts fresh.
+                setLogin(null);
+                setCode("");
+                throw error;
+              }
+            })
+            .then(saved);
+        }}
+      >
+        <Field data-invalid={Boolean(action.error)}>
+          <FieldLabel htmlFor="claude-code">Code from Claude</FieldLabel>
+          <Input id="claude-code" className="h-9" type="password" autoComplete="off" value={code} onChange={(event) => setCode(event.target.value)} />
+          <FieldDescription>Approve on claude.ai, then paste the code it shows.</FieldDescription>
+        </Field>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="outline" size="lg" className="h-9 px-4">
+            <a href={login.url} target="_blank" rel="noreferrer">
+              Open claude.ai
+              <HugeiconsIcon icon={LinkSquare02Icon} data-icon="inline-end" strokeWidth={1.75} />
+            </a>
+          </Button>
+          <Button type="submit" size="lg" className="h-9 px-4" disabled={action.busy || !code.trim()}>
+            Check and save
+          </Button>
+          <Button type="button" variant="ghost" size="lg" className="h-9" onClick={() => setLogin(null)}>
+            Cancel
+          </Button>
+        </div>
+      </form>
+    );
+  }
+
+  return (
+    <form
+      className="flex flex-col gap-6"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (method === "sign-in") {
+          // Opened here, inside the click, so browsers don't block the tab.
+          const tab = window.open("", "_blank");
+          void action.run(async () => {
+            try {
+              const next = await api<ClaudeLogin>("/claude-login", { body: {} });
+              if (tab) tab.location.href = next.url;
+              setLogin(next);
+            } catch (error) {
+              tab?.close();
+              throw error;
+            }
+          });
+          return;
+        }
+        const body = { agent: "claude", method, name: name.trim(), token, ...(method === "auth-token" ? { baseUrl: baseUrl.trim() || null } : {}) };
+        void action.run(() => api("/agents", { body })).then(saved);
+      }}
+    >
+      <RadioGroup value={method} onValueChange={(value) => setMethod(value as typeof method)} className="grid gap-2 sm:grid-cols-3">
+        {methods.map((entry) => (
+          <FieldLabel key={entry.id} htmlFor={`claude-${entry.id}`}>
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldTitle>{entry.title}</FieldTitle>
+                <FieldDescription>{entry.description}</FieldDescription>
+              </FieldContent>
+              <RadioGroupItem value={entry.id} id={`claude-${entry.id}`} />
+            </Field>
+          </FieldLabel>
+        ))}
+      </RadioGroup>
+      <FieldGroup>
+        <NameField id="claude-name" value={name} onChange={setName} />
+        {method !== "sign-in" && (
+          <Field data-invalid={Boolean(action.error)}>
+            <FieldLabel htmlFor="claude-token">{method === "setup-token" ? "Token" : "ANTHROPIC_AUTH_TOKEN"}</FieldLabel>
+            <Input
+              id="claude-token"
+              className="h-9"
+              type="password"
+              autoComplete="off"
+              value={token}
+              onChange={(event) => setToken(event.target.value)}
+              placeholder={method === "setup-token" ? "sk-ant-oat01-..." : undefined}
+            />
+          </Field>
+        )}
+        {method === "auth-token" && (
+          <Field>
+            <FieldLabel htmlFor="claude-base-url">ANTHROPIC_BASE_URL</FieldLabel>
+            <Input id="claude-base-url" className="h-9" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.anthropic.com" autoComplete="off" />
+          </Field>
+        )}
+      </FieldGroup>
+      {action.error && <FieldError>{action.error}</FieldError>}
+      <FormButtons
+        busy={action.busy}
+        disabled={method !== "sign-in" && !token.trim()}
+        label={method === "sign-in" ? "Sign in with Claude" : "Check and save"}
+        onCancel={onCancel}
+      />
+    </form>
+  );
+}
+
+function OpenCodeForm({ onDone, onCancel }: FormProps) {
+  const [name, setName] = useState("");
+  const [token, setToken] = useState("");
+  const action = useAction();
+  return (
+    <form
+      className="flex flex-col gap-6"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void action.run(() => api("/agents", { body: { agent: "opencode", method: "api-key", name: name.trim(), token } })).then((ok) => {
+          if (!ok) return;
+          toast.success(savedToast);
+          onDone();
+        });
+      }}
+    >
+      <FieldGroup>
+        <NameField id="opencode-name" value={name} onChange={setName} />
+        <Field data-invalid={Boolean(action.error)}>
+          <FieldLabel htmlFor="opencode-key">API key</FieldLabel>
+          <Input id="opencode-key" className="h-9" type="password" autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)} />
+        </Field>
+      </FieldGroup>
+      {action.error && <FieldError>{action.error}</FieldError>}
+      <FormButtons busy={action.busy} disabled={!token.trim()} label="Check and save" onCancel={onCancel} />
+    </form>
   );
 }

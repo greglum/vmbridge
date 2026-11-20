@@ -6,7 +6,8 @@ import type { Settings, Secrets } from "./settings.ts";
 import type { ProjectRow, Store, VmRow } from "./store.ts";
 import type { Traffic } from "./traffic.ts";
 import { Backend, TokenRejected } from "./vm/backend.ts";
-import { checkoutRoot, prepareVm, quote, resolveT3Version, startT3, t3Port, type VmCredentials } from "./vm/runtime.ts";
+import type { AgentAuth } from "./agent-auth/profiles.ts";
+import { checkoutRoot, prepareVm, quote, readCodexAuth, resolveT3Version, startT3, t3Port, writeCodexAuth } from "./vm/runtime.ts";
 
 type FleetEvents = {
   /** A VM's T3 server is connected and subscribed. */
@@ -61,7 +62,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
     private readonly settings: Settings,
     private readonly secrets: Secrets,
     private readonly traffic: Traffic,
-    private readonly credentials: () => VmCredentials,
+    private readonly agents: AgentAuth,
   ) {
     super();
   }
@@ -185,7 +186,10 @@ export class Fleet extends EventEmitter<FleetEvents> {
       this.boxes.set(vmId, box);
 
       const version = await resolveT3Version(this.settings.get("t3Version"));
-      await prepareVm(box, version, this.credentials());
+      // Codex on this VM may have refreshed its own tokens while VM Bridge could not reach it.
+      const codexAuth = await readCodexAuth(box);
+      if (codexAuth) this.agents.adoptCodex(codexAuth);
+      await prepareVm(box, version, await this.credentials());
       let server = await startT3(box, vm.t3Token);
       if (server.descriptor.orchestrationProtocolVersion !== 2) {
         throw new Error(`T3 ${version} speaks orchestration protocol ${server.descriptor.orchestrationProtocolVersion}. VM Bridge supports 2.`);
@@ -395,6 +399,29 @@ fi`,
       if (!["ready", "busy", "starting"].includes(vm.state)) continue;
       void this.ensure(vm.id).catch(() => {});
     }
+  }
+
+  private async credentials() {
+    const token = this.secrets.get("github.token");
+    const account = this.settings.get("github");
+    const github = token && account ? { token, login: account.login, name: account.name ?? account.login, email: account.email } : undefined;
+    return { ...(await this.agents.vmSecrets()), github };
+  }
+
+  /**
+   * Refreshes the Codex sign-in when it is due and gives the new tokens to every awake VM, before
+   * Codex there refreshes on its own and retires the refresh token the other VMs hold.
+   */
+  async syncCodexAuth() {
+    if (!this.agents.codexDue()) return;
+    const boxes = [...this.boxes.values()];
+    for (const box of boxes) {
+      const current = await readCodexAuth(box);
+      if (current) this.agents.adoptCodex(current);
+    }
+    const authJson = await this.agents.refreshCodex(true);
+    if (!authJson) return;
+    await Promise.all(boxes.map((box) => writeCodexAuth(box, authJson).catch(() => {})));
   }
 
   close() {

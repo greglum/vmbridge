@@ -59,11 +59,14 @@ export function Page<T extends string>({
   );
 }
 
-export function Section({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
+export function Section({ title, icon, actions, children }: { title: string; icon?: ReactNode; actions?: ReactNode; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-5">
       <div className="flex min-h-9 items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
+        <h2 className="flex items-center gap-2.5 text-lg font-semibold tracking-tight">
+          {icon}
+          {title}
+        </h2>
         {actions}
       </div>
       {children}

@@ -3,10 +3,12 @@ import { join } from "node:path";
 import dashboard from "@vmbridge/web/index.html";
 import { version } from "../../../package.json" with { type: "json" };
 import { Admin } from "./admin.ts";
+import { AgentAuth } from "./agent-auth/profiles.ts";
 import { Clients } from "./auth/clients.ts";
 import { DashboardAuth } from "./auth/dashboard.ts";
 import { openDatabase } from "./db.ts";
 import { Fleet } from "./fleet.ts";
+import { fetchGitHubAccount } from "./github.ts";
 import { Clones } from "./gateway/clones.ts";
 import { isT3Path, T3Gateway, type SocketData } from "./gateway/http.ts";
 import { Hub } from "./gateway/hub.ts";
@@ -16,7 +18,6 @@ import { networkInfo } from "./network.ts";
 import { Secrets, Settings } from "./settings.ts";
 import { Store } from "./store.ts";
 import { Traffic } from "./traffic.ts";
-import type { VmCredentials } from "./vm/runtime.ts";
 
 export { version };
 export const defaultPort = 3774;
@@ -44,25 +45,16 @@ export interface StartOptions {
 export async function start(options: StartOptions = {}) {
   const host = options.host ?? defaultHost;
   const port = options.port ?? defaultPort;
-  const db = openDatabase(databasePath(options.dir));
+  const dir = options.dir ?? dataDir();
+  const db = openDatabase(databasePath(dir));
   const settings = new Settings(db);
   const secrets = new Secrets(db);
   const store = new Store(db);
   const traffic = new Traffic();
 
-  const credentials = (): VmCredentials => {
-    const token = secrets.get("github.token");
-    const github = settings.get("github");
-    return {
-      github: token && github ? { token, ...github } : undefined,
-      anthropicApiKey: secrets.get("agent.anthropicApiKey"),
-      claudeOAuthToken: secrets.get("agent.claudeOAuthToken"),
-      openaiApiKey: secrets.get("agent.openaiApiKey"),
-      codexAuthJson: secrets.get("agent.codexAuthJson"),
-    };
-  };
-
-  const fleet = new Fleet(store, settings, secrets, traffic, credentials);
+  const agents = new AgentAuth(join(dir, "auths"), settings);
+  const fleet = new Fleet(store, settings, secrets, traffic, agents);
+  agents.onChange = () => fleet.emit("changed");
   const hub = new Hub(store, settings, fleet, traffic);
   const clones = new Clones(hub);
   const branches = new RemoteBranches(() => secrets.get("github.token"));
@@ -70,7 +62,7 @@ export async function start(options: StartOptions = {}) {
   const rpc = new Rpc(hub, clones, branches, traffic, () => secrets.has("github.token"));
   const gateway = new T3Gateway(hub, rpc, clients);
   const auth = new DashboardAuth(db, settings);
-  const admin = new Admin({ version, startedAt: Date.now(), host, port, settings, secrets, store, fleet, hub, traffic, clients, auth, gateway });
+  const admin = new Admin({ version, startedAt: Date.now(), host, port, settings, secrets, store, fleet, hub, traffic, clients, auth, gateway, agents });
 
   const server = Bun.serve<SocketData>({
     hostname: host,
@@ -99,7 +91,13 @@ export async function start(options: StartOptions = {}) {
       .catch(() => {})
       .finally(() => (sweeping = false));
   }, 15_000);
+  const codexSync = setInterval(() => void fleet.syncCodexAuth().catch(() => {}), 60 * 60_000);
   void fleet.resume();
+  // Accounts saved by older versions lack the details the dashboard shows.
+  const githubToken = secrets.get("github.token");
+  if (githubToken && !settings.get("github")?.checkedAt) {
+    void fetchGitHubAccount(githubToken).then((account) => settings.set("github", account), () => {});
+  }
   traffic.record({ kind: "system", operation: "VM Bridge started" });
 
   return {
@@ -108,6 +106,7 @@ export async function start(options: StartOptions = {}) {
     network: () => networkInfo(host, server.port ?? port),
     async stop() {
       clearInterval(sweep);
+      clearInterval(codexSync);
       gateway.close();
       await server.stop(true);
       hub.close();
