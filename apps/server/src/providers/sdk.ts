@@ -83,10 +83,23 @@ export function sdkDriver(options: SdkDriverOptions): Driver {
 
     async wake(vm: WakeVm) {
       if (vm.checkpoint) return create(vm, vm.checkpoint);
-      const { state } = await provider.connect(vm.sandboxId);
       const box = await connect(vm.sandboxId);
-      if (state !== "running" && hasCapability(box, "pause")) await box.resume();
-      return box;
+      if (!hasCapability(box, "pause")) return box;
+      // A VM can wake on its own (boxd resumes on proxy traffic) or still be pausing, and then
+      // the provider refuses the resume. Re-read the state until it is running or resumable.
+      const deadline = Date.now() + 2 * 60_000;
+      for (;;) {
+        const { state } = await provider.connect(vm.sandboxId);
+        if (state === "running") return box;
+        try {
+          await box.resume();
+          return box;
+        } catch (error) {
+          const conflict = error instanceof SandboxError && error.code === "invalid_argument";
+          if (!conflict || Date.now() > deadline) throw error;
+        }
+        await Bun.sleep(1_000);
+      }
     },
 
     async keepAlive() {},

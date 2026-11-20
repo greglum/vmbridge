@@ -47,6 +47,8 @@ export interface ProviderDefinition {
   id: ProviderId;
   label: string;
   website: string;
+  /** The provider page where agent sign-ins and integrations are managed. */
+  dashboardUrl: string;
   fields: ProviderField[];
   features: ProviderFeatures;
   sizes: Record<VmSize, string>;

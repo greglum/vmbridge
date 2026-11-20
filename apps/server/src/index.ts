@@ -79,7 +79,8 @@ export async function start(options: StartOptions = {}) {
     // Long enough for the dashboard's event stream between heartbeats.
     idleTimeout: 60,
     development: process.env.VMBRIDGE_DEV === "1",
-    routes: { "/": dashboard },
+    // The dashboard lives under /dashboard, a path T3 clients never request.
+    routes: { "/dashboard": dashboard, "/": new Response(null, { status: 302, headers: { location: "/dashboard" } }) },
     fetch(request, server) {
       const path = new URL(request.url).pathname;
       if (path.startsWith("/admin/api/")) return admin.fetch(request, server);

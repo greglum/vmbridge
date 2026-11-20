@@ -22,7 +22,7 @@ const within = (path: string, base: string) => path === base || path.startsWith(
 export type Direction = "in" | "out";
 
 /** Rewrites paths for one VM: `out` from VM to client, `in` from client to VM. */
-export function translate(value: unknown, vmId: string, direction: Direction, projects: ProjectRow[]): unknown {
+export function translate(value: unknown, vmId: string, direction: Direction, projects: readonly ProjectRow[]): unknown {
   const checkouts = projects
     .filter((project) => project.vmId === vmId && project.checkoutPath)
     .map((project) => ({ vm: project.checkoutPath!, client: projectRoot(project) }));
@@ -49,7 +49,7 @@ export function translate(value: unknown, vmId: string, direction: Direction, pr
 }
 
 /** The project a client path points into, if any. */
-export function projectForPath(path: string, projects: ProjectRow[]) {
+export function projectForPath(path: string, projects: readonly ProjectRow[]) {
   return projects.find((project) => within(path, `/projects/${project.id}`));
 }
 

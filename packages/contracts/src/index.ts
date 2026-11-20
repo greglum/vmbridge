@@ -1,6 +1,6 @@
 // Types shared by the VM Bridge server and its web dashboard. The admin API returns these shapes.
 
-export const providerIds = ["boat", "boxd", "instabox", "railway"] as const;
+export const providerIds = ["boat", "boxd", "daytona", "instabox", "railway"] as const;
 export type ProviderId = (typeof providerIds)[number];
 
 export const vmSizes = ["small", "medium", "large"] as const;
@@ -34,6 +34,8 @@ export interface ProviderInfo {
   id: ProviderId;
   label: string;
   website: string;
+  /** The provider page where agent sign-ins and integrations are managed. */
+  dashboardUrl: string;
   fields: ProviderField[];
   features: ProviderFeatures;
   sizes: Record<VmSize, string>;

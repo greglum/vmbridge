@@ -3,6 +3,7 @@ import { instabox } from "@opencoredev/sandbox-sdk/instabox";
 import { railway } from "@opencoredev/sandbox-sdk/railway";
 import type { ProviderId } from "@vmbridge/contracts";
 import { boatProvider } from "./boat.ts";
+import { daytonaProvider } from "./daytona.ts";
 import { sdkDriver } from "./sdk.ts";
 import { required, type ProviderDefinition } from "./types.ts";
 
@@ -14,13 +15,15 @@ const boxdProvider: ProviderDefinition = {
   id: "boxd",
   label: "boxd",
   website: "https://boxd.sh",
+  dashboardUrl: "https://app.boxd.sh/integrations",
   fields: [{ key: "apiKey", label: "API key", kind: "secret", required: true }],
   features: {
     sleep: "pause",
     keepsDisk: true,
     keepsMemory: true,
-    providerAgentCredentials: false,
-    providerGitHub: false,
+    // Claude Code, Codex and git sign-ins connected under boxd integrations reach every private machine.
+    providerAgentCredentials: true,
+    providerGitHub: true,
   },
   sizes: { small: "1 vCPU, 4 GB", medium: "2 vCPU, 8 GB", large: "4 vCPU, 16 GB" },
   open(config) {
@@ -41,12 +44,14 @@ const instaboxProvider: ProviderDefinition = {
   id: "instabox",
   label: "Instabox",
   website: "https://instabox.sh",
+  dashboardUrl: "https://dashboard.instabox.sh",
   fields: [{ key: "apiKey", label: "API key", kind: "secret", required: true }],
   features: {
     sleep: "pause",
     keepsDisk: true,
     keepsMemory: true,
-    providerAgentCredentials: false,
+    // The account's Instabox Vault delivers saved home files, including agent sign-ins, to new machines.
+    providerAgentCredentials: true,
     providerGitHub: false,
   },
   sizes: { small: "2 vCPU, 4 GB", medium: "4 vCPU, 8 GB", large: "8 vCPU, 16 GB" },
@@ -71,6 +76,7 @@ const railwayProvider: ProviderDefinition = {
   id: "railway",
   label: "Railway",
   website: "https://railway.com",
+  dashboardUrl: "https://railway.com/dashboard",
   fields: [
     { key: "token", label: "API token", kind: "secret", required: true },
     {
@@ -109,6 +115,7 @@ const railwayProvider: ProviderDefinition = {
 export const providers: Record<ProviderId, ProviderDefinition> = {
   boat: boatProvider,
   boxd: boxdProvider,
+  daytona: daytonaProvider,
   instabox: instaboxProvider,
   railway: railwayProvider,
 };

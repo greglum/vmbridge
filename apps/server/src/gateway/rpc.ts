@@ -20,6 +20,8 @@ interface Call {
   tag: string;
   payload: Wire;
   client: RpcClient;
+  /** Set once the request reaches a VM, which then records the traffic with the VM's timing. */
+  forwarded?: boolean;
 }
 
 const success = (requestId: string, value: unknown) => ({ _tag: "Exit", requestId, exit: { _tag: "Success", value } });
@@ -146,7 +148,7 @@ export class Rpc {
     try {
       if (!local) return await this.forward(call);
       await local(call);
-      this.traffic.record({ kind: "rpc", operation: call.tag, clientId: client.clientId, status: "ok", durationMs: Math.round(performance.now() - started) });
+      if (!call.forwarded) this.traffic.record({ kind: "rpc", operation: call.tag, clientId: client.clientId, status: "ok", durationMs: Math.round(performance.now() - started) });
     } catch (error) {
       this.traffic.record({ kind: "rpc", operation: call.tag, clientId: client.clientId, status: "error", durationMs: Math.round(performance.now() - started) });
       this.fail(call, error);
@@ -512,6 +514,7 @@ export class Rpc {
       release();
       throw error;
     }
+    call.forwarded = true;
     if (!done) {
       client.cancels.set(call.id, () => {
         release();

@@ -41,6 +41,7 @@ export const boatProvider: ProviderDefinition = {
   id: "boat",
   label: "Boat",
   website: "https://boat.dev",
+  dashboardUrl: "https://boat.dev/dashboard",
   fields: [
     { key: "apiKey", label: "API key", kind: "secret", required: true, placeholder: "boat_..." },
     {

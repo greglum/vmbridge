@@ -66,6 +66,9 @@ function assignments<T extends object>(fields: Record<string, string>, update: T
 
 /** Typed access to fleet, project, and routing tables. */
 export class Store {
+  /** Projects are read on every routed frame for path rewriting, so they are kept in memory. */
+  private projectCache: ProjectRow[] | null = null;
+
   constructor(readonly db: Database) {}
 
   vms(): VmRow[] {
@@ -93,29 +96,34 @@ export class Store {
       this.db.query("UPDATE projects SET checkout_path = NULL WHERE vm_id = ?").run(id);
       this.db.query("DELETE FROM vms WHERE id = ?").run(id);
     })();
+    this.projectCache = null;
   }
 
-  projects(): ProjectRow[] {
-    return this.db.query<ProjectRow, []>(`SELECT ${projectColumns} FROM projects ORDER BY created_at`).all();
+  projects(): readonly ProjectRow[] {
+    this.projectCache ??= this.db.query<ProjectRow, []>(`SELECT ${projectColumns} FROM projects ORDER BY created_at`).all();
+    return this.projectCache;
   }
 
   project(id: string): ProjectRow | null {
-    return this.db.query<ProjectRow, [string]>(`SELECT ${projectColumns} FROM projects WHERE id = ?`).get(id);
+    return this.projects().find((project) => project.id === id) ?? null;
   }
 
   insertProject(project: Omit<ProjectRow, "vmId" | "checkoutPath">) {
     this.db
       .query("INSERT INTO projects (id, url, branch, title, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(project.id, project.url, project.branch, project.title, project.createdAt);
+    this.projectCache = null;
   }
 
   updateProject(id: string, update: ProjectUpdate) {
     const { sql, values } = assignments(projectFields, update);
     if (sql) this.db.query(`UPDATE projects SET ${sql} WHERE id = ?`).run(...values, id);
+    this.projectCache = null;
   }
 
   deleteProject(id: string) {
     this.db.query("DELETE FROM projects WHERE id = ?").run(id);
+    this.projectCache = null;
   }
 
   snapshot<T>(vmId: string, kind: SnapshotKind): T | null {

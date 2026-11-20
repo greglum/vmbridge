@@ -1,0 +1,121 @@
+import { connectSandbox } from "@opencoredev/sandbox-sdk";
+import { daytona } from "@opencoredev/sandbox-sdk/daytona";
+import { notFound, sdkDriver } from "./sdk.ts";
+import { required, type Box, type ProviderDefinition } from "./types.ts";
+
+interface DaytonaSandbox {
+  id: string;
+  state: string;
+  errorReason?: string | null;
+}
+
+/** Daytona's built-in container snapshots, sized so no resize is needed after create. */
+const snapshots = { small: "daytona-small", medium: "daytona-medium", large: "daytona-large" } as const;
+
+/** Daytona stops a sandbox after this many minutes without preview or toolbox traffic, in case VM Bridge is down. */
+const autoStopMinutes = 60;
+
+const failed = new Set(["error", "build_failed", "destroyed", "destroying"]);
+const settling = new Set(["stopping", "archiving"]);
+
+export const daytonaProvider: ProviderDefinition = {
+  id: "daytona",
+  label: "Daytona",
+  website: "https://daytona.io",
+  dashboardUrl: "https://app.daytona.io/dashboard",
+  fields: [{ key: "apiKey", label: "API key", kind: "secret", required: true, placeholder: "dtn_..." }],
+  features: {
+    // Container sandboxes cannot pause. Stop keeps the filesystem and clears memory.
+    sleep: "stop",
+    keepsDisk: true,
+    keepsMemory: false,
+    // Daytona secrets only swap API keys into outbound HTTPS headers. There are no agent sign-ins or GitHub link.
+    providerAgentCredentials: false,
+    providerGitHub: false,
+  },
+  sizes: { small: "1 vCPU, 1 GB", medium: "2 vCPU, 4 GB", large: "4 vCPU, 8 GB" },
+
+  open(config) {
+    const provider = daytona({ apiKey: required(config, "apiKey", "Daytona API key") });
+    const { api } = provider;
+    const base = sdkDriver({ id: "daytona", provider, sleep: "pause" });
+    const connect = (sandboxId: string): Promise<Box> => connectSandbox(provider, sandboxId, { recoverSecrets: false });
+
+    const get = (sandboxId: string) => api.request<DaytonaSandbox>("GET", "/sandbox/{sandboxId}", { params: { sandboxId } });
+
+    async function waitFor(sandboxId: string, done: (state: string) => boolean, timeoutMs: number) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const sandbox = await get(sandboxId);
+        if (done(sandbox.state)) return;
+        if (failed.has(sandbox.state)) throw new Error(`Daytona sandbox ${sandboxId} is ${sandbox.state}: ${sandbox.errorReason ?? "no reason given"}.`);
+        await Bun.sleep(250);
+      }
+      throw new Error(`Daytona sandbox ${sandboxId} did not settle within ${Math.round(timeoutMs / 1000)} seconds.`);
+    }
+
+    return {
+      ...base,
+
+      // The SDK sends `target: "us"` unless told otherwise, which fails for orgs without that region, and it
+      // resizes non-default sizes with a stop, resize and start. Creating through the API leaves out the
+      // target (Daytona uses the org's default region) and picks a snapshot of the right size.
+      async create(input) {
+        const sandbox = await api.request<DaytonaSandbox>("POST", "/sandbox", {
+          body: {
+            snapshot: snapshots[input.size],
+            // The SDK's label encoding, so `connectSandbox` and `listSandboxes` treat it as its own.
+            labels: { ...input.labels, "sandbox-sdk": "1", "sandbox-sdk-key": input.key },
+            public: false,
+            autoStopInterval: autoStopMinutes,
+          },
+          timeoutMs: 90_000,
+        });
+        try {
+          if (sandbox.state !== "started") await waitFor(sandbox.id, (state) => state === "started", 3 * 60_000);
+          return await connect(sandbox.id);
+        } catch (error) {
+          await base.destroy(sandbox.id).catch(() => undefined);
+          throw error;
+        }
+      },
+
+      async sleep(box) {
+        await api.request("POST", "/sandbox/{sandboxId}/stop", { params: { sandboxId: box.id } });
+        return {};
+      },
+
+      async wake(vm) {
+        let { state } = await get(vm.sandboxId);
+        // Daytona refuses a start while the sandbox is still stopping.
+        if (settling.has(state)) {
+          await waitFor(vm.sandboxId, (next) => !settling.has(next), 3 * 60_000);
+          ({ state } = await get(vm.sandboxId));
+        }
+        // An archived sandbox restores its filesystem from object storage on start, which is slower.
+        if (state === "stopped" || state === "archived") {
+          await api.request("POST", "/sandbox/{sandboxId}/start", { params: { sandboxId: vm.sandboxId }, timeoutMs: 60_000 });
+        }
+        await waitFor(vm.sandboxId, (next) => next === "started", 5 * 60_000);
+        return connect(vm.sandboxId);
+      },
+
+      // VM Bridge's idle sweep reads the T3 shell through the preview, and preview traffic resets Daytona's auto-stop.
+      async keepAlive() {},
+
+      async destroy(sandboxId) {
+        const remove = () => api.request("DELETE", "/sandbox/{sandboxId}", { params: { sandboxId } });
+        try {
+          await remove();
+        } catch (error) {
+          if (notFound(error)) return;
+          // Daytona answers 409 while a stop is still in progress, such as a delete right after sleep.
+          const { state } = await get(sandboxId);
+          if (!settling.has(state)) throw error;
+          await waitFor(sandboxId, (next) => !settling.has(next), 3 * 60_000);
+          await remove();
+        }
+      },
+    };
+  },
+};

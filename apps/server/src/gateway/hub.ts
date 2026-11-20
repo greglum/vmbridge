@@ -89,7 +89,7 @@ export class Hub extends EventEmitter<HubEvents> {
     });
   }
 
-  projects(): ProjectRow[] {
+  projects(): readonly ProjectRow[] {
     return this.store.projects();
   }
 

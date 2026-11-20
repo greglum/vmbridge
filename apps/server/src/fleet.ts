@@ -244,7 +244,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
       const started = performance.now();
       const driver = this.driver(vm.provider);
       const box = this.boxes.get(vmId) ?? (await driver.connect(vm.sandboxId));
-      backend?.close();
+      await backend?.close();
       this.backends.delete(vmId);
       this.boxes.delete(vmId);
       this.emit("offline", vmId);
@@ -284,9 +284,15 @@ export class Fleet extends EventEmitter<FleetEvents> {
     });
   }
 
+  /** VMs on the active provider. VMs left on an earlier provider keep their projects but get no new work. */
+  private current() {
+    const provider = this.settings.get("activeProvider");
+    return this.store.vms().filter((vm) => vm.provider === provider);
+  }
+
   /** A VM to read T3's configuration from when none is cached: any existing VM, or a new one. */
   async any(): Promise<string> {
-    const vms = this.store.vms().filter((vm) => vm.state !== "gone" && vm.sandboxId);
+    const vms = this.current().filter((vm) => vm.state !== "gone" && vm.sandboxId);
     const awake = vms.find((vm) => this.backend(vm.id));
     if (awake) return awake.id;
     const vmId = vms[0]?.id ?? (await this.create()).id;
@@ -315,7 +321,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
     if (project.vmId && project.checkoutPath) return project.vmId;
     if (!project.vmId) {
       const taken = new Set(this.store.projects().flatMap((p) => (p.vmId ? [p.vmId] : [])));
-      const free = this.store.vms().find((vm) => !taken.has(vm.id) && vm.state !== "gone" && vm.state !== "error" && vm.sandboxId);
+      const free = this.current().find((vm) => !taken.has(vm.id) && vm.state !== "gone" && vm.state !== "error" && vm.sandboxId);
       progress(free ? "Using an idle VM" : "Creating a VM");
       const vmId = free?.id ?? (await this.create()).id;
       this.store.updateProject(projectId, { vmId });

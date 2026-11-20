@@ -170,10 +170,23 @@ export class Backend {
     });
   }
 
-  close() {
+  /**
+   * Closes the socket and resolves once it has closed. Some providers (boxd) wake a paused VM on any
+   * proxy traffic, so a close handshake still in flight would undo a sleep.
+   */
+  close(): Promise<void> {
     this.closing = true;
     clearInterval(this.heartbeat);
-    this.socket?.close();
+    const socket = this.socket;
+    if (!socket || socket.readyState === WebSocket.CLOSED) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, 2_000);
+      socket.addEventListener("close", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      socket.close();
+    });
   }
 }
 

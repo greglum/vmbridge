@@ -277,6 +277,7 @@ export class Admin {
       id,
       label: definition.label,
       website: definition.website,
+      dashboardUrl: definition.dashboardUrl,
       fields: definition.fields,
       features: definition.features,
       sizes: definition.sizes,
