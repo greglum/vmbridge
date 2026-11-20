@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "bun --hot apps/cli/src/index.ts run",
+    "dev": "VMBRIDGE_DEV=1 bun --watch apps/cli/src/index.ts run",
     "typecheck": "tsc && tsc -p apps/web",
     "test": "bun test",
     "check": "bun run typecheck && bun test",
