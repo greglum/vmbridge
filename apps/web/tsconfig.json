@@ -1,14 +1,9 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "lib": [
-      "ESNext",
-      "DOM",
-      "DOM.Iterable"
-    ]
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "baseUrl": ".",
+    "paths": { "@/*": ["./src/*"] }
   },
-  "include": [
-    "src",
-    "../../packages/contracts/src"
-  ]
+  "include": ["src", "../../packages/contracts/src"]
 }

@@ -73,6 +73,20 @@ export function useTick(ms: number) {
   return now;
 }
 
+const clockFormat = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+
+/** Local wall-clock time with milliseconds, for log rows. */
+export function clock(at: number) {
+  return `${clockFormat.format(at)}.${String(at % 1000).padStart(3, "0")}`;
+}
+
+/** A request duration, readable at a glance. */
+export function duration(ms: number) {
+  if (ms < 1) return "<1 ms";
+  if (ms < 1000) return `${ms} ms`;
+  return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`;
+}
+
 export function ago(at: number | null, now = Date.now()) {
   if (!at) return "never";
   const seconds = Math.max(0, Math.round((now - at) / 1000));

@@ -1,60 +1,140 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 @import "@xyflow/react/dist/base.css";
 
-@theme {
-  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
-
-  --color-canvas: #0b0c0f;
-  --color-panel: #121418;
-  --color-raised: #181b21;
-  --color-sunken: #0e1013;
-  --color-hover: #1f232a;
-  --color-line: #252a32;
-  --color-line-strong: #343a45;
-  --color-fg: #e7e9ee;
-  --color-muted: #9aa1ad;
-  --color-faint: #646b78;
-  --color-accent: #7c5cff;
-  --color-accent-strong: #6a48f5;
-  --color-accent-soft: #b4a2ff;
-  --color-ok: #3ecf8e;
-  --color-warn: #f5b74e;
-  --color-danger: #f26d6d;
+/* The variants shadcn's components rely on (from shadcn/tailwind.css). */
+@custom-variant dark (&:is(.dark *));
+@custom-variant data-open {
+  &:where([data-state="open"]),
+  &:where([data-open]:not([data-open="false"])) {
+    @slot;
+  }
+}
+@custom-variant data-closed {
+  &:where([data-state="closed"]),
+  &:where([data-closed]:not([data-closed="false"])) {
+    @slot;
+  }
+}
+@custom-variant data-checked {
+  &:where([data-state="checked"]),
+  &:where([data-checked]:not([data-checked="false"])) {
+    @slot;
+  }
+}
+@custom-variant data-unchecked {
+  &:where([data-state="unchecked"]),
+  &:where([data-unchecked]:not([data-unchecked="false"])) {
+    @slot;
+  }
+}
+@custom-variant data-disabled {
+  &:where([data-disabled="true"]),
+  &:where([data-disabled]:not([data-disabled="false"])) {
+    @slot;
+  }
+}
+@custom-variant data-active {
+  &:where([data-state="active"]),
+  &:where([data-active]:not([data-active="false"])) {
+    @slot;
+  }
+}
+@custom-variant data-horizontal {
+  &:where([data-orientation="horizontal"]) {
+    @slot;
+  }
+}
+@custom-variant data-vertical {
+  &:where([data-orientation="vertical"]) {
+    @slot;
+  }
 }
 
-html,
-body,
-#root {
-  height: 100%;
+/* Dark only, on pure black. */
+:root {
+  --radius: 0.625rem;
+  --background: #000000;
+  --foreground: #ededed;
+  --card: #0a0a0a;
+  --card-foreground: #ededed;
+  --popover: #0f0f0f;
+  --popover-foreground: #ededed;
+  --primary: #8b5cf6;
+  --primary-foreground: #ffffff;
+  --secondary: #161616;
+  --secondary-foreground: #ededed;
+  --muted: #141414;
+  --muted-foreground: #8f8f8f;
+  --accent: #1a1a1a;
+  --accent-foreground: #ededed;
+  --destructive: #f2555a;
+  --border: #1f1f1f;
+  --input: #2a2a2a;
+  --ring: #8b5cf6;
+  --success: #3ecf8e;
+  --warning: #f5b74e;
+  --faint: #5c5c5c;
 }
 
-body {
-  margin: 0;
-  background: var(--color-canvas);
-  color: var(--color-fg);
-  font-family: var(--font-sans);
-  font-size: 14px;
-  -webkit-font-smoothing: antialiased;
-  color-scheme: dark;
+@theme inline {
+  --font-sans: "Mona Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Fragment Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-faint: var(--faint);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    color-scheme: dark;
+  }
 }
 
 .react-flow {
-  --xy-background-color: var(--color-canvas);
-  --xy-background-pattern-color: #262a33;
-  --xy-edge-stroke: var(--color-line-strong);
-  --xy-handle-background-color: var(--color-line-strong);
-  --xy-handle-border-color: var(--color-canvas);
-  --xy-controls-button-background-color: var(--color-raised);
-  --xy-controls-button-background-color-hover: var(--color-hover);
-  --xy-controls-button-color: var(--color-muted);
-  --xy-controls-button-border-color: var(--color-line);
+  --xy-background-color: transparent;
+  --xy-background-pattern-color: #262626;
+  --xy-handle-background-color: #333;
+  --xy-handle-border-color: #000;
 }
 
-.react-flow__controls {
-  border: 1px solid var(--color-line);
-  border-radius: 6px;
-  overflow: hidden;
+.react-flow__handle {
+  opacity: 0;
 }
 
 .react-flow__attribution {
