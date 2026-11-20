@@ -47,6 +47,7 @@ export interface ProviderInfo {
 export interface SelectOption {
   value: string;
   label: string;
+  detail?: string;
 }
 
 export type AddressKind = "local" | "lan" | "tailscale" | "tailscale-dns" | "tailscale-https";
