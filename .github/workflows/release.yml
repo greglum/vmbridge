@@ -1,0 +1,45 @@
+# Builds VM Bridge for macOS and Linux and attaches the files to a GitHub release.
+# Push a tag like v0.1.0 to publish. install.sh downloads from the latest release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          # macOS builds run on macOS so the binaries get signed.
+          - { os: macos-latest, target: bun-darwin-arm64 }
+          - { os: macos-latest, target: bun-darwin-x64 }
+          - { os: ubuntu-latest, target: bun-linux-x64 }
+          - { os: ubuntu-latest, target: bun-linux-arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      - run: bun scripts/build.ts ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/vmbridge-*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
