@@ -152,14 +152,13 @@ export interface Overview {
   bridge: { id: string; version: string; startedAt: number };
   setup: Setup;
   provider: ProviderInfo | null;
+  /** The GitHub account VM Bridge's token belongs to. */
+  github: string | null;
+  agents: AgentCredentials;
   settings: BridgeSettings;
   clients: ClientInfo[];
   vms: VmInfo[];
   projects: ProjectInfo[];
-}
-
-export interface GitHubInfo {
-  login: string | null;
 }
 
 export interface TrafficEvent {
@@ -176,6 +175,19 @@ export interface TrafficEvent {
 export type LiveMessage =
   | { type: "traffic"; event: TrafficEvent }
   | { type: "overview"; overview: Overview };
+
+export interface PairingUrl {
+  kind: AddressKind;
+  label: string;
+  url: string;
+  /** The `t3code://pair` link that T3 desktop opens and T3 mobile scans. */
+  appLink: string;
+}
+
+export interface CreatedPairing {
+  link: PairingLink;
+  urls: PairingUrl[];
+}
 
 export interface ApiError {
   error: string;

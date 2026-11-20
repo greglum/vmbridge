@@ -1,11 +1,15 @@
 {
   "name": "vmbridge",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "dev": "bun --hot apps/cli/src/index.ts run",
-    "typecheck": "tsc",
+    "typecheck": "tsc && tsc -p apps/web",
     "test": "bun test",
     "check": "bun run typecheck && bun test",
     "build": "bun scripts/build.ts"

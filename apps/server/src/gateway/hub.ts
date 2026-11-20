@@ -1,0 +1,667 @@
+import { EventEmitter } from "node:events";
+import { providers } from "../providers/index.ts";
+import type { Fleet } from "../fleet.ts";
+import type { Settings } from "../settings.ts";
+import type { ProjectRow, Store } from "../store.ts";
+import type { Traffic } from "../traffic.ts";
+import type { Backend, Frame } from "../vm/backend.ts";
+import { defaultAgents, pendingAgent, presentAgent, type AgentReport } from "./agents.ts";
+import { isPathKey, projectForPath, projectRoot, translate, vmForPath } from "./paths.ts";
+import { repositoryIdentity } from "./repos.ts";
+import {
+  hasLiveWork,
+  str,
+  threadsOf,
+  type Projection,
+  type ProviderEntry,
+  type Row,
+  type ScheduledTasks,
+  type ServerConfig,
+  type Shell,
+  type ShellItem,
+  type Wire,
+} from "./types.ts";
+
+type HubEvents = {
+  shell: [];
+  config: [];
+  scheduledTasks: [];
+  clones: [];
+  /** Worktree setup progress changed for a thread. */
+  setup: [threadId: string];
+  /** A "waking the VM" notice started or ended for a thread. */
+  wake: [threadId: string];
+  /** A project's placement progressed (VM creation, clone). */
+  placement: [projectId: string, detail: string];
+  awake: [vmId: string];
+  offline: [vmId: string];
+};
+
+export const bridgeScopes = [
+  "orchestration:read",
+  "orchestration:operate",
+  "filesystem:read",
+  "filesystem:write",
+  "source-control:write",
+  "access:read",
+  "providers:manage",
+];
+
+export const bridgeAuth = {
+  policy: "remote-reachable",
+  bootstrapMethods: ["one-time-token"],
+  sessionMethods: ["bearer-access-token"],
+  sessionCookieName: "vmbridge_t3_session",
+};
+
+const sha256 = (value: string) => new Bun.CryptoHasher("sha256").update(value).digest("hex");
+
+/**
+ * Everything T3 clients see: one merged shell, one config, and routing from each request to the
+ * VM that owns it. Caches what every VM last reported so sleeping VMs keep their threads visible.
+ */
+export class Hub extends EventEmitter<HubEvents> {
+  private readonly shells: Map<string, Shell>;
+  private readonly configs: Map<string, ServerConfig>;
+  private readonly schedules: Map<string, ScheduledTasks>;
+  private readonly setupProgress = new Map<string, Wire>();
+  private readonly waking = new Map<string, { count: number; id: string; startedAt: string; message: string }>();
+  private readonly projectionRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
+  private sequence: number;
+
+  constructor(
+    readonly store: Store,
+    readonly settings: Settings,
+    readonly fleet: Fleet,
+    readonly traffic: Traffic,
+  ) {
+    super();
+    this.setMaxListeners(0);
+    this.shells = store.snapshots<Shell>("shell");
+    this.configs = store.snapshots<ServerConfig>("config");
+    this.schedules = store.snapshots<ScheduledTasks>("scheduled_tasks");
+    this.sequence = settings.get("shellSequence");
+    fleet.onConnect = (vmId, backend) => this.attach(vmId, backend);
+    fleet.on("awake", (vmId) => this.emit("awake", vmId));
+    fleet.on("offline", (vmId) => {
+      this.emit("offline", vmId);
+      this.emit("config");
+    });
+  }
+
+  projects(): ProjectRow[] {
+    return this.store.projects();
+  }
+
+  out(value: unknown, vmId: string) {
+    return translate(value, vmId, "out", this.projects());
+  }
+
+  into<T>(value: T, vmId: string): T {
+    return translate(value, vmId, "in", this.projects()) as T;
+  }
+
+  private bump() {
+    this.sequence++;
+    this.settings.set("shellSequence", this.sequence);
+  }
+
+  /** Called by the fleet when a VM's T3 server connects: read its config and follow its streams. */
+  private async attach(vmId: string, backend: Backend) {
+    const config = await backend.call<ServerConfig>("server.getConfig", {});
+    if (config.environment?.orchestrationProtocolVersion !== 2) throw new Error("The VM's T3 server changed protocol.");
+    this.configs.set(vmId, config);
+    this.store.saveSnapshot(vmId, "config", config);
+
+    backend.request(
+      "subscribeServerConfig",
+      { providerCatalogsOnDemand: false, providerCatalogDigests: false, providerStatusDeltas: false },
+      (frame) => {
+        for (const event of chunks(frame)) {
+          const current = this.configs.get(vmId);
+          if (event.type === "snapshot") this.configs.set(vmId, event.config as ServerConfig);
+          else if (event.type === "providerStatuses" && current) {
+            current.providers = (event.payload as { providers: ProviderEntry[] }).providers;
+          }
+          const latest = this.configs.get(vmId);
+          if (latest) this.store.saveSnapshot(vmId, "config", latest);
+        }
+        this.emit("config");
+      },
+    );
+    backend.request("orchestration.subscribeShell", { requestCompletionMarker: true }, (frame) => {
+      for (const item of chunks(frame)) this.applyShell(vmId, item as ShellItem);
+    });
+    backend.request("scheduledTasks.subscribe", {}, (frame) => {
+      for (const snapshot of chunks(frame)) {
+        if (!Array.isArray(snapshot.tasks)) continue;
+        this.schedules.set(vmId, snapshot as ScheduledTasks);
+        this.store.saveSnapshot(vmId, "scheduled_tasks", snapshot);
+      }
+      this.emit("scheduledTasks");
+    });
+    this.emit("config");
+  }
+
+  private applyShell(vmId: string, item: ShellItem) {
+    if (item.kind === "snapshot" && item.snapshot) this.shells.set(vmId, item.snapshot);
+    else {
+      const shell = this.shells.get(vmId);
+      if (!shell) return;
+      const without = (rows: Row[] | undefined, id: string | undefined) => (rows ?? []).filter((row) => row.id !== id);
+      if (item.kind === "project.updated" && item.project) shell.projects = [...without(shell.projects, item.project.id), item.project];
+      else if (item.kind === "project.removed") shell.projects = without(shell.projects, item.projectId);
+      else if (item.kind === "thread.updated" && item.thread) {
+        shell.threads = without(shell.threads, item.thread.id);
+        shell.archivedThreads = without(shell.archivedThreads, item.thread.id);
+        const field = item.location === "archive" ? "archivedThreads" : "threads";
+        shell[field] = [...(shell[field] ?? []), item.thread];
+      } else if (item.kind === "thread.removed") {
+        const field = item.location === "archive" ? "archivedThreads" : "threads";
+        shell[field] = without(shell[field], item.threadId);
+      } else return;
+      if (typeof item.sequence === "number") shell.snapshotSequence = item.sequence;
+    }
+    const shell = this.shells.get(vmId)!;
+    for (const thread of threadsOf(shell)) this.store.setThreadVm(thread.id, vmId);
+    this.store.saveSnapshot(vmId, "shell", shell);
+    if (item.kind === "thread.updated" && item.thread) this.refreshProjectionSoon(vmId, item.thread.id);
+    if (item.kind === "snapshot") void this.cacheMissingProjections(vmId);
+    if (hasLiveWork(shell)) this.fleet.touch(vmId);
+    this.bump();
+    this.emit("shell");
+  }
+
+  /** The merged shell: every registered project, then each VM's threads. */
+  shell(): Shell {
+    const projects: Row[] = this.projects().map((project) => this.catalogProject(project));
+    const threads: Row[] = [];
+    const archivedThreads: Row[] = [];
+    for (const [vmId, shell] of this.shells) {
+      if (this.store.vm(vmId)?.state === "gone") continue;
+      for (const project of (this.out(shell.projects ?? [], vmId) as Row[])) {
+        const index = projects.findIndex((existing) => existing.id === project.id);
+        if (index < 0) projects.push(project);
+        else {
+          const registered = projects[index]!;
+          projects[index] = {
+            ...registered,
+            ...project,
+            workspaceRoot: registered.workspaceRoot,
+            repositoryIdentity: { ...(registered.repositoryIdentity as Wire), ...(project.repositoryIdentity as Wire) },
+          };
+        }
+      }
+      threads.push(...(this.out(shell.threads ?? [], vmId) as Row[]));
+      archivedThreads.push(...(this.out(shell.archivedThreads ?? [], vmId) as Row[]));
+    }
+    return { schemaVersion: 1, snapshotSequence: this.sequence, projects, threads, archivedThreads };
+  }
+
+  private catalogProject(project: ProjectRow): Row {
+    const root = projectRoot(project);
+    const at = new Date(project.createdAt).toISOString();
+    return {
+      id: project.id,
+      title: project.title,
+      workspaceRoot: root,
+      defaultModelSelection: null,
+      defaultThreadEnvMode: "worktree",
+      scripts: [],
+      repositoryIdentity: repositoryIdentity(project, root),
+      createdAt: at,
+      updatedAt: at,
+    };
+  }
+
+  descriptor(): Wire {
+    const native = [...this.configs.values()][0]?.environment;
+    return {
+      environmentId: this.settings.get("bridgeId"),
+      label: "VM Bridge",
+      serverVersion: native?.serverVersion ?? "0.1.0",
+      platform: { os: "linux", arch: "x64", machine: "cloud" },
+      orchestrationProtocolVersion: 2,
+      capabilities: { repositoryIdentity: true, connectionProbe: true, inlineMessageContext: true, vcsBranchStatus: true },
+    };
+  }
+
+  hasConfig() {
+    return this.configs.size > 0;
+  }
+
+  /** T3's server config, built from one VM's and adjusted for a fleet behind one endpoint. */
+  config(): Wire {
+    const [entry] = this.configs;
+    if (!entry) throw new Error("VM Bridge is starting its first VM. Try again in a minute.");
+    const [vmId, native] = entry;
+    const base = this.out(native, vmId) as ServerConfig;
+    base.environment = this.descriptor();
+    base.auth = bridgeAuth;
+    const agents = this.agents();
+    base.providers = agents;
+    if (base.settings) {
+      base.settings.addProjectBaseDirectory = "/projects";
+      base.settings.providerInstances = Object.fromEntries(
+        agents.map((agent) => [agent.instanceId, { driver: agent.driver, displayName: agent.displayName, enabled: agent.enabled }]),
+      );
+      // These belong to each VM's server and can describe its credentials.
+      base.settings.secretProviders = {};
+      base.settings.usageLimitSources = {};
+      base.settings.textGenerators = {};
+    }
+    delete base.directEndpoints;
+    base.shellResumeCompletionMarker = true;
+    base.shellThreadFamilies = false;
+    base.shellOlderSettled = false;
+    base.threadSnapshotPagination = true;
+    base.serverTime = new Date().toISOString();
+    return base;
+  }
+
+  /** Agents across the fleet, preferring what a connected VM (or the given one) reports. */
+  agents(preferredVm?: string): AgentReport[] {
+    const byId = new Map<string, { vmId: string | null; entry: ProviderEntry }>();
+    const rank = (vmId: string) => (vmId === preferredVm ? 2 : this.fleet.backend(vmId) ? 1 : 0);
+    const entries = [...this.configs].sort(([a], [b]) => rank(a) - rank(b));
+    for (const [vmId, config] of entries) {
+      for (const entry of config.providers ?? []) byId.set(entry.instanceId, { vmId, entry });
+    }
+    for (const driver of defaultAgents) if (!byId.has(driver)) byId.set(driver, { vmId: null, entry: pendingAgent(driver) });
+    const preferences = this.settings.get("agentPreferences");
+    const active = this.settings.get("activeProvider");
+    const badge = active ? providers[active].label : "VM Bridge";
+    return [...byId.values()].map(({ vmId, entry }) => {
+      const shown = vmId ? (this.out(entry, vmId) as ProviderEntry) : entry;
+      return presentAgent(shown, preferences[entry.instanceId], badge);
+    });
+  }
+
+  /** Refreshes agent status on one VM (the request's, or any connected one) and returns the catalog. */
+  async refreshAgents(input: Wire) {
+    const cwd = str(input.cwd);
+    const vmId = (cwd && this.routeOrNull({ cwd })) || this.fleet.connected()[0];
+    const backend = vmId ? this.fleet.backend(vmId) : undefined;
+    if (vmId && backend) {
+      const request = this.into({ ...input }, vmId);
+      if (!this.routeOrNull({ cwd })) delete request.cwd;
+      const result = await backend
+        .call<{ providers?: ProviderEntry[] }>("server.refreshProviders", { ...request, omitProviders: false, providerCatalogsOnDemand: false })
+        .catch(() => null);
+      const config = this.configs.get(vmId);
+      if (result?.providers?.length && config) {
+        // Instance-scoped refreshes return only that instance, so merge by ID.
+        const merged = new Map((config.providers ?? []).map((entry) => [entry.instanceId, entry]));
+        for (const entry of result.providers) merged.set(entry.instanceId, entry);
+        config.providers = [...merged.values()];
+        this.store.saveSnapshot(vmId, "config", config);
+      }
+    }
+    this.emit("config");
+    const agents = this.agents(vmId);
+    const instanceId = str(input.instanceId);
+    return instanceId ? agents.filter((agent) => agent.instanceId === instanceId) : agents;
+  }
+
+  /** Only the on/off switch and display name are settable from T3. Returns T3's settings. */
+  updateAgentPreferences(input: Wire): Wire {
+    const mutation = input.providerInstanceMutation as Wire | undefined;
+    const patch = (input.patch ?? {}) as Wire;
+    const instanceId = str(mutation?.instanceId);
+    if (!mutation || !instanceId || Object.keys(patch).length > 0) {
+      throw new Error("VM Bridge manages agent settings. Only the on/off switch and name can change here.");
+    }
+    const agent = this.agents().find((entry) => entry.instanceId === instanceId);
+    if (!agent) throw new Error("Unknown agent.");
+    const preferences = { ...this.settings.get("agentPreferences") };
+    if (mutation.operation === "remove") delete preferences[instanceId];
+    else {
+      const instance = (mutation.instance ?? {}) as Wire;
+      const name = instance.displayName;
+      const valid =
+        mutation.operation === "upsert" &&
+        instance.driver === agent.driver &&
+        Object.keys(instance).every((key) => ["driver", "enabled", "displayName"].includes(key)) &&
+        (instance.enabled === undefined || typeof instance.enabled === "boolean") &&
+        (name === undefined || (typeof name === "string" && name.trim().length > 0 && name.length <= 100));
+      if (!valid) throw new Error("Only the on/off switch and name can change for an agent.");
+      preferences[instanceId] = {
+        enabled: instance.enabled as boolean | undefined,
+        displayName: typeof name === "string" ? name.trim() : undefined,
+      };
+    }
+    this.settings.set("agentPreferences", preferences);
+    this.emit("config");
+    return this.config().settings as Wire;
+  }
+
+  scheduledTasks(): Wire {
+    const live = [...this.schedules].filter(([vmId]) => this.store.vm(vmId)?.state !== "gone");
+    const timeZone = live.find(([, value]) => typeof value.timeZone === "string")?.[1].timeZone;
+    return { tasks: live.flatMap(([vmId, value]) => this.out(value.tasks, vmId) as Wire[]), ...(timeZone ? { timeZone } : {}) };
+  }
+
+  hasEnabledSchedule(vmId: string) {
+    return this.schedules.get(vmId)?.tasks.some((task) => task.enabled && !task.blockedByPolicy) ?? false;
+  }
+
+  /** The VM owning a scheduled task request. A new task goes with its thread or project. */
+  async scheduleTarget(tag: string, payload: Wire): Promise<string> {
+    const taskId = str(payload.id);
+    if (taskId) {
+      const owners = [...this.schedules].filter(([, value]) => value.tasks.some((task) => task.id === taskId));
+      if (owners.length !== 1) throw new Error("Could not find the VM that owns this automation.");
+      return owners[0]![0];
+    }
+    if (tag !== "scheduledTasks.upsert") throw new Error("An automation ID is required.");
+    const projectId = str(payload.projectId);
+    if (!payload.threadId && projectId && this.store.project(projectId)) return this.fleet.place(projectId);
+    return this.route(payload);
+  }
+
+  // Routing
+
+  /** VMs and projects a payload refers to, through thread IDs, project IDs, paths and run IDs. */
+  private targets(payload: unknown) {
+    const vms = new Set<string>();
+    const projects = new Map<string, ProjectRow>();
+    const all = this.projects();
+    const visit = (value: unknown, key: string) => {
+      if (typeof value === "string") {
+        if (["threadId", "parentThreadId", "sourceThreadId"].includes(key)) {
+          const vmId = this.store.threadVm(value);
+          if (vmId) vms.add(vmId);
+        }
+        if (key === "projectId") {
+          const project = all.find((p) => p.id === value);
+          if (project) projects.set(project.id, project);
+          else for (const [vmId, shell] of this.shells) if (shell.projects?.some((p) => p.id === value)) vms.add(vmId);
+        }
+        if (isPathKey(key)) {
+          const project = projectForPath(value, all);
+          if (project) projects.set(project.id, project);
+          const vmId = vmForPath(value);
+          if (vmId && this.store.vm(vmId)) vms.add(vmId);
+        }
+        if (key === "runId") {
+          for (const [vmId, shell] of this.shells) {
+            if (threadsOf(shell).some((thread) => thread.latestRunId === value || thread.activeRunId === value)) vms.add(vmId);
+          }
+        }
+      } else if (Array.isArray(value)) for (const item of value) visit(item, key);
+      else if (value && typeof value === "object") for (const [name, item] of Object.entries(value)) visit(item, name);
+    };
+    visit(payload, "");
+    return { vms, projects: [...projects.values()] };
+  }
+
+  /** The one VM a request belongs to. Throws when it names none, or several. */
+  route(payload: unknown, chosen?: string): string {
+    const { vms, projects } = this.targets(payload);
+    if (chosen) vms.add(chosen);
+    for (const project of projects) {
+      if (project.vmId) vms.add(project.vmId);
+      else if (vms.size) throw new Error("This project has no checkout on that VM.");
+    }
+    if (vms.size === 1) return [...vms][0]!;
+    throw new Error(
+      vms.size
+        ? "This request mixes projects or threads from different VMs."
+        : "VM Bridge cannot tell which VM this request is for. Use a project or an existing thread.",
+    );
+  }
+
+  routeOrNull(payload: unknown) {
+    try {
+      return this.route(payload);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Routes a request, placing its project on a VM first when `allocate` is set. Command routing is
+   * saved before the request is forwarded, so a retried command reaches the same VM.
+   */
+  async prepare(tag: string, payload: Wire, allocate: boolean, progress?: (detail: string) => void) {
+    const fingerprint = sha256(JSON.stringify({ tag, payload }));
+    const commandId = str(payload.commandId);
+    const previous = commandId ? this.store.command(commandId) : null;
+    if (previous && previous.fingerprint !== fingerprint) throw new Error("This commandId was already used for another request.");
+    const { vms, projects } = this.targets(payload);
+    if (projects.length > 1 || vms.size > 1) throw new Error("This request mixes projects from different VMs.");
+    const [project] = projects;
+    let vmId: string;
+    if (previous || vms.size) vmId = this.route(payload, previous?.vmId);
+    else if (project && allocate) {
+      const listener = (projectId: string, detail: string) => projectId === project.id && progress?.(detail);
+      this.on("placement", listener);
+      try {
+        vmId = await this.fleet.place(project.id, (detail) => this.emit("placement", project.id, detail));
+      } finally {
+        this.off("placement", listener);
+      }
+    } else vmId = this.route(payload);
+
+    const outgoing = this.into({ ...payload }, vmId);
+    if (tag === "orchestration.launchThread") {
+      outgoing.threadId = previous?.threadId ?? str(outgoing.threadId) ?? crypto.randomUUID();
+      this.store.setThreadVm(outgoing.threadId as string, vmId);
+      const strategy = outgoing.workspaceStrategy as Wire | undefined;
+      const placed = project && this.store.project(project.id);
+      // A project is a fresh clone, so threads start in their own worktree by default.
+      if (placed && (!strategy || strategy.type === "root")) {
+        outgoing.workspaceStrategy = { type: "worktree", baseRef: str(strategy?.branch) ?? placed.branch ?? "HEAD" };
+      }
+    }
+    const threadId = str(payload.threadId);
+    if (payload.type === "thread.create" && threadId) this.store.setThreadVm(threadId, vmId);
+    if (commandId && !previous) this.store.saveCommand(commandId, vmId, fingerprint, str(outgoing.threadId) ?? null);
+    return { vmId, payload: outgoing };
+  }
+
+  // Worktree setup progress shown while VM Bridge places a new thread
+
+  setupSnapshot(threadId: string) {
+    return this.setupProgress.get(threadId) ?? null;
+  }
+
+  reportSetup(threadId: string, detail: string, phase: "running" | "done" | "failed" = "running") {
+    const previous = this.setupProgress.get(threadId);
+    const now = new Date().toISOString();
+    const startedAt = previous?.phase === "running" ? previous.startedAt : now;
+    const stage = (previous?.stages as Wire[] | undefined)?.[0];
+    this.setupProgress.delete(threadId);
+    this.setupProgress.set(threadId, {
+      threadId,
+      phase,
+      startedAt,
+      endedAt: phase === "running" ? null : now,
+      branch: null,
+      baseRef: null,
+      worktreePath: null,
+      setupScript: null,
+      stages: [
+        {
+          id: "checkout",
+          status: phase,
+          startedAt: stage?.startedAt ?? now,
+          endedAt: phase === "running" ? null : now,
+          percent: null,
+          detail: detail.slice(0, 200),
+          tail: [],
+        },
+      ],
+      error: phase === "failed" ? detail.slice(0, 1000) : null,
+      sequence: ((previous?.sequence as number | undefined) ?? -1) + 1,
+    });
+    // Keep the newest 200, dropping settled ones first.
+    if (this.setupProgress.size > 200) {
+      const settled = [...this.setupProgress].find(([, snapshot]) => snapshot.phase !== "running");
+      if (settled) this.setupProgress.delete(settled[0]);
+    }
+    this.emit("setup", threadId);
+  }
+
+  // Sleeping threads
+
+  /** Shows a "waking" notice in a sleeping thread until the VM answers. Call the result when done. */
+  beginWake(threadId: string, vmId: string): () => void {
+    const label = providers[this.store.vm(vmId)?.provider ?? "boat"].label;
+    const wake = this.waking.get(threadId) ?? {
+      count: 0,
+      id: crypto.randomUUID(),
+      startedAt: new Date().toISOString(),
+      message: this.store.vm(vmId)?.state === "sleeping" ? `Waking the ${label} VM...` : `Reconnecting to the ${label} VM...`,
+    };
+    wake.count++;
+    this.waking.set(threadId, wake);
+    if (wake.count === 1) this.emit("wake", threadId);
+    return () => {
+      if (--wake.count !== 0) return;
+      this.waking.delete(threadId);
+      this.emit("wake", threadId);
+    };
+  }
+
+  /** The cached projection of a thread on a sleeping VM, with the waking notice when one is showing. */
+  sleepingProjection(threadId: string): Projection | null {
+    const projection = this.store.projection<Projection>(threadId);
+    const wake = this.waking.get(threadId);
+    if (!projection || !wake) return projection;
+    const turnItems = projection.turnItems ?? [];
+    const visible = projection.visibleTurnItems ?? [];
+    const item = {
+      id: wake.id,
+      threadId,
+      type: "system_notice",
+      level: "info",
+      status: "running",
+      message: wake.message,
+      runId: null,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: Math.max(0, ...turnItems.map((entry) => entry.ordinal ?? 0)) + 1,
+      title: null,
+      startedAt: wake.startedAt,
+      completedAt: null,
+      updatedAt: wake.startedAt,
+    };
+    return {
+      ...projection,
+      turnItems: [...turnItems, item],
+      visibleTurnItems: [
+        ...visible,
+        { position: (visible.at(-1)?.position ?? -1) + 1, visibility: "synthetic", sourceThreadId: threadId, sourceItemId: item.id, item },
+      ],
+    };
+  }
+
+  shellSequence(vmId: string) {
+    return this.shells.get(vmId)?.snapshotSequence ?? 0;
+  }
+
+  cacheProjection(threadId: string, vmId: string, projection: unknown) {
+    const value = projection as Projection | null;
+    if (value?.thread?.id !== threadId) return;
+    this.store.saveProjection(threadId, vmId, value.updatedAt ?? null, value);
+  }
+
+  refreshProjectionSoon(vmId: string, threadId: string) {
+    if (this.projectionRefreshes.has(threadId)) return;
+    const timer = setTimeout(() => {
+      const backend = this.fleet.backend(vmId);
+      if (!backend) return void this.projectionRefreshes.delete(threadId);
+      void backend
+        .call("orchestration.getThreadProjection", { threadId })
+        .then((projection) => this.cacheProjection(threadId, vmId, projection))
+        .catch(() => {})
+        .finally(() => this.projectionRefreshes.delete(threadId));
+    }, 350);
+    this.projectionRefreshes.set(threadId, timer);
+  }
+
+  private async cacheMissingProjections(vmId: string) {
+    const backend = this.fleet.backend(vmId);
+    if (!backend) return;
+    for (const thread of threadsOf(this.shells.get(vmId))) {
+      if (this.fleet.backend(vmId) !== backend) return;
+      if (this.store.hasProjection(thread.id)) continue;
+      try {
+        this.cacheProjection(thread.id, vmId, await backend.call("orchestration.getThreadProjection", { threadId: thread.id }));
+      } catch {
+        // A later shell change retries it.
+      }
+    }
+  }
+
+  // Idle sleep
+
+  /**
+   * Sleeps VMs idle longer than the configured minutes. The VM's own shell decides: a running
+   * turn, queued work, a pending approval, or an enabled automation keeps it awake.
+   */
+  async sweep(now = Date.now()) {
+    const idleMs = this.settings.get("idleMinutes") * 60_000;
+    // Automations need their VM awake to fire.
+    for (const vm of this.store.vms()) {
+      if (vm.state === "sleeping" && this.hasEnabledSchedule(vm.id)) void this.fleet.ensure(vm.id).catch(() => {});
+    }
+    for (const vmId of this.fleet.connected()) {
+      const backend = this.fleet.backend(vmId);
+      const vm = this.store.vm(vmId);
+      if (!backend || !vm || this.fleet.leased(vmId)) continue;
+      const shell = await backend.json<Shell>("/api/orchestration/shell").catch(() => null);
+      if (!shell) continue;
+      if (hasLiveWork(shell) || this.hasEnabledSchedule(vmId)) {
+        this.fleet.touch(vmId, now);
+        this.setBusy(vmId, hasLiveWork(shell));
+        await this.fleet.keepAlive(vmId).catch(() => {});
+        continue;
+      }
+      this.setBusy(vmId, false);
+      if (now - (vm.lastActivityAt ?? vm.createdAt) < idleMs) continue;
+      this.traffic.record({ kind: "system", operation: `Idle ${this.settings.get("idleMinutes")} min, sleeping VM`, vmId });
+      await this.fleet
+        .sleep(vmId, async (live) => {
+          // Cache every transcript so threads stay readable while the VM sleeps.
+          for (const thread of threadsOf(shell)) {
+            this.cacheProjection(thread.id, vmId, await live.call("orchestration.getThreadProjection", { threadId: thread.id }));
+            this.store.setThreadVm(thread.id, vmId);
+          }
+          this.shells.set(vmId, shell);
+          this.store.saveSnapshot(vmId, "shell", shell);
+        })
+        .catch(() => {});
+      this.bump();
+      this.emit("shell");
+    }
+  }
+
+  private setBusy(vmId: string, busy: boolean) {
+    const vm = this.store.vm(vmId);
+    if (!vm || !["ready", "busy"].includes(vm.state)) return;
+    const state = busy ? "busy" : "ready";
+    if (vm.state !== state) {
+      this.store.updateVm(vmId, { state });
+      this.fleet.emit("changed");
+    }
+  }
+
+  /** Threads on a VM, for the dashboard. */
+  vmThreads(vmId: string) {
+    return threadsOf(this.shells.get(vmId));
+  }
+
+  close() {
+    for (const timer of this.projectionRefreshes.values()) clearTimeout(timer);
+  }
+}
+
+/** The values of a stream chunk; nothing for other frames. */
+function chunks(frame: Frame): Wire[] {
+  return frame._tag === "Chunk" && Array.isArray(frame.values) ? (frame.values as Wire[]) : [];
+}
