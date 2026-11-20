@@ -1,0 +1,9 @@
+{
+  "name": "@vmbridge/cli",
+  "private": true,
+  "type": "module",
+  "bin": { "vmbridge": "./src/index.ts" },
+  "dependencies": {
+    "@vmbridge/server": "workspace:*"
+  }
+}

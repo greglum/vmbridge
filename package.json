@@ -1,0 +1,21 @@
+{
+  "name": "vmbridge",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "bun --hot apps/cli/src/index.ts run",
+    "typecheck": "tsc",
+    "test": "bun test",
+    "check": "bun run typecheck && bun test",
+    "build": "bun scripts/build.ts"
+  },
+  "engines": {
+    "bun": ">=1.4.4"
+  },
+  "packageManager": "bun@1.4.4",
+  "devDependencies": {
+    "@types/bun": "1.4.5",
+    "typescript": "~5.9.3"
+  }
+}
