@@ -1,0 +1,109 @@
+export type ProviderId = "boxd" | "instabox" | "daytona" | "boat" | "railway";
+
+export interface Provider {
+  id: ProviderId;
+  name: string;
+  logo: string;
+  /** Tile behind the logo, matching the dashboard. */
+  tile: string;
+  inset: string;
+  /** Accent used in the 3D scene and charts. */
+  color: string;
+  sleep: string;
+  wake: string;
+  sizes: [string, string, string];
+  reach: string;
+  safetyNet: string;
+  /** Measured on fresh VMs in live runs. Missing when not measured yet. */
+  measured?: { ready: string; wakeSeconds: [number, number]; browseMs: number };
+}
+
+export const providers: Provider[] = [
+  {
+    id: "boxd",
+    name: "boxd",
+    logo: "/providers/boxd.svg",
+    tile: "#000",
+    inset: "24%",
+    color: "#f4f4f5",
+    sleep: "Pause, memory kept",
+    wake: "Resume",
+    sizes: ["1 vCPU, 4 GB", "2 vCPU, 8 GB", "4 vCPU, 16 GB"],
+    reach: "Public proxy",
+    safetyNet: "Suspends after 60 min idle",
+    measured: { ready: "22 to 24 s", wakeSeconds: [6, 11], browseMs: 160 },
+  },
+  {
+    id: "instabox",
+    name: "Instabox",
+    logo: "/providers/instabox.svg",
+    tile: "#000",
+    inset: "0%",
+    color: "#38bdf8",
+    sleep: "Pause, memory kept",
+    wake: "Resume",
+    sizes: ["2 vCPU, 4 GB", "4 vCPU, 8 GB", "8 vCPU, 16 GB"],
+    reach: "Published port",
+    safetyNet: "Suspends after 30 min idle",
+    measured: { ready: "21 s", wakeSeconds: [8, 8], browseMs: 229 },
+  },
+  {
+    id: "daytona",
+    name: "Daytona",
+    logo: "/providers/daytona.png",
+    tile: "#000",
+    inset: "0%",
+    color: "#3ecf8e",
+    sleep: "Stop, files kept",
+    wake: "Start",
+    sizes: ["1 vCPU, 1 GB", "2 vCPU, 4 GB", "4 vCPU, 8 GB"],
+    reach: "Private preview with a token header",
+    safetyNet: "Stops after 60 min without traffic",
+    measured: { ready: "16 to 19 s", wakeSeconds: [10, 11], browseMs: 156 },
+  },
+  {
+    id: "boat",
+    name: "Boat",
+    logo: "/providers/boat.svg",
+    tile: "#fff",
+    inset: "18%",
+    color: "#5b7cfa",
+    sleep: "Stop, disk kept",
+    wake: "Resume",
+    sizes: ["2 vCPU, 4 GB", "4 vCPU, 8 GB", "8 vCPU, 16 GB"],
+    reach: "Preview host with a cookie",
+    safetyNet: "Stops 12 h after start",
+  },
+  {
+    id: "railway",
+    name: "Railway",
+    logo: "/providers/railway.svg",
+    tile: "#13111c",
+    inset: "20%",
+    color: "#a78bfa",
+    sleep: "Checkpoint, then remove",
+    wake: "New VM from the checkpoint",
+    sizes: ["1 vCPU, 2 GB", "2 vCPU, 4 GB", "4 vCPU, 8 GB"],
+    reach: "Public domain",
+    safetyNet: "None",
+    measured: { ready: "57 s", wakeSeconds: [45, 45], browseMs: 211 },
+  },
+];
+
+export const github = "https://github.com/vkpdeveloper/vmbridge";
+export const install = `curl -fsSL https://raw.githubusercontent.com/vkpdeveloper/vmbridge/main/install.sh | sh`;
+
+export const commands = [
+  { command: "vmbridge", args: "[run] [--host 0.0.0.0] [--port 3774]", does: "Start in this terminal" },
+  { command: "vmbridge stop", args: "", does: "Stop, including the background service" },
+  { command: "vmbridge service install", args: "[--host] [--port]", does: "Run in the background at login (launchd or systemd)" },
+  { command: "vmbridge service uninstall", args: "", does: "Remove the background service" },
+  { command: "vmbridge key", args: "", does: "Set a new dashboard key" },
+];
+
+/** The agent CLIs VM Bridge installs on every VM. */
+export const agents = [
+  { id: "codex", name: "Codex", logo: "/agents/codex.svg" },
+  { id: "claude", name: "Claude", logo: "/agents/claude.svg" },
+] as const;
+export type Agent = (typeof agents)[number];
