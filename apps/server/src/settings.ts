@@ -17,7 +17,10 @@ interface SettingValues {
   idleMinutes: number;
   /** Exact npm `t3` version for new VMs; null resolves the latest release when a VM is created. */
   t3Version: string | null;
-  githubLogin: string | null;
+  /** The GitHub account VM Bridge's token belongs to. The token itself is the `github.token` secret. */
+  github: { login: string; email: string } | null;
+  /** T3 shell snapshot sequence. Only grows, across restarts, so clients never see it go back. */
+  shellSequence: number;
   /** T3 agent provider switches and display names set from T3's settings screen. */
   agentPreferences: Record<string, ProviderPreference>;
 }
@@ -30,7 +33,8 @@ const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
   vmSize: () => "medium",
   idleMinutes: () => 5,
   t3Version: () => null,
-  githubLogin: () => null,
+  github: () => null,
+  shellSequence: () => 0,
   agentPreferences: () => ({}),
 };
 
