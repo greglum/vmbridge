@@ -56,7 +56,8 @@ export class T3Gateway {
     const origin = request.headers.get("origin");
     const started = performance.now();
     const path = new URL(request.url).pathname;
-    const response = await this.route(request, server).catch((error) =>
+    const seen: { clientId?: string } = {};
+    const response = await this.route(request, server, seen).catch((error) =>
       json({ error: "bridge_unavailable", message: message(error) }, 503),
     );
     if (!response) return undefined;
@@ -69,6 +70,7 @@ export class T3Gateway {
       this.hub.traffic.record({
         kind: "http",
         operation: `${request.method} ${path.replace(/\/threads\/[^/]+/, "/threads/:id")}`,
+        clientId: seen.clientId,
         status: response.ok ? "ok" : "error",
         durationMs: Math.round(performance.now() - started),
       });
@@ -76,7 +78,7 @@ export class T3Gateway {
     return response;
   }
 
-  private async route(request: Request, server: Server<SocketData>): Promise<Response | undefined> {
+  private async route(request: Request, server: Server<SocketData>, seen: { clientId?: string }): Promise<Response | undefined> {
     const url = new URL(request.url);
     const path = url.pathname;
     if (request.method === "OPTIONS") {
@@ -117,6 +119,7 @@ export class T3Gateway {
       });
     }
     if (!client) return unauthenticated();
+    seen.clientId = client.id;
     this.clients.touch(client.id);
 
     if (/^\/api\/auth\/websocket-ticket(?:\/rpc)?$/.test(path) && request.method === "POST") {

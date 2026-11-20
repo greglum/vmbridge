@@ -142,8 +142,11 @@ export class Rpc {
     }
     const call: Call = { id: String(frame.id), tag: frame.tag, payload: (frame.payload ?? {}) as Wire, client };
     const started = performance.now();
+    const local = this.local[call.tag];
     try {
-      await (this.local[call.tag] ?? this.forward.bind(this))(call);
+      if (!local) return await this.forward(call);
+      await local(call);
+      this.traffic.record({ kind: "rpc", operation: call.tag, clientId: client.clientId, status: "ok", durationMs: Math.round(performance.now() - started) });
     } catch (error) {
       this.traffic.record({ kind: "rpc", operation: call.tag, clientId: client.clientId, status: "error", durationMs: Math.round(performance.now() - started) });
       this.fail(call, error);
