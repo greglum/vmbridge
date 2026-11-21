@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ComputerIcon, MagicWand01Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import { ComputerIcon, LinkSquare02Icon, MagicWand01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import type { InstructionFile, LocalSkill, Overview, SkillInfo, SkillSearchResult } from "@vmbridge/contracts";
 import {
   AlertDialog,
@@ -27,6 +27,17 @@ import { Page, Section } from "./Page.tsx";
 import { agentNames } from "./Setup.tsx";
 
 const installs = new Intl.NumberFormat(undefined, { notation: "compact" });
+
+/** A skill's page on skills.sh, from its `owner/repo` and skill id. */
+function SkillsShLink({ repo, skill }: { repo: string; skill: string }) {
+  return (
+    <Button asChild variant="ghost" size="icon" aria-label="Open on skills.sh" title="Open on skills.sh">
+      <a href={`https://skills.sh/${repo}/${encodeURIComponent(skill)}`} target="_blank" rel="noopener noreferrer">
+        <HugeiconsIcon icon={LinkSquare02Icon} strokeWidth={1.75} />
+      </a>
+    </Button>
+  );
+}
 
 export function Skills({ overview }: { overview: Overview }) {
   const [local, setLocal] = useState<LocalSkill[] | null>(null);
@@ -150,9 +161,12 @@ function Installed({ skill }: { skill: SkillInfo }) {
       </ItemContent>
       <ItemActions className="max-sm:-ml-2.5">
         {skill.source === "skills.sh" && (
-          <Button variant="ghost" disabled={action.busy} onClick={update}>
-            Update
-          </Button>
+          <>
+            <SkillsShLink repo={skill.ref} skill={skill.name} />
+            <Button variant="ghost" disabled={action.busy} onClick={update}>
+              Update
+            </Button>
+          </>
         )}
         <AlertDialog>
           <AlertDialogTrigger asChild>
@@ -210,6 +224,7 @@ function Search({ installed, busy, onInstall }: { installed: Set<string>; busy: 
                 </ItemDescription>
               </ItemContent>
               <ItemActions>
+                <SkillsShLink repo={result.source} skill={result.skillId} />
                 {installed.has(result.skillId) ? (
                   <Badge variant="secondary">Installed</Badge>
                 ) : (
