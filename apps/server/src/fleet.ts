@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { SandboxError } from "@opencoredev/sandbox-sdk";
+import { SandboxError, type Preview } from "@opencoredev/sandbox-sdk";
 import type { ProviderId, VmSize, VmState } from "@vmbridge/contracts";
 import { providers, type Box, type Driver } from "./providers/index.ts";
 import type { Settings, Secrets } from "./settings.ts";
@@ -8,7 +8,8 @@ import type { Traffic } from "./traffic.ts";
 import { Backend, TokenRejected } from "./vm/backend.ts";
 import type { AgentAuth } from "./agent-auth/profiles.ts";
 import { githubName } from "./gateway/repos.ts";
-import { checkoutRoot, prepareVm, quote, readCodexAuth, resolveT3Version, startT3, t3Port, writeCodexAuth } from "./vm/runtime.ts";
+import { hasLiveWork, type Shell } from "./gateway/types.ts";
+import { checkoutRoot, credentialsFingerprint, prepareVm, quote, readCodexAuth, resolveT3Version, startT3, t3Port, writeCodexAuth, writeCredentials, type VmCredentials } from "./vm/runtime.ts";
 
 type FleetEvents = {
   /** A VM's T3 server is connected and subscribed. */
@@ -55,6 +56,10 @@ export class Fleet extends EventEmitter<FleetEvents> {
   private readonly drivers = new Map<ProviderId, { signature: string; driver: Driver }>();
   /** The first VM started to read T3's configuration, shared by everyone asking at once. */
   private bootstrapping?: Promise<string>;
+  /** Fingerprint of the sign-ins VM Bridge last gave out, once it has. */
+  private latest?: string;
+  /** VMs whose T3 server could not be restarted for these sign-ins, so the idle sweep stops trying. */
+  private readonly unrestartable = new Map<string, string>();
   private closed = false;
 
   /** Runs once a VM's backend is connected, before anyone else can use it. */
@@ -188,7 +193,6 @@ export class Fleet extends EventEmitter<FleetEvents> {
     this.setState(vmId, "starting");
     const started = performance.now();
     let box: Box | undefined;
-    let backend: Backend | undefined;
     try {
       const driver = this.driver(vm.provider);
       box = await driver.wake({
@@ -207,47 +211,127 @@ export class Fleet extends EventEmitter<FleetEvents> {
         }
       }
       this.boxes.set(vmId, box);
-
       const version = await resolveT3Version(this.settings.get("t3Version"));
-      // Codex on this VM may have refreshed its own tokens while VM Bridge could not reach it.
-      const codexAuth = await readCodexAuth(box);
-      if (codexAuth) this.agents.adoptCodex(codexAuth);
-      await prepareVm(box, version, await this.credentials());
-      let server = await startT3(box, vm.t3Token, wasAsleep);
-      if (server.descriptor.orchestrationProtocolVersion !== 2) {
-        throw new Error(`T3 ${version} speaks orchestration protocol ${server.descriptor.orchestrationProtocolVersion}. VM Bridge supports 2.`);
-      }
-      const preview = await box.preview(t3Port);
-      backend = new Backend(vmId, preview, server.token);
-      try {
-        await backend.connect();
-      } catch (error) {
-        if (!(error instanceof TokenRejected)) throw error;
-        server = await startT3(box, null);
-        backend = new Backend(vmId, preview, server.token);
-        await backend.connect();
-      }
-      this.store.updateVm(vmId, { t3Token: server.token, t3Version: version, lastConnectedAt: Date.now() });
-      const connected = backend;
-      await this.onConnect(vmId, connected);
-      connected.onClose = () => this.disconnected(vmId, connected);
-      this.backends.set(vmId, connected);
+      // A T3 server still running from before VM Bridge restarted may be in the middle of a turn: then the idle sweep restarts it later.
+      const backend = await this.connect(vm, box, version, async (preview) => {
+        if (wasAsleep || !vm.t3Token) return true;
+        const shell = await new Backend(vmId, preview, vm.t3Token).json<Shell>("/api/orchestration/shell").catch(() => null);
+        return Boolean(shell && !hasLiveWork(shell));
+      });
       this.touch(vmId);
-      this.setState(vmId, "ready");
       this.traffic.record({ kind: "provider", operation: "wake VM", vmId, status: "ok", durationMs: Math.round(performance.now() - started) });
-      this.emit("awake", vmId);
-      return connected;
+      return backend;
     } catch (error) {
       this.traffic.record({ kind: "provider", operation: "wake VM", vmId, status: "error" });
       if (error instanceof SandboxError && error.code === "not_found") this.markGone(vmId);
       else {
-        await backend?.close();
         // Woken but unusable: put it back to sleep so it does not run, and bill, outside the idle sweep.
         if (box && wasAsleep) await this.sleepBox(vmId, this.driver(vm.provider), box).catch(() => {});
         this.setState(vmId, "error", message(error));
       }
       throw error;
     }
+  }
+
+  /**
+   * Installs what the VM needs, gives it the current sign-ins, and connects to its T3 server. A server
+   * running from before with older sign-ins is restarted first when `idle` says nothing runs on it.
+   */
+  private async connect(vm: VmRow, box: Box, version: string, idle: (preview: Preview) => Promise<boolean>): Promise<Backend> {
+    // Codex on this VM may have refreshed its own tokens while VM Bridge could not reach it.
+    const codexAuth = await readCodexAuth(box);
+    if (codexAuth) this.agents.adoptCodex(codexAuth);
+    const credentials = await this.credentials();
+    const fingerprint = credentialsFingerprint(credentials);
+    await prepareVm(box, version, credentials);
+    const preview = await box.preview(t3Port);
+    const restart = vm.t3Credentials !== fingerprint && (await idle(preview));
+    let server = await startT3(box, vm.t3Token, restart);
+    if (server.descriptor.orchestrationProtocolVersion !== 2) {
+      throw new Error(`T3 ${version} speaks orchestration protocol ${server.descriptor.orchestrationProtocolVersion}. VM Bridge supports 2.`);
+    }
+    if (restart && !server.fresh) this.unrestartable.set(vm.id, fingerprint);
+    const t3Credentials = server.fresh ? fingerprint : vm.t3Credentials;
+    let backend = new Backend(vm.id, preview, server.token);
+    try {
+      try {
+        await backend.connect();
+      } catch (error) {
+        if (!(error instanceof TokenRejected)) throw error;
+        server = await startT3(box, null);
+        backend = new Backend(vm.id, preview, server.token);
+        await backend.connect();
+      }
+      this.store.updateVm(vm.id, { t3Token: server.token, t3Version: version, t3Credentials, lastConnectedAt: Date.now() });
+      await this.onConnect(vm.id, backend);
+    } catch (error) {
+      await backend.close();
+      throw error;
+    }
+    const connected = backend;
+    connected.onClose = () => this.disconnected(vm.id, connected);
+    this.backends.set(vm.id, connected);
+    this.setState(vm.id, "ready");
+    this.emit("awake", vm.id);
+    return connected;
+  }
+
+  /** True when an awake VM's T3 server runs with older sign-ins than VM Bridge now gives out. */
+  stale(vmId: string) {
+    const vm = this.store.vm(vmId);
+    return Boolean(vm && this.latest && vm.t3Credentials !== this.latest && this.unrestartable.get(vmId) !== this.latest);
+  }
+
+  /**
+   * Restarts T3 on an awake VM whose sign-ins changed since it started, so its agents get the new ones.
+   * `idle` runs with the backend still connected and says whether nothing runs there; the restart is also
+   * dropped when a request holds the VM. Streams it ends see a VM starting rather than a dropped connection,
+   * and requests arriving meanwhile wait for it and use the new connection.
+   */
+  restart(vmId: string, idle: (backend: Backend) => Promise<boolean>) {
+    return this.exclusive(vmId, async () => {
+      const vm = this.store.vm(vmId);
+      const backend = this.backend(vmId);
+      const box = this.boxes.get(vmId);
+      if (!vm || !backend || !box || vm.t3Credentials === credentialsFingerprint(await this.credentials())) return;
+      if (!(await idle(backend))) return;
+      // Nothing may wait between this check and taking the backend away, or new work could start on a closing socket.
+      if (this.leased(vmId)) return;
+      const started = performance.now();
+      this.backends.delete(vmId);
+      this.setState(vmId, "starting");
+      await backend.close();
+      try {
+        await this.connect(vm, box, vm.t3Version ?? (await resolveT3Version(this.settings.get("t3Version"))), async () => true);
+        this.traffic.record({ kind: "system", operation: "restart T3 for new sign-ins", vmId, status: "ok", durationMs: Math.round(performance.now() - started) });
+      } catch (error) {
+        this.setState(vmId, "error", message(error));
+        this.traffic.record({ kind: "system", operation: "restart T3 for new sign-ins", vmId, status: "error" });
+        this.emit("offline", vmId);
+        throw error;
+      }
+    });
+  }
+
+  /** Writes the current sign-ins to every awake VM now. Git uses them at once; agents once T3 restarts. */
+  async shareCredentials() {
+    const awake = this.connected().flatMap((vmId) => {
+      const box = this.boxes.get(vmId);
+      return box ? [{ vmId, box }] : [];
+    });
+    // A VM's Codex may have refreshed its tokens since VM Bridge last saw them. Keep the newest before overwriting.
+    for (const { box } of awake) {
+      const current = await readCodexAuth(box);
+      if (current) this.agents.adoptCodex(current);
+    }
+    const credentials = await this.credentials();
+    await Promise.all(
+      awake.map(({ vmId, box }) =>
+        this.exclusive(vmId, async () => {
+          if (this.backend(vmId)) await writeCredentials(box, credentials);
+        }).catch(() => this.traffic.record({ kind: "provider", operation: "write sign-ins", vmId, status: "error" })),
+      ),
+    );
   }
 
   private async sleepBox(vmId: string, driver: Driver, box: Box) {
@@ -456,11 +540,13 @@ fi`,
     }
   }
 
-  private async credentials() {
+  private async credentials(): Promise<VmCredentials> {
     const token = this.secrets.get("github.token");
     const account = this.settings.get("github");
     const github = token && account ? { token, login: account.login, name: account.name ?? account.login, email: account.email } : undefined;
-    return { ...(await this.agents.vmSecrets()), github };
+    const credentials = { ...(await this.agents.vmSecrets()), github };
+    this.latest = credentialsFingerprint(credentials);
+    return credentials;
   }
 
   /**

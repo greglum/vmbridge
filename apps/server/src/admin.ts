@@ -200,6 +200,7 @@ export class Admin {
       secrets.set("github.token", token);
       settings.set("github", account);
       fleet.emit("changed");
+      void hub.credentialsChanged().catch(() => {});
       hub.emit("config");
       return json(account);
     }
@@ -209,6 +210,7 @@ export class Admin {
       const account = await fetchGitHubAccount(token);
       settings.set("github", account);
       fleet.emit("changed");
+      void hub.credentialsChanged().catch(() => {});
       hub.emit("config");
       return json(account);
     }
@@ -216,6 +218,7 @@ export class Admin {
       secrets.set("github.token", null);
       settings.set("github", null);
       fleet.emit("changed");
+      void hub.credentialsChanged().catch(() => {});
       hub.emit("config");
       return json({ ok: true });
     }

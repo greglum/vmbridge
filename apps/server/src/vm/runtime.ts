@@ -125,7 +125,6 @@ command -v codex >/dev/null || install @openai/codex
 command -v claude >/dev/null || install @anthropic-ai/claude-code
 [ -z "\${OPENCODE_API_KEY:-}" ] || command -v opencode >/dev/null || install opencode-ai
 mkdir -p "$root/codex" "$root/claude"
-[ -n "\${CODEX_AUTH:-}" ] || rm -f "$root/codex/auth.json"
 # The npm launcher downloads the T3 runtime on first use. Do it now rather than during a request.
 t3 --version >/dev/null
 
@@ -144,8 +143,6 @@ if [ -f "$runtime" ]; then
   pid="$(node -e 'try{const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).pid;if(Number.isSafeInteger(p))process.stdout.write(String(p))}catch{}' "$runtime")"
   if [ -z "$pid" ] || ! tr '\\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -- "$data"; then rm -f "$runtime"; fi
 fi
-# Which sign-ins this server runs with, so a wake can tell when they changed since.
-cksum < "$root/env" > "$data/env-started"
 cd /workspace
 exec t3 --base-dir "$data" --host 0.0.0.0 --port ${t3Port} --no-browser
 `;
@@ -172,23 +169,36 @@ async function check(box: Box, command: string, what: string, timeoutMs = 120_00
   return result.stdout;
 }
 
-/** Writes credentials and scripts, then installs what is missing. Safe to repeat on every wake. */
-export async function prepareVm(box: Box, t3Version: string, credentials: VmCredentials) {
-  await box.run(`mkdir -p ${root} && chmod 700 ${root}`);
-  const files: Record<string, string> = {
-    [`${root}/env`]: envFile(credentials),
-    [`${root}/setup.sh`]: setupScript,
-    [`${root}/start-t3.sh`]: startScript,
-  };
+/**
+ * Identifies the sign-ins a T3 server starts with, to tell when a running one has older ones. Codex counts by
+ * sign-in rather than by auth.json, which changes every time its tokens refresh and needs no restart.
+ */
+export function credentialsFingerprint(credentials: VmCredentials) {
+  const { codexAuthJson: _refreshes, ...rest } = credentials;
+  return new Bun.CryptoHasher("sha256").update(JSON.stringify(rest)).digest("hex");
+}
+
+/**
+ * Writes the sign-ins into the VM, removing those that are gone. Git and gh read them on their next command;
+ * agents get them from T3's environment, so only once T3 restarts.
+ */
+export async function writeCredentials(box: Box, credentials: VmCredentials) {
   const { github, codexAuthJson } = credentials;
-  files[gitConfigPath] = gitConfig(github);
+  const files: Record<string, string> = { [`${root}/env`]: envFile(credentials), [gitConfigPath]: gitConfig(github) };
   if (github) files[gitCredentialsPath] = `https://${encodeURIComponent(github.login)}:${encodeURIComponent(github.token)}@github.com\n`;
   if (codexAuthJson) files[codexAuthPath] = codexAuthJson;
   await box.files.write(files, { mode: 0o600 });
-  // Older versions kept the token in this file too.
-  await box.run(`rm -f ${root}/github${github ? "" : ` ${gitCredentialsPath}`}`);
-  // Without a Codex profile, setup removes any auth.json left from an earlier one.
-  await check(box, `${codexAuthJson ? "CODEX_AUTH=1 " : ""}bash ${root}/setup.sh ${quote(t3Version)}`, "VM setup", 10 * 60_000);
+  // Older versions kept the GitHub token in `github` too.
+  const removed = [`${root}/github`, ...(github ? [] : [gitCredentialsPath]), ...(codexAuthJson ? [] : [codexAuthPath])];
+  await check(box, `rm -f ${removed.join(" ")}`, "Removing old sign-ins");
+}
+
+/** Writes credentials and scripts, then installs what is missing. Safe to repeat on every wake. */
+export async function prepareVm(box: Box, t3Version: string, credentials: VmCredentials) {
+  await box.run(`mkdir -p ${root} && chmod 700 ${root}`);
+  await writeCredentials(box, credentials);
+  await box.files.write({ [`${root}/setup.sh`]: setupScript, [`${root}/start-t3.sh`]: startScript }, { mode: 0o600 });
+  await check(box, `bash ${root}/setup.sh ${quote(t3Version)}`, "VM setup", 10 * 60_000);
 }
 
 /** The VM's Codex auth.json, which Codex rewrites when it refreshes its own tokens. */
@@ -209,24 +219,25 @@ export interface T3Server {
   /** The server's `/.well-known/t3/environment` descriptor. */
   descriptor: { orchestrationProtocolVersion?: number; serverVersion?: string };
   token: string;
+  /** The server started here, from the env file as it is now, rather than running from before. */
+  fresh: boolean;
 }
 
 /**
  * Starts the T3 server unless it already answers, and issues VM Bridge a session token when it has none.
- * With `restartIfChanged`, a server still running from before a pause is restarted when the sign-ins in
- * the env file changed since it started: agents inherit them from its environment. Only safe while idle.
+ * With `restart`, a server already running is restarted, so it and the agents it runs read the env file
+ * again. Only safe while nothing runs on the VM.
  */
-export async function startT3(box: Box, token: string | null, restartIfChanged = false): Promise<T3Server> {
+export async function startT3(box: Box, token: string | null, restart = false): Promise<T3Server> {
   let answer = await box.run(probe, { timeoutMs: 15_000 });
-  if (answer.ok && restartIfChanged) {
-    const same = await box.run(`[ "$(cksum < ${root}/env)" = "$(cat ${t3DataDir}/env-started 2>/dev/null)" ]`, { timeoutMs: 15_000 });
-    if (!same.ok) {
-      // A failed restart leaves the old server answering, or none, which the start below handles.
-      await box.process("t3").restart().catch(() => {});
-      answer = await box.run(probe, { timeoutMs: 15_000 });
-    }
+  let fresh = false;
+  if (answer.ok && restart) {
+    // A failed restart leaves the old server answering, or none, which the start below handles.
+    fresh = await box.process("t3").restart().then(() => true, () => false);
+    answer = await box.run(probe, { timeoutMs: 15_000 });
   }
   if (!answer.ok) {
+    fresh = true;
     const options = {
       name: "t3",
       ready: { http: { port: t3Port, path: "/.well-known/t3/environment" } },
@@ -250,5 +261,5 @@ export async function startT3(box: Box, token: string | null, restartIfChanged =
       "Issuing a T3 session",
     )
   ).trim();
-  return { descriptor, token };
+  return { descriptor, token, fresh };
 }

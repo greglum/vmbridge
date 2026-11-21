@@ -106,6 +106,7 @@ const migrations = [
   INSERT INTO settings (key, value) SELECT 'defaultProvider', value FROM settings WHERE key = 'activeProvider';
   DELETE FROM settings WHERE key = 'activeProvider';
   `,
+  `ALTER TABLE vms ADD COLUMN t3_credentials TEXT;`,
 ];
 
 export function openDatabase(path: string): Database {

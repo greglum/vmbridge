@@ -54,8 +54,11 @@ export async function start(options: StartOptions = {}) {
 
   const agents = new AgentAuth(join(dir, "auths"), settings);
   const fleet = new Fleet(store, settings, secrets, traffic, agents);
-  agents.onChange = () => fleet.emit("changed");
   const hub = new Hub(store, settings, fleet, traffic);
+  agents.onChange = () => {
+    fleet.emit("changed");
+    void hub.credentialsChanged().catch(() => {});
+  };
   const clones = new Clones(hub);
   const branches = new RemoteBranches(() => secrets.get("github.token"));
   const clients = new Clients(db);

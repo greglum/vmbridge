@@ -264,7 +264,7 @@ function GitHub({ account }: { account: GitHubAccount | null }) {
           void action.run(() => api("/github", { method: "PUT", body: { token } })).then((ok) => {
             if (!ok) return;
             setToken("");
-            toast.success("GitHub connected. VMs pick it up the next time they start.");
+            toast.success("GitHub connected. VMs get it as soon as nothing is running on them.");
           });
         }}
       >
@@ -299,7 +299,7 @@ const methodNames: Record<AgentAuthMethod, string> = {
   "auth-token": "Auth token",
   "api-key": "API key",
 };
-const savedToast = "Saved. VMs pick it up the next time they start.";
+const savedToast = "Saved. VMs get it as soon as nothing is running on them.";
 
 function Agents({ profiles }: { profiles: AgentProfile[] }) {
   return agentKinds.map((agent) => <AgentSection key={agent} agent={agent} profiles={profiles.filter((profile) => profile.agent === agent)} />);
