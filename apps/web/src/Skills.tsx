@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ComputerIcon, MagicWand01Icon, Search01Icon } from "@hugeicons/core-free-icons";
-import type { LocalSkill, Overview, SkillInfo, SkillSearchResult } from "@vmbridge/contracts";
+import type { InstructionFile, LocalSkill, Overview, SkillInfo, SkillSearchResult } from "@vmbridge/contracts";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,9 +20,11 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/
 import { FieldError } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item";
+import { Switch } from "@/components/ui/switch";
 import { useAction } from "@/hooks/use-action";
 import { api } from "./api.ts";
 import { Page, Section } from "./Page.tsx";
+import { agentNames } from "./Setup.tsx";
 
 const installs = new Intl.NumberFormat(undefined, { notation: "compact" });
 
@@ -86,7 +88,41 @@ export function Skills({ overview }: { overview: Overview }) {
         )}
       </Section>
       {action.error && <FieldError>{action.error}</FieldError>}
+      <Instructions overview={overview} />
     </Page>
+  );
+}
+
+function Instructions({ overview }: { overview: Overview }) {
+  const action = useAction();
+  const pending = overview.vms.filter((vm) => vm.skillsPending).length;
+  const state = overview.instructions.some((file) => file.sync) && (
+    <Badge variant="secondary">{pending ? `${pending} VM${pending === 1 ? "" : "s"} pending` : "On every VM"}</Badge>
+  );
+  const toggle = (file: InstructionFile, sync: boolean) => void action.run(() => api(`/instructions/${file.agent}`, { method: "PUT", body: { sync } }));
+  return (
+    <Section title="Instructions" actions={state}>
+      {overview.instructions.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No CLAUDE.md or AGENTS.md in ~/.claude, ~/.codex or ~/.config/opencode.</p>
+      ) : (
+        <ItemGroup className="gap-2">
+          {overview.instructions.map((file) => (
+            <Item key={file.agent} variant="outline" size="sm">
+              <ItemContent className="min-w-0">
+                <ItemTitle>
+                  <label htmlFor={`instructions-${file.agent}`}>{agentNames[file.agent]}</label>
+                </ItemTitle>
+                <ItemDescription className="truncate font-mono text-xs">{file.path}</ItemDescription>
+              </ItemContent>
+              <ItemActions>
+                <Switch id={`instructions-${file.agent}`} checked={file.sync} disabled={action.busy} onCheckedChange={(sync) => toggle(file, sync)} />
+              </ItemActions>
+            </Item>
+          ))}
+        </ItemGroup>
+      )}
+      {action.error && <FieldError>{action.error}</FieldError>}
+    </Section>
   );
 }
 
