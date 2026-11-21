@@ -12,6 +12,8 @@ import { str, type Wire } from "./types.ts";
 export interface RpcClient {
   readonly clientId: string;
   send(frame: Wire): void;
+  /** False once the socket closed or the device lost its access. */
+  open(): boolean;
   /** Interrupt handlers for this client's open requests, by request ID. */
   readonly cancels: Map<string, () => void>;
 }
@@ -185,10 +187,21 @@ export class Rpc {
 
   /** Sends `value()` now and again on every `event`, until the client interrupts. */
   private stream(call: Call, event: StreamEvent, value: () => unknown) {
-    const push = () => this.chunk(call, value());
+    const id = String(call.id);
+    const first = value();
+    const push = () => {
+      try {
+        this.chunk(call, value());
+      } catch (error) {
+        // Thrown into the emitter, this would fail whoever emitted the event. End this stream instead.
+        this.hub.off(event, push);
+        call.client.cancels.delete(id);
+        this.fail(call, error);
+      }
+    };
     this.hub.on(event, push);
-    call.client.cancels.set(String(call.id), () => this.hub.off(event, push));
-    push();
+    call.client.cancels.set(id, () => this.hub.off(event, push));
+    this.chunk(call, first);
     if (call.payload.requestCompletionMarker) this.chunk(call, { kind: "synchronized" });
   }
 
@@ -504,6 +517,12 @@ export class Rpc {
       throw error;
     } finally {
       wakeNotice?.();
+    }
+    // Placement and waking can take minutes. A device that left or was removed meanwhile gets nothing run for it.
+    if (!client.open()) {
+      release();
+      if (launching) this.hub.reportSetup(launching, "The launch was interrupted.", "failed");
+      return;
     }
     progress("Preparing the workspace");
 

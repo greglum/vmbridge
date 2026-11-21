@@ -594,8 +594,15 @@ export class Hub extends EventEmitter<HubEvents> {
     } else vmId = this.route(payload);
 
     const outgoing = this.into({ ...payload }, vmId);
+    if (tag === "orchestration.launchThread") outgoing.threadId = previous?.threadId ?? str(outgoing.threadId) ?? crypto.randomUUID();
+    if (commandId && !previous) {
+      // Claimed in one insert: a retry racing this one through placement reuses whatever thread ID won.
+      this.store.saveCommand(commandId, vmId, fingerprint, str(outgoing.threadId) ?? null);
+      const claimed = this.store.command(commandId)!;
+      if (claimed.fingerprint !== fingerprint) throw new Error("This commandId was already used for another request.");
+      if (claimed.threadId) outgoing.threadId = claimed.threadId;
+    }
     if (tag === "orchestration.launchThread") {
-      outgoing.threadId = previous?.threadId ?? str(outgoing.threadId) ?? crypto.randomUUID();
       this.store.setThreadVm(outgoing.threadId as string, vmId);
       const strategy = outgoing.workspaceStrategy as Wire | undefined;
       const placed = project && this.store.project(project.id);
@@ -606,7 +613,6 @@ export class Hub extends EventEmitter<HubEvents> {
     }
     const threadId = str(payload.threadId);
     if (payload.type === "thread.create" && threadId) this.store.setThreadVm(threadId, vmId);
-    if (commandId && !previous) this.store.saveCommand(commandId, vmId, fingerprint, str(outgoing.threadId) ?? null);
     return { vmId, payload: outgoing };
   }
 
