@@ -24,6 +24,7 @@ import { providers } from "./providers/index.ts";
 import type { Secrets, Settings } from "./settings.ts";
 import type { Store } from "./store.ts";
 import type { Traffic } from "./traffic.ts";
+import type { Stats } from "./vm/stats.ts";
 
 export interface AdminDeps {
   version: string;
@@ -40,6 +41,7 @@ export interface AdminDeps {
   auth: DashboardAuth;
   gateway: T3Gateway;
   agents: AgentAuth;
+  stats: Stats;
 }
 
 class BadRequest extends Error {}
@@ -317,6 +319,8 @@ export class Admin {
         void fleet.ensure(id).catch(() => {});
         return json({ ok: true });
       }
+      // A fresh reading for an open details panel. It never wakes the VM.
+      if (action === "stats" && method === "GET") return json(await this.deps.stats.sample(id));
       if (action === "sleep" && method === "POST") {
         await fleet.sleep(id);
         return json({ ok: true });
@@ -409,6 +413,7 @@ export class Admin {
             };
           }),
           t3Version: vm.t3Version,
+          stats: vm.state === "ready" || vm.state === "busy" ? this.deps.stats.get(vm.id) : null,
         };
       });
     return {
