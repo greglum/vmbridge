@@ -121,7 +121,7 @@ export default function Docs() {
                 items={[
                   "One project per VM. Projects never share a disk, a process list or a shell.",
                   "A VM sleeps after it has been idle for a set time, and wakes when you send a message.",
-                  "One provider at a time: boxd, Instabox, Daytona, Boat or Railway.",
+                  "Several providers at once: boxd, Instabox, Daytona, Boat and Railway. Pick one per repository, or let new VMs use the default.",
                   "Everything is set up from a web dashboard behind one password: provider keys, GitHub, agent sign-ins and device pairing.",
                   "T3 Code needs no changes. To the app, VM Bridge looks like a single T3 server.",
                 ]}
@@ -173,7 +173,7 @@ bun run build          # dist/vmbridge
               <List
                 items={[
                   <>
-                    <strong>Provider.</strong> Pick a provider and paste its key. VM Bridge checks the key before saving it.
+                    <strong>Providers.</strong> Add one or more providers and paste their keys. VM Bridge checks each key before saving it. The first one you add is the default.
                   </>,
                   <>
                     <strong>GitHub.</strong> A personal access token so agents can clone, push and open pull requests.
@@ -185,7 +185,7 @@ bun run build          # dist/vmbridge
               />
               <p>
                 Under <strong>Settings</strong> you choose the VM size, how many idle minutes before a VM sleeps (5 by default), and the T3 version
-                to install on VMs.
+                to install on VMs. Under <strong>Repositories</strong> you can send a repository to a given provider and VM size.
               </p>
             </Section>
 

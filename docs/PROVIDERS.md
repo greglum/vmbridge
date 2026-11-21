@@ -1,6 +1,6 @@
 # Providers
 
-VM Bridge runs every VM through `@opencoredev/sandbox-sdk` 1.2.0. One provider is active at a time.
+VM Bridge runs every VM through `@opencoredev/sandbox-sdk` 1.2.0. You can add several providers and use them at once.
 
 | | Boat | boxd | Daytona | Instabox | Railway |
 |---|---|---|---|---|---|

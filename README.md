@@ -1,15 +1,14 @@
 # VM Bridge
 
-Run T3 Code agents on cloud VMs. You pair an unchanged T3 Code client with VM Bridge
-once. After that, VM Bridge creates, wakes and sleeps VMs on your sandbox provider,
-and sends each project and thread to the right one.
+Run T3 Code agents on cloud VMs. Pair T3 Code with VM Bridge once, and it creates, wakes and
+sleeps VMs for you and sends each project to the right one.
 
-- One provider at a time: Boat, boxd, Instabox or Railway (through
-  [`@opencoredev/sandbox-sdk`](https://www.npmjs.com/package/@opencoredev/sandbox-sdk)).
-- One project per VM. A VM sleeps after it has been idle for a set time, and wakes when you send a message.
-- Everything is set up from a web dashboard behind one secret key. That covers
-  provider keys, GitHub, agent sign-ins and device pairing.
-- Listens on `0.0.0.0`, so the dashboard and T3 clients work over your LAN and tailnet.
+- Use several providers at once: boxd, Instabox, Daytona, Boat and Railway. New VMs go to your
+  default provider, or to the one you pick for a repository.
+- A VM sleeps when it sits idle and wakes when you send a message.
+- One dashboard, behind a password, for providers, GitHub, agent sign-ins, pairing devices and a
+  live view of your VMs.
+- Works over your local network and Tailscale.
 
 ## Install
 
@@ -17,50 +16,35 @@ macOS and Linux:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/vkpdeveloper/vmbridge/main/install.sh | sh
-vmbridge               # asks for a dashboard key on first run
 ```
 
-This puts one file, holding the server, the dashboard and the CLI, in `~/.local/bin`
-(set `VMBRIDGE_INSTALL_DIR` to change it). Run it again to update.
+This installs one `vmbridge` file in `~/.local/bin` (set `VMBRIDGE_INSTALL_DIR` to change it).
+Run the same command again to update.
 
-From source, with Bun 1.4.4 or newer:
+## Get started
 
-```sh
-bun install
-bun run build          # dist/vmbridge, one executable
-./dist/vmbridge
-```
+1. Run `vmbridge` and choose a dashboard password.
+2. Open `/dashboard` on one of the addresses it prints, and log in.
+3. Under **Setup**, add a provider, connect GitHub and sign in your agents.
+4. Under **Devices**, create a pairing link and paste it into T3 Code as a remote environment.
 
-Releases: push a `v*` tag and `.github/workflows/release.yml` builds and publishes the binaries.
+Start a thread in T3 Code and VM Bridge brings up a VM for it.
 
-## Run
+## Commands
 
 ```
 vmbridge [run] [--host 0.0.0.0] [--port 3774]   Start in this terminal
 vmbridge stop                                   Stop, including the background service
-vmbridge service install [--host] [--port]      Run in the background at login (launchd or systemd)
+vmbridge service install [--host] [--port]      Run in the background at login
 vmbridge service uninstall                      Remove the background service
-vmbridge key                                    Set a new dashboard key
+vmbridge password                               Set a new dashboard password
 ```
 
-Data lives in `~/.vmbridge` (`main.db`, owner-only). Set `VMBRIDGE_HOME` to move it. On a
-machine with no terminal, set `VMBRIDGE_DASHBOARD_KEY` for the first start.
+Your data lives in `~/.vmbridge`. Set `VMBRIDGE_HOME` to keep it somewhere else. On a machine with
+no terminal, set `VMBRIDGE_PASSWORD` for the first start.
 
-Once it is running, open `/dashboard` on any listed address. Choose a provider, connect GitHub and add agent
-sign-ins. Then create a pairing link under Devices and paste it into T3 Code as a
-remote environment.
+Sizes, sleep behaviour and notes for each provider: [docs/PROVIDERS.md](docs/PROVIDERS.md).
 
-## Develop
+## License
 
-```sh
-bun run dev        # server and dashboard, restarted on change
-bun run check      # typecheck and tests
-```
-
-- `apps/server`: the T3 gateway, the fleet of VMs, providers and the admin API.
-- `apps/web`: the dashboard.
-- `apps/cli`: the `vmbridge` command.
-- `apps/landing`: the website and docs (Next.js). Run it with `bun --filter @vmbridge/landing dev` on port 3100.
-- `packages/contracts`: types shared by the server and the dashboard.
-
-Provider support and what has been tested live: [docs/PROVIDERS.md](docs/PROVIDERS.md).
+[MIT](LICENSE)
