@@ -270,19 +270,21 @@ try {
 
   // Wake.
   if (threadId) {
-    await client.call("orchestration.dispatchCommand", {
-      type: "message.dispatch",
-      commandId: crypto.randomUUID(),
-      threadId,
-      createdBy: "user",
-      creationSource: "web",
-      messageId: crypto.randomUUID(),
-      attachments: [],
-      dispatchMode: { type: "start_immediately" },
-      text: "Reply with the single word again.",
-    });
-    log("message sent to the sleeping VM");
-    await time("wake on message and second turn", () =>
+    // VM Bridge holds the message until the VM is awake and T3 has taken it, so this times the wake.
+    await time("wake on message (until T3 took it)", () =>
+      client!.call("orchestration.dispatchCommand", {
+        type: "message.dispatch",
+        commandId: crypto.randomUUID(),
+        threadId,
+        createdBy: "user",
+        creationSource: "web",
+        messageId: crypto.randomUUID(),
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        text: "Reply with the single word again.",
+      }),
+    );
+    await time("second agent turn", () =>
       poll("second turn", 10 * 60_000, async () => {
         const projection = await client!.call("orchestration.getThreadProjection", { threadId });
         const run = (projection.runs as Json[]).find((entry) => entry.ordinal === 2);
