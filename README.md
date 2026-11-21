@@ -1,9 +1,13 @@
 # VM Bridge
 
-Run T3 Code agents on cloud VMs. Pair T3 Code with VM Bridge once, and it creates, wakes and
-sleeps VMs for you and sends each project to the right one.
+![VM Bridge: every T3 Code project gets its own cloud computer](docs/social-preview.png)
 
-Website and docs: [vmbridge.vercel.app](https://vmbridge.vercel.app)
+VM Bridge is a free, open source server that runs [T3 Code](https://github.com/pingdotgg/t3code)
+agents on cloud VMs. Pair T3 Code with it once, and it gives each project its own VM, puts idle VMs
+to sleep and wakes them when you send a message. It runs on macOS and Linux, and you pay only your
+cloud provider for the VMs.
+
+Website and docs: [vmbridge.ordinity.com](https://vmbridge.ordinity.com)
 
 - Use several providers at once: boxd, Instabox, Daytona, Boat and Railway. New VMs go to your
   default provider, or to the one you pick for a repository.
