@@ -13,6 +13,8 @@ export interface VmRow {
   t3Version: string | null;
   /** Fingerprint of the sign-ins the VM's running T3 server started with (see `credentialsFingerprint`). */
   t3Credentials: string | null;
+  /** Fingerprint of the skills the VM last got (see `skillsFingerprint`). */
+  skills: string | null;
   checkpoint: string | null;
   createdAt: number;
   lastActivityAt: number | null;
@@ -32,7 +34,7 @@ export interface ProjectRow {
 }
 
 const vmColumns = `id, provider, sandbox_id AS sandboxId, name, size, state, error, t3_token AS t3Token,
-  t3_version AS t3Version, t3_credentials AS t3Credentials, checkpoint, created_at AS createdAt, last_activity_at AS lastActivityAt,
+  t3_version AS t3Version, t3_credentials AS t3Credentials, skills, checkpoint, created_at AS createdAt, last_activity_at AS lastActivityAt,
   last_connected_at AS lastConnectedAt, last_slept_at AS lastSleptAt`;
 
 const projectColumns = `id, url, branch, title, vm_id AS vmId, checkout_path AS checkoutPath, created_at AS createdAt`;
@@ -44,6 +46,7 @@ const vmFields = {
   t3Token: "t3_token",
   t3Version: "t3_version",
   t3Credentials: "t3_credentials",
+  skills: "skills",
   checkpoint: "checkpoint",
   lastActivityAt: "last_activity_at",
   lastConnectedAt: "last_connected_at",

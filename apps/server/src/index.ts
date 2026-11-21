@@ -16,6 +16,7 @@ import { RemoteBranches } from "./gateway/repos.ts";
 import { Rpc } from "./gateway/rpc.ts";
 import { networkInfo } from "./network.ts";
 import { Secrets, Settings } from "./settings.ts";
+import { Skills } from "./skills.ts";
 import { Store } from "./store.ts";
 import { Traffic } from "./traffic.ts";
 import { Stats } from "./vm/stats.ts";
@@ -54,7 +55,12 @@ export async function start(options: StartOptions = {}) {
   const traffic = new Traffic();
 
   const agents = new AgentAuth(join(dir, "auths"), settings);
-  const fleet = new Fleet(store, settings, secrets, traffic, agents);
+  const skills = new Skills(db);
+  const fleet = new Fleet(store, settings, secrets, traffic, agents, skills);
+  skills.on("changed", () => {
+    fleet.emit("changed");
+    void fleet.shareSkills();
+  });
   const hub = new Hub(store, settings, fleet, traffic);
   agents.onChange = () => {
     fleet.emit("changed");
@@ -67,7 +73,7 @@ export async function start(options: StartOptions = {}) {
   const gateway = new T3Gateway(hub, rpc, clients);
   const auth = new DashboardAuth(db, settings);
   const stats = new Stats(fleet);
-  const admin = new Admin({ version, startedAt: Date.now(), host, port, settings, secrets, store, fleet, hub, traffic, clients, auth, gateway, agents, stats });
+  const admin = new Admin({ version, startedAt: Date.now(), host, port, settings, secrets, store, fleet, hub, traffic, clients, auth, gateway, agents, stats, skills });
 
   const server = Bun.serve<SocketData>({
     hostname: host,
@@ -99,6 +105,12 @@ export async function start(options: StartOptions = {}) {
   const codexSync = setInterval(() => void fleet.syncCodexAuth().catch(() => {}), 60 * 60_000);
   // Often enough for the dashboard's high memory warning; opening a VM's details reads it right away.
   const statsTimer = setInterval(() => void stats.sampleAll().catch(() => {}), 30_000);
+  // Installed local skills follow edits on this machine. Reading a few small folders is cheaper than watching them reliably.
+  const skillWatch = setInterval(() => {
+    try {
+      skills.refreshLocal();
+    } catch {}
+  }, 5_000);
   void fleet.resume();
   // Accounts saved by older versions lack the details the dashboard shows.
   const githubToken = secrets.get("github.token");
@@ -115,6 +127,7 @@ export async function start(options: StartOptions = {}) {
       clearInterval(sweep);
       clearInterval(codexSync);
       clearInterval(statsTimer);
+      clearInterval(skillWatch);
       gateway.close();
       await server.stop(true);
       hub.close();

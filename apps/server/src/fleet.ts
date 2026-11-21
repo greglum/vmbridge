@@ -9,6 +9,8 @@ import { Backend, TokenRejected } from "./vm/backend.ts";
 import type { AgentAuth } from "./agent-auth/profiles.ts";
 import { githubName } from "./gateway/repos.ts";
 import { hasLiveWork, type Shell } from "./gateway/types.ts";
+import type { Skills } from "./skills.ts";
+import { syncSkills } from "./vm/skills.ts";
 import { checkoutRoot, credentialsFingerprint, prepareVm, quote, readCodexAuth, resolveT3Version, startT3, t3Port, writeCodexAuth, writeCredentials, type VmCredentials } from "./vm/runtime.ts";
 
 type FleetEvents = {
@@ -71,6 +73,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
     private readonly secrets: Secrets,
     private readonly traffic: Traffic,
     private readonly agents: AgentAuth,
+    private readonly skills: Pick<Skills, "state" | "files">,
   ) {
     super();
   }
@@ -249,6 +252,8 @@ export class Fleet extends EventEmitter<FleetEvents> {
     const credentials = await this.credentials();
     const fingerprint = credentialsFingerprint(credentials);
     await prepareVm(box, version, credentials);
+    // Before T3 starts or VM Bridge sends it anything, so no agent on a woken VM runs with old skills.
+    await this.syncSkills(vm.id, box);
     const preview = await box.preview(t3Port);
     const restart = vm.t3Credentials !== fingerprint && (await idle(preview));
     let server = await startT3(box, vm.t3Token, restart);
@@ -336,6 +341,39 @@ export class Fleet extends EventEmitter<FleetEvents> {
         }).catch(() => this.traffic.record({ kind: "provider", operation: "write sign-ins", vmId, status: "error" })),
       ),
     );
+  }
+
+  /** Brings a VM's skills up to date. A VM that never had any skills, and still should not, is left alone. */
+  private async syncSkills(vmId: string, box: Box) {
+    const state = this.skills.state();
+    if (!state.skills.length && !this.store.vm(vmId)?.skills) return;
+    const started = performance.now();
+    try {
+      if (await syncSkills(box, state, (name) => this.skills.files(name))) {
+        this.traffic.record({ kind: "provider", operation: "sync skills", vmId, status: "ok", durationMs: Math.round(performance.now() - started) });
+      }
+    } catch (error) {
+      this.traffic.record({ kind: "provider", operation: "sync skills", vmId, status: "error" });
+      throw error;
+    }
+    this.store.updateVm(vmId, { skills: state.fingerprint });
+  }
+
+  /**
+   * Gives every awake VM the installed skills now, busy or not: they are only files, so nothing restarts and running
+   * turns go on. Sleeping VMs get them when they wake, and VMs still waking get them before they connect.
+   */
+  async shareSkills() {
+    await Promise.all(
+      [...this.boxes.keys()].map((vmId) =>
+        this.exclusive(vmId, async () => {
+          const box = this.boxes.get(vmId);
+          if (!box || !this.backend(vmId) || this.store.vm(vmId)?.skills === this.skills.state().fingerprint) return;
+          await this.syncSkills(vmId, box);
+        }).catch(() => {}),
+      ),
+    );
+    this.emit("changed");
   }
 
   private async sleepBox(vmId: string, driver: Driver, box: Box) {

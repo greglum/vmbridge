@@ -2,7 +2,7 @@ import type { AgentSecrets } from "../agent-auth/profiles.ts";
 import type { Box } from "../providers/index.ts";
 
 /** Everything VM Bridge installs or keeps lives here, on the disk that survives sleep. */
-const root = "/workspace/.vmbridge";
+export const root = "/workspace/.vmbridge";
 export const t3Port = 3773;
 export const t3DataDir = `${root}/t3`;
 /** VM Bridge clones each project's repository here. */
@@ -170,7 +170,7 @@ export async function resolveT3Version(pinned: string | null) {
   return version;
 }
 
-async function check(box: Box, command: string, what: string, timeoutMs = 120_000) {
+export async function check(box: Box, command: string, what: string, timeoutMs = 120_000) {
   const result = await box.run(command, { timeoutMs });
   // Only the tail: setup output is install noise, and the env file is never echoed.
   if (!result.ok) throw new Error(`${what} failed (exit ${result.exitCode}): ${result.output.slice(-600)}`);
