@@ -152,7 +152,7 @@ export interface VmInfo {
   t3Version: string | null;
   /** The latest resource reading while the VM is awake. */
   stats: VmStats | null;
-  /** The VM has not got the installed skills yet. A sleeping VM gets them when it wakes. */
+  /** The VM has not got the installed skills or synced instructions yet. A sleeping VM gets them when it wakes. */
   skillsPending: boolean;
 }
 
@@ -176,6 +176,14 @@ export interface LocalSkill {
   path: string;
   description: string | null;
   installed: boolean;
+}
+
+/** An agent's global instructions file found on the machine running VM Bridge. */
+export interface InstructionFile {
+  agent: AgentKind;
+  path: string;
+  /** Every VM gets it, at the path that agent reads. */
+  sync: boolean;
 }
 
 export interface SkillSearchResult {
@@ -274,6 +282,7 @@ export interface Overview {
   vms: VmInfo[];
   projects: ProjectInfo[];
   skills: SkillInfo[];
+  instructions: InstructionFile[];
 }
 
 export interface TrafficEvent {

@@ -343,10 +343,10 @@ export class Fleet extends EventEmitter<FleetEvents> {
     );
   }
 
-  /** Brings a VM's skills up to date. A VM that never had any skills, and still should not, is left alone. */
+  /** Brings a VM's skills and instructions up to date. A VM that never had any, and still should not, is left alone. */
   private async syncSkills(vmId: string, box: Box) {
     const state = this.skills.state();
-    if (!state.skills.length && !this.store.vm(vmId)?.skills) return;
+    if (!state.skills.length && !state.instructions.length && !this.store.vm(vmId)?.skills) return;
     const started = performance.now();
     try {
       if (await syncSkills(box, state, (name) => this.skills.files(name))) {

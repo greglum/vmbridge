@@ -105,10 +105,12 @@ export async function start(options: StartOptions = {}) {
   const codexSync = setInterval(() => void fleet.syncCodexAuth().catch(() => {}), 60 * 60_000);
   // Often enough for the dashboard's high memory warning; opening a VM's details reads it right away.
   const statsTimer = setInterval(() => void stats.sampleAll().catch(() => {}), 30_000);
-  // Installed local skills follow edits on this machine. Reading a few small folders is cheaper than watching them reliably.
+  // Installed local skills and instructions files follow edits on this machine. Reading a few small files is cheaper than watching them reliably.
+  skills.instructions.refresh();
   const skillWatch = setInterval(() => {
     try {
       skills.refreshLocal();
+      skills.instructions.refresh();
     } catch {}
   }, 5_000);
   void fleet.resume();
