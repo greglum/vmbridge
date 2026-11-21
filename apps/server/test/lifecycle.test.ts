@@ -97,7 +97,7 @@ function setup() {
   const files: Record<string, string> = {};
   const server = { running: false, env: "", starts: 0, restarts: 0, failRestart: false };
   /** What each skills sync sent, and the order skill syncs and T3 starts happened in. */
-  const synced: { skills: { name: string; files?: unknown[] }[] }[] = [];
+  const synced: { skills: { name: string; files?: unknown[] }[]; instructions: { agent: string; text: string }[] }[] = [];
   const order: string[] = [];
   const startServer = () => {
     server.running = true;
@@ -113,7 +113,11 @@ function setup() {
       if (command.startsWith("rm -f ")) for (const path of command.slice(6).split(" ")) delete files[path];
       // As skills.mjs does, minus the files.
       if (command.includes("skills.mjs")) {
-        const incoming = JSON.parse(files["/workspace/.vmbridge/skills-incoming.json"]!) as { fingerprint: string; skills: { name: string; hash: string }[] };
+        const incoming = JSON.parse(files["/workspace/.vmbridge/skills-incoming.json"]!) as {
+          fingerprint: string;
+          skills: { name: string; hash: string }[];
+          instructions: { agent: string; text: string }[];
+        };
         synced.push(incoming);
         order.push("skills");
         const applied = Object.fromEntries(incoming.skills.map((skill) => [skill.name, skill.hash]));
@@ -588,5 +592,41 @@ describe("skills", () => {
     skills.installLocal(folder("review", "Reviews code."));
     await fleet.ensure((await fleet.create()).id);
     expect(order).toEqual(["skills", "start"]);
+  });
+});
+
+describe("instructions", () => {
+  const agentDirs = ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_CONFIG_HOME"] as const;
+  const saved = agentDirs.map((name) => process.env[name]);
+  afterEach(() => agentDirs.forEach((name, at) => (saved[at] === undefined ? delete process.env[name] : (process.env[name] = saved[at]))));
+
+  test("reach a new VM before T3 starts, then each edit and their removal while it is awake", async () => {
+    // This machine's agent folders, with only Codex's file.
+    const base = mkdtempSync(join(tmpdir(), "vmbridge-home-"));
+    temps.push(base);
+    for (const name of agentDirs) process.env[name] = join(base, name);
+    mkdirSync(process.env.CODEX_HOME!);
+    const agentsMd = join(process.env.CODEX_HOME!, "AGENTS.md");
+    writeFileSync(agentsMd, "v1");
+
+    const { fleet, store, skills, synced, order } = setup();
+    skills.instructions.refresh();
+    expect(skills.instructions.list()).toEqual([{ agent: "codex", path: agentsMd, sync: false }]);
+    skills.instructions.setSync("codex", true);
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    expect(order).toEqual(["skills", "start"]);
+    expect(synced.at(-1)!.instructions.map((file) => [file.agent, file.text])).toEqual([["codex", "v1"]]);
+
+    writeFileSync(agentsMd, "v2");
+    expect(skills.instructions.refresh()).toBe(true);
+    await fleet.shareSkills();
+    expect(synced.at(-1)!.instructions.map((file) => file.text)).toEqual(["v2"]);
+
+    skills.instructions.setSync("codex", false);
+    await fleet.shareSkills();
+    expect(synced.at(-1)!.instructions).toEqual([]);
+    expect(store.vm(vm.id)?.skills).toBe(skills.state().fingerprint);
+    expect(synced).toHaveLength(3);
   });
 });
