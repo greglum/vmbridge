@@ -20,6 +20,8 @@ const startedCredentialsPath = `${t3DataDir}/credentials`;
 /** Credentials VM Bridge passes into a VM. Agents and git use only these, never the provider's. */
 export interface VmCredentials extends AgentSecrets {
   github?: { token: string; login: string; name: string; email: string };
+  /** Environment variables set in the dashboard. Absent rather than empty, so having none leaves the fingerprint as it was. */
+  env?: Record<string, string>;
 }
 
 /** Sign-in variables a provider may set on its machines. VM Bridge clears them and sets its own. */
@@ -37,8 +39,9 @@ const providerVars = [
   "OPENCODE_API_KEY",
 ];
 
-function envFile(credentials: VmCredentials) {
-  const vars: Record<string, string | undefined> = {
+/** The variables VM Bridge sets itself. Every name in here is reserved: the dashboard cannot set it. */
+function managedVars(credentials: VmCredentials): Record<string, string | undefined> {
+  return {
     T3CODE_HOME: `${root}/t3-home`,
     T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false",
     GH_TOKEN: credentials.github?.token,
@@ -55,13 +58,54 @@ function envFile(credentials: VmCredentials) {
     ANTHROPIC_BASE_URL: credentials.anthropicBaseUrl,
     OPENCODE_API_KEY: credentials.opencodeApiKey,
   };
+}
+
+/**
+ * Names the dashboard cannot set: those VM Bridge sets or clears, and those that would break shells, T3 or the
+ * agents. Prefixes cover T3's and VM Bridge's own settings, the dynamic linker and exported bash functions.
+ */
+const reservedNames = new Set([
+  ...Object.keys(managedVars({})),
+  ...providerVars,
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "PWD",
+  "OLDPWD",
+  "IFS",
+  "ENV",
+  "BASH_ENV",
+  "SHLVL",
+]);
+const reservedPrefixes = ["T3CODE_", "VMBRIDGE_", "LD_", "BASH_FUNC_"];
+
+/** Why a name cannot be an environment variable on the VMs, or null when it can. */
+export function envNameProblem(name: string) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return "Use letters, digits and underscores, not starting with a digit.";
+  if (name.length > 128) return "Use at most 128 characters.";
+  if (reservedNames.has(name) || reservedPrefixes.some((prefix) => name.startsWith(prefix))) return `${name} is reserved. VM Bridge or the VM sets it.`;
+  return null;
+}
+
+/** Why a value cannot be an environment variable's, or null when it can. */
+export function envValueProblem(value: string) {
+  if (value.includes("\0")) return "Values cannot contain a null character.";
+  if (value.length > 32_768) return "Use at most 32,768 characters.";
+  return null;
+}
+
+function envFile(credentials: VmCredentials) {
   const lines = [
     `unset ${providerVars.join(" ")}`,
     `export PATH="${root}/node/bin:${root}/npm/bin:${root}/gh/bin:$PATH"`,
     // Not exported: only start-t3.sh reads it, to record what the server starts with.
     `VMBRIDGE_CREDENTIALS=${credentialsFingerprint(credentials)}`,
   ];
-  for (const [name, value] of Object.entries(vars)) if (value) lines.push(`export ${name}=${quote(value)}`);
+  for (const [name, value] of Object.entries(managedVars(credentials))) if (value) lines.push(`export ${name}=${quote(value)}`);
+  // Single quotes keep every value exact, newlines and `$` included. An empty one is still set.
+  for (const [name, value] of Object.entries(credentials.env ?? {})) lines.push(`export ${name}=${quote(value)}`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -137,6 +181,15 @@ mkdir -p "$root/codex" "$root/claude"
 t3 --version >/dev/null
 
 git config --global --get-all include.path | grep -Fxq "$root/gitconfig" || git config --global --add include.path "$root/gitconfig"
+
+# Shells opened on the VM, such as over SSH, get what T3 and its agents get. Shells under T3 already have it, as their
+# turn started with it, so a change waiting for a busy VM does not reach a turn halfway.
+line='[ -n "\${T3CODE_HOME:-}" ] || [ ! -r ${root}/env ] || . ${root}/env'
+for rc in .profile .bashrc .bash_profile .bash_login; do
+  file="$HOME/$rc"
+  case "$rc" in .bash_profile|.bash_login) [ -f "$file" ] || continue ;; esac
+  grep -Fqsx "$line" "$file" || printf '\\n%s\\n' "$line" >> "$file"
+done
 `;
 
 const startScript = `#!/bin/bash
@@ -179,7 +232,7 @@ export async function check(box: Box, command: string, what: string, timeoutMs =
 }
 
 /**
- * Identifies the sign-ins a T3 server starts with, to tell when a running one has older ones. Codex counts by
+ * Identifies the sign-ins and variables a T3 server starts with, to tell when a running one has older ones. Codex counts by
  * sign-in rather than by auth.json, which changes every time its tokens refresh and needs no restart.
  */
 export function credentialsFingerprint(credentials: VmCredentials) {

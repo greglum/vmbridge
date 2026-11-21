@@ -150,6 +150,8 @@ export interface VmInfo {
   projects: string[];
   sessions: VmSession[];
   t3Version: string | null;
+  /** T3 on the VM has not started with the current sign-ins and environment variables yet. */
+  updatePending: boolean;
   /** The latest resource reading while the VM is awake. */
   stats: VmStats | null;
   /** The VM has not got the installed skills or synced instructions yet. A sleeping VM gets them when it wakes. */
@@ -277,6 +279,8 @@ export interface Overview {
   repoRules: RepoRule[];
   github: GitHubAccount | null;
   agents: AgentProfile[];
+  /** Names of the environment variables every VM gets. Their values never leave VM Bridge's server. */
+  env: string[];
   settings: BridgeSettings;
   clients: ClientInfo[];
   vms: VmInfo[];

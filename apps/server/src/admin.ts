@@ -22,10 +22,11 @@ import { githubName } from "./gateway/repos.ts";
 import { isWorking } from "./gateway/types.ts";
 import { disableTailscaleHttps, enableTailscaleHttps, networkInfo } from "./network.ts";
 import { providers } from "./providers/index.ts";
-import type { Secrets, Settings } from "./settings.ts";
+import { envVars, saveEnvVars, type Secrets, type Settings } from "./settings.ts";
 import { SkillError, type Skills } from "./skills.ts";
 import type { Store } from "./store.ts";
 import type { Traffic } from "./traffic.ts";
+import { envNameProblem, envValueProblem } from "./vm/runtime.ts";
 import type { Stats } from "./vm/stats.ts";
 
 export interface AdminDeps {
@@ -226,6 +227,27 @@ export class Admin {
       void hub.credentialsChanged().catch(() => {});
       hub.emit("config");
       return json({ ok: true });
+    }
+
+    // Environment variables for every VM. Values go in and never come out.
+    if (section === "env" && id) {
+      const name = decodeURIComponent(id);
+      const vars = envVars(secrets);
+      if (!action && method === "PUT") {
+        const problem = envNameProblem(name);
+        if (problem) throw new BadRequest(problem);
+        const { value } = await body(request);
+        if (typeof value !== "string") throw new BadRequest("The value must be text.");
+        const invalid = envValueProblem(value);
+        if (invalid) throw new BadRequest(invalid);
+        saveEnvVars(secrets, { ...vars, [name]: value });
+      } else if (!action && method === "DELETE") {
+        const { [name]: _removed, ...rest } = vars;
+        saveEnvVars(secrets, rest);
+      } else return json({ error: "Not found." }, 404);
+      fleet.emit("changed");
+      void hub.credentialsChanged().catch(() => {});
+      return json(Object.keys(envVars(secrets)));
     }
 
     if (path === "/agents" && method === "POST") {
@@ -455,6 +477,7 @@ export class Admin {
             };
           }),
           t3Version: vm.t3Version,
+          updatePending: fleet.behind(vm),
           stats: vm.state === "ready" || vm.state === "busy" ? this.deps.stats.get(vm.id) : null,
           skillsPending:
             vm.sandboxId !== null && vm.skills !== skills.fingerprint && (skills.skills.length > 0 || skills.instructions.length > 0 || vm.skills !== null),
@@ -472,6 +495,7 @@ export class Admin {
       repoRules: settings.get("repoRules"),
       github: secrets.has("github.token") ? settings.get("github") : null,
       agents,
+      env: Object.keys(envVars(secrets)),
       settings: { vmSize: settings.get("vmSize"), idleMinutes: settings.get("idleMinutes"), t3Version: settings.get("t3Version") },
       clients: clients.list(gateway.connected()),
       vms,
