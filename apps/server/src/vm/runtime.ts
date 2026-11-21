@@ -14,6 +14,8 @@ const codexAuthPath = `${root}/codex/auth.json`;
 
 const gitConfigPath = `${root}/gitconfig`;
 const gitCredentialsPath = `${root}/git-credentials`;
+/** The fingerprint of the sign-ins the running T3 server read from the env file when it started. */
+const startedCredentialsPath = `${t3DataDir}/credentials`;
 
 /** Credentials VM Bridge passes into a VM. Agents and git use only these, never the provider's. */
 export interface VmCredentials extends AgentSecrets {
@@ -53,7 +55,12 @@ function envFile(credentials: VmCredentials) {
     ANTHROPIC_BASE_URL: credentials.anthropicBaseUrl,
     OPENCODE_API_KEY: credentials.opencodeApiKey,
   };
-  const lines = [`unset ${providerVars.join(" ")}`, `export PATH="${root}/node/bin:${root}/npm/bin:${root}/gh/bin:$PATH"`];
+  const lines = [
+    `unset ${providerVars.join(" ")}`,
+    `export PATH="${root}/node/bin:${root}/npm/bin:${root}/gh/bin:$PATH"`,
+    // Not exported: only start-t3.sh reads it, to record what the server starts with.
+    `VMBRIDGE_CREDENTIALS=${credentialsFingerprint(credentials)}`,
+  ];
   for (const [name, value] of Object.entries(vars)) if (value) lines.push(`export ${name}=${quote(value)}`);
   return `${lines.join("\n")}\n`;
 }
@@ -137,6 +144,7 @@ root=${root}
 data=${t3DataDir}
 . "$root/env"
 mkdir -p "$data"
+printf '%s' "$VMBRIDGE_CREDENTIALS" > "$data/credentials"
 # T3 refuses to start when a runtime record from before a VM stop names a dead or reused PID.
 runtime="$data/userdata/server-runtime.json"
 if [ -f "$runtime" ]; then
@@ -219,8 +227,12 @@ export interface T3Server {
   /** The server's `/.well-known/t3/environment` descriptor. */
   descriptor: { orchestrationProtocolVersion?: number; serverVersion?: string };
   token: string;
-  /** The server started here, from the env file as it is now, rather than running from before. */
-  fresh: boolean;
+  /**
+   * Fingerprint of the sign-ins the running server started with, as it recorded them, or null for a server
+   * started before VM Bridge recorded them. Read back rather than assumed, since a restart can fail either side
+   * of relaunching the server.
+   */
+  credentials: string | null;
 }
 
 /**
@@ -230,14 +242,12 @@ export interface T3Server {
  */
 export async function startT3(box: Box, token: string | null, restart = false): Promise<T3Server> {
   let answer = await box.run(probe, { timeoutMs: 15_000 });
-  let fresh = false;
   if (answer.ok && restart) {
     // A failed restart leaves the old server answering, or none, which the start below handles.
-    fresh = await box.process("t3").restart().then(() => true, () => false);
+    await box.process("t3").restart().catch(() => {});
     answer = await box.run(probe, { timeoutMs: 15_000 });
   }
   if (!answer.ok) {
-    fresh = true;
     const options = {
       name: "t3",
       ready: { http: { port: t3Port, path: "/.well-known/t3/environment" } },
@@ -261,5 +271,6 @@ export async function startT3(box: Box, token: string | null, restart = false): 
       "Issuing a T3 session",
     )
   ).trim();
-  return { descriptor, token, fresh };
+  const credentials = await box.files.read(startedCredentialsPath).catch(() => null);
+  return { descriptor, token, credentials };
 }
