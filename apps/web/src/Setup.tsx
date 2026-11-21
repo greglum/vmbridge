@@ -332,7 +332,7 @@ function AgentSection({ agent, profiles }: { agent: AgentKind; profiles: AgentPr
                   {methodNames[profile.method]}
                   {profile.detail && (
                     <>
-                      , {profile.method === "auth-token" ? profile.detail : <Private>{profile.detail}</Private>}
+                      , <Private>{profile.detail}</Private>
                     </>
                   )}
                 </>
