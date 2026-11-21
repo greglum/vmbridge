@@ -3,6 +3,8 @@
 Run T3 Code agents on cloud VMs. Pair T3 Code with VM Bridge once, and it creates, wakes and
 sleeps VMs for you and sends each project to the right one.
 
+Website and docs: [vmbridge.vercel.app](https://vmbridge.vercel.app)
+
 - Use several providers at once: boxd, Instabox, Daytona, Boat and Railway. New VMs go to your
   default provider, or to the one you pick for a repository.
 - A VM sleeps when it sits idle and wakes when you send a message.
