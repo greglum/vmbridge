@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { parseAsString, parseAsStringLiteral, useQueryStates } from "nuqs";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { File01Icon, FlowConnectionIcon, LaptopIcon, Logout01Icon, Plug01Icon, Settings01Icon } from "@hugeicons/core-free-icons";
 import { Button } from "@/components/ui/button";
@@ -26,20 +27,10 @@ const views = [
 
 type View = (typeof views)[number]["id"];
 
-/** The view lives in the URL hash so a reload keeps your place. */
+/** The view and its page's tab live in the URL so a reload keeps your place. A new view starts on its first tab. */
 function useView() {
-  const read = (): View | null => views.find((view) => `#${view.id}` === location.hash)?.id ?? null;
-  const [view, setView] = useState<View | null>(read);
-  useEffect(() => {
-    const onHash = () => setView(read());
-    addEventListener("hashchange", onHash);
-    return () => removeEventListener("hashchange", onHash);
-  }, []);
-  const go = (next: View) => {
-    history.replaceState(null, "", `#${next}`);
-    setView(next);
-  };
-  return [view, go] as const;
+  const [{ view }, setUrl] = useQueryStates({ view: parseAsStringLiteral(views.map((entry) => entry.id)), tab: parseAsString });
+  return [view, (next: View) => void setUrl({ view: next, tab: null })] as const;
 }
 
 export function App() {

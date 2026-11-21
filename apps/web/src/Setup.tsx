@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { parseAsStringLiteral, useQueryState } from "nuqs";
 import { toast } from "sonner";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { GithubIcon, LinkSquare02Icon, Plug01Icon, Robot01Icon } from "@hugeicons/core-free-icons";
@@ -23,12 +24,12 @@ const sleepModes = { pause: "Pauses: memory and disk kept", stop: "Stops: disk k
 
 
 export function Setup({ overview }: { overview: Overview }) {
-  const [tab, setTab] = useState<SetupTab>(overview.setup.provider ? "agents" : "provider");
   const tabs: Tab<SetupTab>[] = [
     { id: "provider", label: "Providers", icon: Plug01Icon, attention: !overview.setup.provider },
     { id: "github", label: "GitHub", icon: GithubIcon, attention: !overview.setup.github },
     { id: "agents", label: "Agent sign-in", icon: Robot01Icon, attention: !overview.setup.agents },
   ];
+  const [tab, setTab] = useQueryState("tab", parseAsStringLiteral(tabs.map((entry) => entry.id)).withDefault(overview.setup.provider ? "agents" : "provider"));
   return (
     <Page title="Setup" tabs={tabs} tab={tab} onTab={setTab}>
       {tab === "provider" && <Providers overview={overview} />}

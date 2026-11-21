@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { parseAsStringLiteral, useQueryState } from "nuqs";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "sonner";
 import { Add01Icon, ComputerIcon, Delete02Icon, GitBranchIcon, GithubIcon, GlobalIcon, Key01Icon, UnfoldMoreIcon } from "@hugeicons/core-free-icons";
@@ -30,7 +31,7 @@ const tabs: Tab<SettingsTab>[] = [
 ];
 
 export function Settings({ overview, onLoggedOut }: { overview: Overview; onLoggedOut: () => void }) {
-  const [tab, setTab] = useState<SettingsTab>("vms");
+  const [tab, setTab] = useQueryState("tab", parseAsStringLiteral(tabs.map((entry) => entry.id)).withDefault("vms"));
   return (
     <Page title="Settings" tabs={tabs} tab={tab} onTab={setTab}>
       {tab === "vms" && <VmSettings overview={overview} />}
