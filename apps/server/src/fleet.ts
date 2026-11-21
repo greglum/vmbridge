@@ -199,8 +199,13 @@ export class Fleet extends EventEmitter<FleetEvents> {
         sandboxId: vm.sandboxId,
         checkpoint: vm.checkpoint,
       });
-      // Restoring a checkpoint makes a new sandbox.
-      if (box.id !== vm.sandboxId) this.store.updateVm(vmId, { sandboxId: box.id, checkpoint: null });
+      // Restoring a checkpoint makes a new sandbox. It holds the files now, so the checkpoint can go.
+      if (box.id !== vm.sandboxId) {
+        this.store.updateVm(vmId, { sandboxId: box.id, checkpoint: null });
+        if (vm.checkpoint) {
+          await driver.deleteCheckpoint(vm.checkpoint).catch(() => this.traffic.record({ kind: "provider", operation: "delete checkpoint", vmId, status: "error" }));
+        }
+      }
       this.boxes.set(vmId, box);
 
       const version = await resolveT3Version(this.settings.get("t3Version"));
@@ -317,6 +322,8 @@ export class Fleet extends EventEmitter<FleetEvents> {
       this.backends.delete(vmId);
       this.boxes.delete(vmId);
       if (vm.sandboxId && vm.state !== "gone") await this.driver(vm.provider).destroy(vm.sandboxId);
+      // A VM asleep as a checkpoint has no sandbox left, only the checkpoint.
+      if (vm.checkpoint) await this.driver(vm.provider).deleteCheckpoint(vm.checkpoint);
       this.store.deleteVm(vmId);
       this.traffic.record({ kind: "provider", operation: "delete VM", vmId, status: "ok" });
       this.emit("offline", vmId);

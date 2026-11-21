@@ -41,6 +41,8 @@ export interface Driver {
   /** Extends provider-side auto-stop timers while agents work. */
   keepAlive(box: Box): Promise<void>;
   destroy(sandboxId: string): Promise<void>;
+  /** Deletes a checkpoint `sleep` made once nothing needs it. A checkpoint that is already gone is fine. */
+  deleteCheckpoint(checkpoint: string): Promise<void>;
 }
 
 export interface ProviderDefinition {

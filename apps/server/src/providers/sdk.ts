@@ -23,6 +23,8 @@ export interface SdkDriverOptions {
   create?: Partial<CreateOptions>;
   /** Lists sleeping sandboxes the SDK listing leaves out (boxd). */
   listSleeping?: () => Promise<{ id: string; state: ProviderState }[]>;
+  /** Deletes a checkpoint, for providers that keep them until told to (Railway). The SDK has no delete. */
+  deleteCheckpoint?: (checkpoint: string) => Promise<void>;
 }
 
 export const notFound = (error: unknown) => error instanceof SandboxError && error.code === "not_found";
@@ -110,6 +112,10 @@ export function sdkDriver(options: SdkDriverOptions): Driver {
       } catch (error) {
         if (!notFound(error)) throw error;
       }
+    },
+
+    async deleteCheckpoint(checkpoint) {
+      await options.deleteCheckpoint?.(checkpoint);
     },
   };
 }
