@@ -16,6 +16,7 @@ Website and docs: [vmbridge.ordinity.com](https://vmbridge.ordinity.com)
   live view of your VMs.
 - Agent skills from [skills.sh](https://skills.sh) or from this machine reach every VM, for Claude
   Code and Codex.
+- Your global agent instructions (`CLAUDE.md`, `AGENTS.md`) on this machine can follow you to every VM.
 - Works over your local network and Tailscale.
 
 ## Install
@@ -45,6 +46,13 @@ Under **Skills**, install agent skills from skills.sh, or pick ones found in `~/
 Codex: awake VMs right away, without restarting anything, and sleeping VMs before they serve
 anything when they wake. Edits to a local skill reach the VMs within a few seconds. Removing a
 skill takes it off every VM, and skills put on a VM some other way are left alone.
+
+The same page lists the global instructions files found on this machine, `~/.claude/CLAUDE.md`
+for Claude Code, `~/.codex/AGENTS.md` for Codex and `~/.config/opencode/AGENTS.md` for OpenCode
+(`$CLAUDE_CONFIG_DIR`, `$CODEX_HOME` and `$XDG_CONFIG_HOME` move them). Switch one on and every VM
+gets it where that agent reads it, the same way as skills, and edits follow within a few seconds.
+Switching it off, or deleting it here, takes it off the VMs. VM Bridge only replaces or removes a
+file it wrote: if a VM already has its own, or the file was edited on the VM, it is left alone.
 
 ## Commands
 

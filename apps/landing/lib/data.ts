@@ -181,6 +181,11 @@ export const faq = [
       "Yes. Install agent skills from skills.sh, or pick ones already on the machine that runs VM Bridge, and every VM gets them for Claude Code and Codex. Awake VMs get them right away without a restart, sleeping VMs get them when they wake, and edits to a local skill follow on their own.",
   },
   {
+    question: "Do my CLAUDE.md and AGENTS.md reach the VMs?",
+    answer:
+      "If you want them to. The Skills page lists the global instructions files for Claude Code, Codex and OpenCode found on the machine that runs VM Bridge. Switch one on and every VM gets it where that agent reads it, and edits follow on their own. A file a VM already had is left alone.",
+  },
+  {
     question: "How much does VM Bridge cost?",
     answer:
       "VM Bridge is free and open source under the MIT license. You pay your cloud provider for the VMs, and idle VMs go to sleep so they stop using compute.",
