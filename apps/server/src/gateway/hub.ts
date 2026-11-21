@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { providers } from "../providers/index.ts";
-import type { Fleet } from "../fleet.ts";
+import { message, type Fleet } from "../fleet.ts";
 import type { Settings } from "../settings.ts";
 import type { ProjectRow, Store } from "../store.ts";
 import type { Traffic } from "../traffic.ts";
@@ -68,6 +68,10 @@ export class Hub extends EventEmitter<HubEvents> {
   private readonly setupProgress = new Map<string, Wire>();
   private readonly waking = new Map<string, { count: number; id: string; startedAt: string; message: string }>();
   private readonly projectionRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Fleet-wide agent updates T3 started, by agent instance. */
+  private readonly agentUpdates = new Map<string, Wire>();
+  /** VMs an agent update woke, so they go back to sleep after it, even when updates overlap. */
+  private readonly wokenForUpdate = new Set<string>();
   private sequence: number;
 
   constructor(
@@ -340,8 +344,80 @@ export class Hub extends EventEmitter<HubEvents> {
     const badge = active ? providers[active].label : "VM Bridge";
     return [...byId.values()].map(({ vmId, entry }) => {
       const shown = vmId ? (this.out(entry, vmId) as ProviderEntry) : entry;
-      return presentAgent(shown, preferences[entry.instanceId], badge);
+      const report = presentAgent(shown, preferences[entry.instanceId], badge);
+      // An update is offered while any VM last reported this agent behind its latest release.
+      const advised = this.outdated(entry.instanceId)[0]?.entry ?? entry;
+      if (report.enabled && advised.versionAdvisory) {
+        report.versionAdvisory = advised.versionAdvisory;
+        if (advised.compatibilityAdvisory) report.compatibilityAdvisory = advised.compatibilityAdvisory;
+      }
+      const update = this.agentUpdates.get(entry.instanceId);
+      if (update) report.updateState = update;
+      return report;
     });
+  }
+
+  /** VMs whose last report, from when they were awake, says this agent can update. */
+  private outdated(instanceId: string) {
+    return [...this.configs].flatMap(([vmId, config]) => {
+      if (this.store.vm(vmId)?.state === "gone") return [];
+      const entry = config.providers?.find((provider) => provider.instanceId === instanceId);
+      const advisory = entry?.versionAdvisory as Wire | undefined;
+      return entry && advisory?.status === "behind_latest" && advisory.canUpdate === true && advisory.updateCommand ? [{ vmId, entry }] : [];
+    });
+  }
+
+  /**
+   * Runs T3's own agent update on every VM that reported the agent out of date. A sleeping VM is
+   * woken for it and put back to sleep once its update is done.
+   */
+  async updateAgent(input: Wire) {
+    const instanceId = str(input.instanceId) ?? str(input.provider);
+    if (!instanceId) throw new Error("Name the agent to update.");
+    if (this.agentUpdates.get(instanceId)?.status === "running") throw new Error("An update is already running for this agent.");
+    const targets = this.outdated(instanceId).map(({ vmId }) => vmId);
+    const startedAt = new Date().toISOString();
+    const state = (status: string, message: string) => {
+      this.agentUpdates.set(instanceId, { status, startedAt, finishedAt: status === "running" ? null : new Date().toISOString(), message, output: null });
+      this.emit("config");
+    };
+    state("running", `Updating on ${targets.length === 1 ? "1 VM" : `${targets.length} VMs`}`);
+    const failures: string[] = [];
+    await Promise.all(
+      targets.map(async (vmId) => {
+        const name = this.store.vm(vmId)?.name ?? vmId;
+        if (!this.fleet.backend(vmId)) this.wokenForUpdate.add(vmId);
+        const release = this.fleet.lease(vmId);
+        try {
+          const backend = await this.fleet.ensure(vmId);
+          const result = await backend.call<{ providers?: ProviderEntry[] }>("server.updateProvider", this.into({ ...input }, vmId), 10 * 60_000);
+          const config = this.configs.get(vmId);
+          if (result.providers?.length && config) {
+            const merged = new Map((config.providers ?? []).map((entry) => [entry.instanceId, entry]));
+            for (const entry of result.providers) merged.set(entry.instanceId, entry);
+            config.providers = [...merged.values()];
+            this.store.saveSnapshot(vmId, "config", config);
+          }
+          const outcome = result.providers?.find((entry) => entry.instanceId === instanceId)?.updateState as Wire | undefined;
+          if (outcome?.status === "failed") failures.push(`${name}: ${str(outcome.message) ?? "the update failed"}`);
+        } catch (error) {
+          failures.push(`${name}: ${message(error)}`);
+        } finally {
+          release();
+          if (this.wokenForUpdate.has(vmId) && !this.fleet.leased(vmId)) {
+            this.wokenForUpdate.delete(vmId);
+            await this.sleepVm(vmId);
+          }
+        }
+      }),
+    );
+    this.traffic.record({ kind: "system", operation: `update ${instanceId} on ${targets.length} VMs`, status: failures.length ? "error" : "ok" });
+    if (failures.length) {
+      state("failed", failures.join("; "));
+      throw new Error(failures.join("; "));
+    }
+    state(targets.length ? "succeeded" : "unchanged", targets.length ? "Updated on every VM" : "Every VM is up to date");
+    return this.agents();
   }
 
   /** Refreshes agent status on one VM (the request's, or any connected one) and returns the catalog. */
@@ -692,20 +768,26 @@ export class Hub extends EventEmitter<HubEvents> {
       this.setBusy(vmId, false);
       if (now - (vm.lastActivityAt ?? vm.createdAt) < idleMs) continue;
       this.traffic.record({ kind: "system", operation: `Idle ${this.settings.get("idleMinutes")} min, sleeping VM`, vmId });
-      await this.fleet
-        .sleep(vmId, async (live) => {
-          // Cache every transcript so threads stay readable while the VM sleeps.
-          for (const thread of threadsOf(shell)) {
-            this.cacheProjection(thread.id, vmId, await live.call("orchestration.getThreadProjection", { threadId: thread.id }));
-            this.store.setThreadVm(thread.id, vmId);
-          }
-          this.shells.set(vmId, shell);
-          this.store.saveSnapshot(vmId, "shell", shell);
-        })
-        .catch(() => {});
-      this.bump();
-      this.emit("shell");
+      await this.sleepVm(vmId, shell);
     }
+  }
+
+  /** Puts an idle VM to sleep, caching every transcript first so threads stay readable. */
+  private async sleepVm(vmId: string, known?: Shell) {
+    const shell = known ?? (await this.fleet.backend(vmId)?.json<Shell>("/api/orchestration/shell").catch(() => null));
+    if (!shell || hasLiveWork(shell) || this.fleet.leased(vmId)) return;
+    await this.fleet
+      .sleep(vmId, async (live) => {
+        for (const thread of threadsOf(shell)) {
+          this.cacheProjection(thread.id, vmId, await live.call("orchestration.getThreadProjection", { threadId: thread.id }));
+          this.store.setThreadVm(thread.id, vmId);
+        }
+        this.shells.set(vmId, shell);
+        this.store.saveSnapshot(vmId, "shell", shell);
+      })
+      .catch(() => {});
+    this.bump();
+    this.emit("shell");
   }
 
   private setBusy(vmId: string, busy: boolean) {

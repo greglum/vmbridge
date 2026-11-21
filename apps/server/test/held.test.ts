@@ -4,7 +4,7 @@ import { openDatabase } from "../src/db.ts";
 import type { Fleet } from "../src/fleet.ts";
 import { Hub } from "../src/gateway/hub.ts";
 import { Rpc, type RpcClient } from "../src/gateway/rpc.ts";
-import type { Shell } from "../src/gateway/types.ts";
+import type { ProviderEntry, ServerConfig, Shell } from "../src/gateway/types.ts";
 import { Settings } from "../src/settings.ts";
 import { Store } from "../src/store.ts";
 import type { Traffic } from "../src/traffic.ts";
@@ -80,5 +80,56 @@ describe("shell from a VM", () => {
 
     expect(hub.shell().threads?.map((row) => row.id)).toEqual(["t1"]);
     expect(store.snapshot<Shell>("vm1", "shell")?.projects?.[0]?.repositoryIdentity).toEqual({ name: "acme/app" });
+  });
+});
+
+describe("agent updates", () => {
+  test("wakes a sleeping VM that reported the agent outdated, updates it, and puts it back to sleep", async () => {
+    const advisory = (status: string, currentVersion: string) => ({
+      status,
+      currentVersion,
+      latestVersion: "2.1.330",
+      updateCommand: "npm i -g @anthropic-ai/claude-code@latest",
+      canUpdate: true,
+    });
+    const claude = (status: string, version: string) =>
+      ({ instanceId: "claudeAgent", driver: "claudeAgent", enabled: true, installed: true, version, versionAdvisory: advisory(status, version) }) as unknown as ProviderEntry;
+    const config = { providers: [claude("behind_latest", "2.1.317")] } as ServerConfig;
+    const { store } = setup();
+    store.saveSnapshot("vm1", "config", config);
+    // A fresh hub loads the cached config, as after a restart.
+    const backends = new Map<string, Backend>();
+    const slept: string[] = [];
+    const calls: string[] = [];
+    let leases = 0;
+    const backend = {
+      call: async (tag: string) => {
+        calls.push(tag);
+        return { providers: [claude("current", "2.1.330")] };
+      },
+      json: async () => ({ threads: [], archivedThreads: [], projects: [] }),
+    } as unknown as Backend;
+    const fleet = Object.assign(new EventEmitter(), {
+      backend: (id: string) => backends.get(id),
+      touch: () => {},
+      leased: () => leases > 0,
+      lease: () => (leases++, () => leases--),
+      ensure: async (id: string) => (backends.set(id, backend), backend),
+      sleep: async (id: string) => (slept.push(id), backends.delete(id)),
+    }) as unknown as Fleet;
+    const traffic = { record: () => {} } as unknown as Traffic;
+    const hub = new Hub(store, new Settings(store.db), fleet, traffic);
+
+    // Offered from the cached report, without waking the VM.
+    expect(hub.agents().find((agent) => agent.instanceId === "claudeAgent")?.versionAdvisory).toMatchObject({ status: "behind_latest" });
+    expect(calls).toEqual([]);
+
+    const agents = await hub.updateAgent({ provider: "claudeAgent", instanceId: "claudeAgent" });
+    expect(calls).toEqual(["server.updateProvider"]);
+    expect(slept).toEqual(["vm1"]);
+    const updated = agents.find((agent) => agent.instanceId === "claudeAgent");
+    expect(updated?.versionAdvisory).toMatchObject({ status: "current" });
+    expect(updated?.updateState).toMatchObject({ status: "succeeded" });
+    expect(store.snapshot<ServerConfig>("vm1", "config")?.providers?.[0]?.version).toBe("2.1.330");
   });
 });

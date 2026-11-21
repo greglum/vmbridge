@@ -84,6 +84,7 @@ export class Rpc {
         }
       },
       "server.refreshProviders": async (call) => this.reply(call, { providers: await hub.refreshAgents(call.payload) }),
+      "server.updateProvider": async (call) => this.reply(call, { providers: await hub.updateAgent(call.payload) }),
       subscribeServerConfig: (call) => this.stream(call, "config", () => ({ version: 1, type: "snapshot", config: this.config() })),
       "orchestration.subscribeShell": (call) => this.stream(call, "shell", () => ({ kind: "snapshot", snapshot: hub.shell() })),
       "scheduledTasks.subscribe": (call) => this.stream(call, "scheduledTasks", () => hub.scheduledTasks()),
@@ -171,6 +172,8 @@ export class Rpc {
       client.send(tagged(id, { _tag: "OrchestrationV2ThreadLaunchError", commandId: payload.commandId, projectId: payload.projectId, message: text }));
     } else if (tag === "orchestration.dispatchCommand" && typeof payload.commandId === "string" && typeof payload.type === "string") {
       client.send(tagged(id, { _tag: "OrchestrationV2DispatchCommandError", commandId: payload.commandId, commandType: payload.type, message: text }));
+    } else if (tag === "server.updateProvider") {
+      client.send(tagged(id, { _tag: "ServerProviderUpdateError", provider: str(payload.provider) ?? "unknown", reason: text }));
     } else if (tag.startsWith("scheduledTasks.")) {
       client.send(tagged(id, { _tag: "ScheduledTaskError", message: text, ...(typeof payload.id === "string" ? { taskId: payload.id } : {}) }));
     } else client.send(defect(id, text));
