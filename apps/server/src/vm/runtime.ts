@@ -144,6 +144,8 @@ if [ -f "$runtime" ]; then
   pid="$(node -e 'try{const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).pid;if(Number.isSafeInteger(p))process.stdout.write(String(p))}catch{}' "$runtime")"
   if [ -z "$pid" ] || ! tr '\\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -- "$data"; then rm -f "$runtime"; fi
 fi
+# Which sign-ins this server runs with, so a wake can tell when they changed since.
+cksum < "$root/env" > "$data/env-started"
 cd /workspace
 exec t3 --base-dir "$data" --host 0.0.0.0 --port ${t3Port} --no-browser
 `;
@@ -209,9 +211,21 @@ export interface T3Server {
   token: string;
 }
 
-/** Starts the T3 server unless it already answers, and issues VM Bridge a session token when it has none. */
-export async function startT3(box: Box, token: string | null): Promise<T3Server> {
+/**
+ * Starts the T3 server unless it already answers, and issues VM Bridge a session token when it has none.
+ * With `restartIfChanged`, a server still running from before a pause is restarted when the sign-ins in
+ * the env file changed since it started: agents inherit them from its environment. Only safe while idle.
+ */
+export async function startT3(box: Box, token: string | null, restartIfChanged = false): Promise<T3Server> {
   let answer = await box.run(probe, { timeoutMs: 15_000 });
+  if (answer.ok && restartIfChanged) {
+    const same = await box.run(`[ "$(cksum < ${root}/env)" = "$(cat ${t3DataDir}/env-started 2>/dev/null)" ]`, { timeoutMs: 15_000 });
+    if (!same.ok) {
+      // A failed restart leaves the old server answering, or none, which the start below handles.
+      await box.process("t3").restart().catch(() => {});
+      answer = await box.run(probe, { timeoutMs: 15_000 });
+    }
+  }
   if (!answer.ok) {
     const options = {
       name: "t3",

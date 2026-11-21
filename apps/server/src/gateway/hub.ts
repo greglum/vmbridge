@@ -4,7 +4,7 @@ import { message, type Fleet } from "../fleet.ts";
 import type { Settings } from "../settings.ts";
 import type { ProjectRow, Store } from "../store.ts";
 import type { Traffic } from "../traffic.ts";
-import type { Backend, Frame } from "../vm/backend.ts";
+import { T3Rejected, type Backend, type Frame } from "../vm/backend.ts";
 import { defaultAgents, pendingAgent, presentAgent, type AgentReport } from "./agents.ts";
 import { applyHeldCommand } from "./held.ts";
 import { isPathKey, projectForPath, projectRoot, translate, vmForPath } from "./paths.ts";
@@ -232,16 +232,20 @@ export class Hub extends EventEmitter<HubEvents> {
     return this.sequence;
   }
 
-  /** Sends held commands to a VM that just connected. A command the VM rejects is dropped: its state wins. */
+  /**
+   * Sends held commands to a VM that just connected. A command the VM rejects is dropped: its state wins.
+   * One that did not get an answer (the socket dropped, a timeout) stays, with those after it, for the next connect.
+   */
   private async replayHeld(vmId: string) {
     for (const held of this.store.heldCommands(vmId)) {
       const backend = this.fleet.backend(vmId);
       if (!backend) return;
-      const ok = await backend.call("orchestration.dispatchCommand", held.payload).then(
-        () => true,
-        () => false,
+      const outcome = await backend.call("orchestration.dispatchCommand", held.payload).then(
+        () => "ok" as const,
+        (error) => (error instanceof T3Rejected ? ("rejected" as const) : ("unanswered" as const)),
       );
-      this.traffic.record({ kind: "system", operation: `replay ${String(held.payload.type)}`, vmId, status: ok ? "ok" : "error" });
+      this.traffic.record({ kind: "system", operation: `replay ${String(held.payload.type)}`, vmId, status: outcome === "ok" ? "ok" : "error" });
+      if (outcome === "unanswered") return;
       this.store.dropHeldCommand(held.id);
     }
   }
@@ -785,8 +789,12 @@ export class Hub extends EventEmitter<HubEvents> {
           this.cacheProjection(thread.id, vmId, await live.call("orchestration.getThreadProjection", { threadId: thread.id }));
           this.store.setThreadVm(thread.id, vmId);
         }
-        this.shells.set(vmId, shell);
-        this.store.saveSnapshot(vmId, "shell", shell);
+        // Caching took a while: work may have started on the VM meanwhile.
+        const latest = await live.json<Shell>("/api/orchestration/shell");
+        if (hasLiveWork(latest)) return false;
+        this.shells.set(vmId, latest);
+        this.store.saveSnapshot(vmId, "shell", latest);
+        return true;
       })
       .catch(() => {});
     this.bump();

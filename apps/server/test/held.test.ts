@@ -8,7 +8,7 @@ import type { ProviderEntry, ServerConfig, Shell } from "../src/gateway/types.ts
 import { Settings } from "../src/settings.ts";
 import { Store } from "../src/store.ts";
 import type { Traffic } from "../src/traffic.ts";
-import type { Backend } from "../src/vm/backend.ts";
+import { T3Rejected, type Backend } from "../src/vm/backend.ts";
 
 function setup() {
   const store = new Store(openDatabase(":memory:"));
@@ -44,6 +44,21 @@ describe("thread commands while the VM is away", () => {
     fleet.emit("awake", "vm1");
     await Bun.sleep(0);
     expect(replayed).toEqual([["orchestration.dispatchCommand", expect.objectContaining({ type: "thread.settle", threadId: "t1" })]]);
+    expect(store.heldCommands("vm1")).toEqual([]);
+  });
+
+  test("a replay that gets no answer stays for the next connect; one T3 refuses is dropped", async () => {
+    const { store, fleet, backends, dispatch } = setup();
+    await dispatch({ type: "thread.settle", threadId: "t1" });
+
+    backends.set("vm1", { call: async () => Promise.reject(new Error("VM vm1 disconnected.")) } as unknown as Backend);
+    fleet.emit("awake", "vm1");
+    await Bun.sleep(0);
+    expect(store.heldCommands("vm1")).toHaveLength(1);
+
+    backends.set("vm1", { call: async () => Promise.reject(new T3Rejected("orchestration.dispatchCommand", "vm1")) } as unknown as Backend);
+    fleet.emit("awake", "vm1");
+    await Bun.sleep(0);
     expect(store.heldCommands("vm1")).toEqual([]);
   });
 
