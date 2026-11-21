@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { parseAsStringLiteral, useQueryState } from "nuqs";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "sonner";
@@ -104,11 +104,11 @@ function VmSettings({ overview }: { overview: Overview }) {
 const fallback = "default";
 
 /** Provider and size pickers for one repository rule. "Default" leaves the choice to the VM settings. */
-function RuleChoices({ overview, rule, onChange }: { overview: Overview; rule: RepoRule; onChange: (rule: RepoRule) => void }) {
+function RuleChoices({ overview, rule, onChange }: { overview: Overview; rule: RepoRule; onChange: (change: Partial<RepoRule>) => void }) {
   const provider = overview.providers.find((entry) => entry.id === (rule.provider ?? overview.defaultProvider));
   return (
     <>
-      <Select value={rule.provider ?? fallback} onValueChange={(value) => onChange({ ...rule, provider: value === fallback ? null : (value as ProviderId) })}>
+      <Select value={rule.provider ?? fallback} onValueChange={(value) => onChange({ provider: value === fallback ? null : (value as ProviderId) })}>
         <SelectTrigger aria-label="Provider" size="sm" className="w-full sm:w-40">
           <SelectValue />
         </SelectTrigger>
@@ -122,7 +122,7 @@ function RuleChoices({ overview, rule, onChange }: { overview: Overview; rule: R
           ))}
         </SelectContent>
       </Select>
-      <Select value={rule.size ?? fallback} onValueChange={(value) => onChange({ ...rule, size: value === fallback ? null : (value as VmSize) })}>
+      <Select value={rule.size ?? fallback} onValueChange={(value) => onChange({ size: value === fallback ? null : (value as VmSize) })}>
         <SelectTrigger aria-label="Size" size="sm" className="w-full max-sm:[&_.spec]:hidden sm:w-48">
           <SelectValue />
         </SelectTrigger>
@@ -199,13 +199,25 @@ function RepoRules({ overview }: { overview: Overview }) {
   const [draft, setDraft] = useState<RepoRule>({ repo: "", provider: null, size: null });
   const action = useAction();
   useEffect(() => void api<string[]>("/github/repos").then(setRepos, () => {}), []);
-  const save = (next: RepoRule[]) => action.run(async () => setRules(await api<RepoRule[]>("/repo-rules", { method: "PUT", body: { rules: next } })));
+  // Each save sends the whole list, so saves run one at a time, each applied to what the last one saved.
+  // Otherwise quick edits (provider, then size) would each start from the same list and the last would win.
+  const saved = useRef(rules);
+  const queue = useRef(Promise.resolve(true));
+  const save = (change: (rules: RepoRule[]) => RepoRule[]) => {
+    queue.current = queue.current.then(() =>
+      action.run(async () => {
+        saved.current = await api<RepoRule[]>("/repo-rules", { method: "PUT", body: { rules: change(saved.current) } });
+        setRules(saved.current);
+      }),
+    );
+    return queue.current;
+  };
   const listed = new Set(rules.map((rule) => rule.repo.toLowerCase()));
   return (
     <Section title="Repositories">
       <div className="flex flex-col gap-3">
         <div className="divide-y overflow-hidden rounded-xl border bg-card">
-          {rules.map((rule, index) => {
+          {rules.map((rule) => {
             const [owner, name] = rule.repo.split("/");
             return (
               <div key={rule.repo} className="flex flex-wrap items-center gap-3 p-3 sm:flex-nowrap">
@@ -217,7 +229,7 @@ function RepoRules({ overview }: { overview: Overview }) {
                   <span className="font-medium">{name}</span>
                 </div>
                 <div className="order-last grid w-full grid-cols-2 gap-2 sm:order-none sm:flex sm:w-auto">
-                  <RuleChoices overview={overview} rule={rule} onChange={(next) => void save(rules.map((entry, at) => (at === index ? next : entry)))} />
+                  <RuleChoices overview={overview} rule={rule} onChange={(change) => void save((list) => list.map((entry) => (entry.repo === rule.repo ? { ...entry, ...change } : entry)))} />
                 </div>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -227,7 +239,7 @@ function RepoRules({ overview }: { overview: Overview }) {
                       aria-label={`Remove ${rule.repo}`}
                       className="text-muted-foreground hover:text-destructive"
                       disabled={action.busy}
-                      onClick={() => void save(rules.filter((_, at) => at !== index))}
+                      onClick={() => void save((list) => list.filter((entry) => entry.repo !== rule.repo))}
                     >
                       <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
                     </Button>
@@ -241,12 +253,12 @@ function RepoRules({ overview }: { overview: Overview }) {
             className="flex flex-col gap-2 bg-muted/30 p-3 sm:flex-row sm:items-center"
             onSubmit={(event) => {
               event.preventDefault();
-              void save([...rules, { ...draft, repo: draft.repo.trim() }]).then((ok) => ok && setDraft({ repo: "", provider: null, size: null }));
+              void save((list) => [...list, { ...draft, repo: draft.repo.trim() }]).then((ok) => ok && setDraft({ repo: "", provider: null, size: null }));
             }}
           >
             <RepoPicker id="rule-repo" value={draft.repo} repos={repos.filter((repo) => !listed.has(repo.toLowerCase()))} onChange={(repo) => setDraft({ ...draft, repo })} />
             <div className="grid grid-cols-2 gap-2 sm:flex">
-              <RuleChoices overview={overview} rule={draft} onChange={setDraft} />
+              <RuleChoices overview={overview} rule={draft} onChange={(change) => setDraft((current) => ({ ...current, ...change }))} />
             </div>
             <Button type="submit" size="sm" className="h-8 px-3" disabled={action.busy || !draft.repo.trim()}>
               <HugeiconsIcon icon={Add01Icon} data-icon="inline-start" strokeWidth={2} />
