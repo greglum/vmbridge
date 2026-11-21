@@ -162,7 +162,10 @@ let client: Client | undefined;
 try {
   // Provider.
   if (values.environment) await admin("PUT", `/providers/${provider}`, { values: { environment: values.environment } });
-  await time("activate provider", () => admin("POST", `/providers/${provider}/activate`, {}));
+  await time("add provider", async () => {
+    await admin("POST", `/providers/${provider}/add`, {});
+    await admin("POST", `/providers/${provider}/default`, {});
+  });
 
   // Pair like T3 does.
   const pairing = await admin<{ urls: { url: string }[] }>("POST", "/pairing", { name: `Live test (${provider})` });
