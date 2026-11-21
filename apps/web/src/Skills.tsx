@@ -108,7 +108,7 @@ function InstalledSkills({ skills }: { skills: SkillInfo[] }) {
         <EmptyState title="No skills yet">Skills you install here go to every VM, for Claude Code and Codex.</EmptyState>
       ) : (
         <>
-          {skills.length >= filterFrom && (
+          {(skills.length >= filterFrom || filter) && (
             <InputGroup className="h-9">
               <InputGroupAddon>
                 <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} />
