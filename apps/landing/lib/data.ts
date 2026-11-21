@@ -183,7 +183,7 @@ export const faq = [
   {
     question: "Do my CLAUDE.md and AGENTS.md reach the VMs?",
     answer:
-      "If you want them to. The Skills page lists the global instructions files for Claude Code, Codex and OpenCode found on the machine that runs VM Bridge. Switch one on and every VM gets it where that agent reads it, and edits follow on their own. A file a VM already had is left alone.",
+      "If you want them to. The AGENTS.md section of the Skills page lists the global files for Claude Code, Codex and OpenCode found on the machine that runs VM Bridge. Switch one on and every VM gets it where that agent reads it, and edits follow on their own. A file a VM already had is left alone.",
   },
   {
     question: "How much does VM Bridge cost?",

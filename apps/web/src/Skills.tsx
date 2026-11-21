@@ -101,7 +101,7 @@ function Instructions({ overview }: { overview: Overview }) {
   );
   const toggle = (file: InstructionFile, sync: boolean) => void action.run(() => api(`/instructions/${file.agent}`, { method: "PUT", body: { sync } }));
   return (
-    <Section title="Instructions" actions={state}>
+    <Section title="AGENTS.md" actions={state}>
       {overview.instructions.length === 0 ? (
         <p className="text-sm text-muted-foreground">No CLAUDE.md or AGENTS.md in ~/.claude, ~/.codex or ~/.config/opencode.</p>
       ) : (

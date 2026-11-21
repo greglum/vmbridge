@@ -26,7 +26,7 @@ ${faq
 
 ## Docs
 
-- [Docs](${site.url}/docs): install, setup, pairing T3 Code, how requests flow, sleep and wake, providers, agent sign-ins, skills, instructions, Tailscale, data and security, troubleshooting
+- [Docs](${site.url}/docs): install, setup, pairing T3 Code, how requests flow, sleep and wake, providers, agent sign-ins, skills, AGENTS.md, Tailscale, data and security, troubleshooting
 - [Providers](${blob}/docs/PROVIDERS.md): sizes, sleep behaviour, safety nets and measured times for each provider
 - [README](${github}#readme): install and commands
 - [Releases](${github}/releases): binaries for macOS and Linux with checksums
