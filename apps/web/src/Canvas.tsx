@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { createContext, useContext, type ReactNode, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -16,7 +16,7 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Add01Icon, Cancel01Icon, CenterFocusIcon, Delete02Icon, Folder01Icon, LaptopIcon, Message01Icon, Moon02Icon, PowerIcon, ZoomInIcon, ZoomOutIcon } from "@hugeicons/core-free-icons";
+import { Add01Icon, Cancel01Icon, CenterFocusIcon, Delete02Icon, Folder01Icon, InformationCircleIcon, LaptopIcon, Message01Icon, Moon02Icon, PowerIcon, ZoomInIcon, ZoomOutIcon } from "@hugeicons/core-free-icons";
 import { vmSizes, type ClientInfo, type Overview, type ProjectInfo, type ProviderId, type TrafficEvent, type VmInfo, type VmSize, type VmState } from "@vmbridge/contracts";
 import {
   AlertDialog,
@@ -30,6 +30,17 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { Field, FieldLabel } from "@/components/ui/field";
@@ -37,6 +48,7 @@ import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } f
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { toast } from "sonner";
 import { useAction } from "@/hooks/use-action";
 import { cn } from "@/lib/utils";
 import { ago, api, useTick } from "./api.ts";
@@ -150,8 +162,8 @@ function VmCard({ data }: NodeProps<VmNode>) {
   const { vm, projects, selected } = data;
   const state = vmStates[vm.state];
   const settling = vm.state === "provisioning" || vm.state === "starting";
-  const models = [...new Set(vm.sessions.map((session) => session.model).filter(Boolean))];
-  const working = vm.sessions.filter((session) => session.working).length;
+  // Three rows at most, so every card keeps the height the layout spaces them by.
+  const shown = projects.length > 3 ? projects.slice(0, 2) : projects;
   return (
     <div
       className={cn(
@@ -161,34 +173,32 @@ function VmCard({ data }: NodeProps<VmNode>) {
       )}
     >
       <Handle type="target" position={Position.Left} isConnectable={false} className={hidden} />
-      <div className="flex flex-col gap-3 p-3.5">
-        <div className="flex items-center gap-3">
-          <ProviderLogo id={vm.provider} className="size-9 rounded-lg" />
-          <div className="min-w-0 flex-1">
-            <div className="truncate font-medium">{vm.name}</div>
-            <div className="truncate text-xs text-muted-foreground">{vm.sizeLabel}</div>
-          </div>
+      <div className="flex items-center gap-3 p-3.5">
+        <ProviderLogo id={vm.provider} className="size-9 rounded-lg" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-medium">{vm.name}</div>
+          <div className="truncate text-xs text-muted-foreground">{vm.sizeLabel}</div>
         </div>
-        <Status {...state} />
-        <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
-          <HugeiconsIcon icon={Message01Icon} className="size-4 text-faint" strokeWidth={1.75} />
-          {vm.sessions.length} {vm.sessions.length === 1 ? "session" : "sessions"}
-          {working > 0 && <span className="text-warning">· {working} working</span>}
-        </div>
-        {models.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {models.slice(0, 3).map((model) => (
-              <Badge key={model} variant="secondary" className="font-mono font-normal">
-                {model}
-              </Badge>
-            ))}
-          </div>
+        {vm.sessions.length > 0 && (
+          <span className="flex shrink-0 items-center gap-1.5 self-start text-xs text-muted-foreground" title={`${vm.sessions.length} ${vm.sessions.length === 1 ? "session" : "sessions"}`}>
+            <HugeiconsIcon icon={Message01Icon} className="size-3.5 text-faint" strokeWidth={1.75} />
+            {vm.sessions.length}
+          </span>
         )}
+      </div>
+      <div className="flex flex-col gap-1.5 px-3.5 pb-3 text-[13px] text-muted-foreground">
+        {shown.map((project) => (
+          <span key={project.id} className="flex min-w-0 items-center gap-2">
+            <HugeiconsIcon icon={Folder01Icon} className="size-4 shrink-0 text-faint" strokeWidth={1.75} />
+            <span className="truncate">{project.title}</span>
+          </span>
+        ))}
+        {projects.length > shown.length && <span className="pl-6 text-faint">+{projects.length - shown.length} more</span>}
+        {projects.length === 0 && <span className="text-faint">No repository yet</span>}
         {vm.state === "error" && vm.error && <p className="line-clamp-2 text-xs text-destructive">{vm.error}</p>}
       </div>
-      <div className="flex items-center gap-2 rounded-b-xl border-t bg-muted/40 px-3.5 py-2.5 text-[13px] text-muted-foreground">
-        <HugeiconsIcon icon={Folder01Icon} className="size-4 shrink-0 text-faint" strokeWidth={1.75} />
-        <span className="truncate">{projects.length ? projects.map((project) => project.title).join(", ") : "No repository yet"}</span>
+      <div className="rounded-b-xl border-t px-3.5 py-2.5">
+        <Status {...state} />
       </div>
     </div>
   );
@@ -283,6 +293,8 @@ function Controls({ fitKey }: { fitKey: string }) {
 export function Canvas({ overview, traffic, onPair }: { overview: Overview; traffic: TrafficEvent[]; onPair: () => void }) {
   const now = useTick(1_000);
   const [selected, setSelected] = useState<string | null>(null);
+  const [menuTarget, setMenuTarget] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<VmInfo | null>(null);
   const vm = overview.vms.find((entry) => entry.id === selected) ?? null;
   const narrow = useNarrow();
   // The nodes are rebuilt every tick. Without their measured sizes React Flow hides each card until it
@@ -334,41 +346,153 @@ export function Canvas({ overview, traffic, onPair }: { overview: Overview; traf
 
   return (
     <div className="relative h-full">
-      <Stacked.Provider value={narrow}>
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={nodeTypes}
-          edgeTypes={edgeTypes}
-          onNodesChange={(changes) => {
-            const measured = changes.getByType("dimensions").flatMap((change) => (change.dimensions ? [[change.id, change.dimensions] as const] : []));
-            if (measured.length) setSizes((current) => ({ ...current, ...Object.fromEntries(measured) }));
-          }}
-          nodesDraggable={false}
-          nodesConnectable={false}
-          zoomOnDoubleClick={false}
-          fitView
-          fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
-          minZoom={0.3}
-          maxZoom={1.5}
-          onNodeClick={(_, node) => {
-            if (node.type === "vm") setSelected(node.id === selected ? null : node.id);
-            if (node.id === "empty-devices") onPair();
-          }}
-          onPaneClick={() => setSelected(null)}
-        >
-          <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
-          <Controls fitKey={`${nodes.length}-${narrow}`} />
-          <Panel position="top-right" className="!m-4 flex flex-col items-end gap-2">
-            <NewVm overview={overview} />
-          </Panel>
-        </ReactFlow>
-      </Stacked.Provider>
+      <CanvasMenu overview={overview} target={overview.vms.find((entry) => entry.id === menuTarget) ?? null} onDetails={setSelected} onPair={onPair} onDelete={setDeleting}>
+        <Stacked.Provider value={narrow}>
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+            onNodesChange={(changes) => {
+              const measured = changes.getByType("dimensions").flatMap((change) => (change.dimensions ? [[change.id, change.dimensions] as const] : []));
+              if (measured.length) setSizes((current) => ({ ...current, ...Object.fromEntries(measured) }));
+            }}
+            nodesDraggable={false}
+            nodesConnectable={false}
+            zoomOnDoubleClick={false}
+            fitView
+            fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
+            minZoom={0.3}
+            maxZoom={1.5}
+            onNodeClick={(_, node) => {
+              if (node.type === "vm") setSelected(node.id === selected ? null : node.id);
+              if (node.id === "empty-devices") onPair();
+            }}
+            onPaneClick={() => setSelected(null)}
+            // Picks which menu opens; the right-click then reaches CanvasMenu's trigger.
+            onNodeContextMenu={(_, node) => setMenuTarget(node.type === "vm" ? node.id : null)}
+            onPaneContextMenu={() => setMenuTarget(null)}
+            onEdgeContextMenu={() => setMenuTarget(null)}
+          >
+            <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
+            <Controls fitKey={`${nodes.length}-${narrow}`} />
+            <Panel position="top-right" className="!m-4 flex flex-col items-end gap-2">
+              <NewVm overview={overview} />
+            </Panel>
+          </ReactFlow>
+        </Stacked.Provider>
+      </CanvasMenu>
       {vm && <VmDetails key={vm.id} vm={vm} overview={overview} now={now} onClose={() => setSelected(null)} />}
+      <AlertDialog open={Boolean(deleting)} onOpenChange={(open) => !open && setDeleting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {deleting?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>Its disk and any work that is not pushed are lost.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                if (!deleting) return;
+                if (deleting.id === selected) setSelected(null);
+                attempt(api(`/vms/${deleting.id}`, { method: "DELETE" }));
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
 
+/** Shows a failed menu action as a toast, since a menu has nowhere to show it once closed. */
+const attempt = (work: Promise<unknown>) => void work.catch((error: Error) => toast.error(error.message));
+
+/** Right-click menu: VM actions on a VM card, canvas actions anywhere else. */
+function CanvasMenu({
+  overview,
+  target,
+  onDetails,
+  onPair,
+  onDelete,
+  children,
+}: {
+  overview: Overview;
+  target: VmInfo | null;
+  onDetails: (id: string) => void;
+  onPair: () => void;
+  onDelete: (vm: VmInfo) => void;
+  children: ReactNode;
+}) {
+  const awake = target?.state === "ready" || target?.state === "busy";
+  const settling = target?.state === "provisioning" || target?.state === "starting";
+  const create = (body: object) => attempt(api("/vms", { body }));
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div className="h-full">{children}</div>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="w-52">
+        {target ? (
+          <>
+            <ContextMenuLabel className="truncate">{target.name}</ContextMenuLabel>
+            <ContextMenuItem onSelect={() => onDetails(target.id)}>
+              <HugeiconsIcon icon={InformationCircleIcon} strokeWidth={1.75} />
+              Details
+            </ContextMenuItem>
+            {awake ? (
+              <ContextMenuItem onSelect={() => attempt(api(`/vms/${target.id}/sleep`, { body: {} }))}>
+                <HugeiconsIcon icon={Moon02Icon} strokeWidth={1.75} />
+                Sleep
+              </ContextMenuItem>
+            ) : (
+              <ContextMenuItem disabled={settling} onSelect={() => attempt(api(`/vms/${target.id}/wake`, { body: {} }))}>
+                <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} />
+                Wake
+              </ContextMenuItem>
+            )}
+            <ContextMenuSeparator />
+            <ContextMenuItem variant="destructive" onSelect={() => onDelete(target)}>
+              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
+              Delete
+            </ContextMenuItem>
+          </>
+        ) : (
+          <>
+            {overview.providers.length > 1 ? (
+              <ContextMenuSub>
+                <ContextMenuSubTrigger>
+                  <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} />
+                  New VM
+                </ContextMenuSubTrigger>
+                <ContextMenuSubContent className="w-44">
+                  {overview.providers.map((provider) => (
+                    <ContextMenuItem key={provider.id} onSelect={() => create({ provider: provider.id })}>
+                      <ProviderLogo id={provider.id} className="size-4 rounded" />
+                      {provider.label}
+                    </ContextMenuItem>
+                  ))}
+                </ContextMenuSubContent>
+              </ContextMenuSub>
+            ) : (
+              <ContextMenuItem disabled={!overview.setup.provider} onSelect={() => create({})}>
+                <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} />
+                New VM
+              </ContextMenuItem>
+            )}
+            <ContextMenuItem onSelect={onPair}>
+              <HugeiconsIcon icon={LaptopIcon} strokeWidth={1.75} />
+              Pair a device
+            </ContextMenuItem>
+          </>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
 
 /** With one provider, creates a VM there right away. With several, asks which provider and size first. */
 function NewVm({ overview }: { overview: Overview }) {
