@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { ServerWebSocket } from "bun";
-import type { AgentAuth } from "../src/agent-auth/profiles.ts";
+import type { AgentAuth, AgentSecrets } from "../src/agent-auth/profiles.ts";
 import { openDatabase } from "../src/db.ts";
 import { Fleet } from "../src/fleet.ts";
 import { Hub } from "../src/gateway/hub.ts";
@@ -59,6 +59,8 @@ afterEach(() => {
 });
 
 const ok = (stdout = "") => ({ ok: true, exitCode: 0, stdout, stderr: "", output: stdout });
+const failed = { ok: false, exitCode: 1, stdout: "", stderr: "", output: "" };
+const envPath = "/workspace/.vmbridge/env";
 
 function gate() {
   let release = () => {};
@@ -79,27 +81,48 @@ function setup() {
   settings.set("defaultProvider", "boxd");
   settings.set("t3Version", "1.0.0");
   const store = new Store(db);
+  const secrets = new Secrets(db);
   const traffic = { record: () => {} } as unknown as Traffic;
-  const agents = { vmSecrets: async () => ({}), adoptCodex: () => {} } as unknown as AgentAuth;
-  const fleet = new Fleet(store, settings, new Secrets(db), traffic, agents);
-  fleets.push(fleet);
+  const signIns: AgentSecrets = {};
+  const agents = { vmSecrets: async () => ({ ...signIns }), adoptCodex: () => {} } as unknown as AgentAuth;
 
+  /** The VM's files, and its T3 server: whether it runs and the env file it started with, as agents inherit it. */
+  const files: Record<string, string> = {};
+  const server = { running: false, env: "", starts: 0, restarts: 0 };
+  const startServer = () => {
+    server.running = true;
+    server.env = files[envPath] ?? "";
+  };
   const box = {
     id: "sb1",
     run: async (command: string) => {
       if (command.includes("auth session issue")) return ok("token");
-      if (command.includes("well-known")) return ok(JSON.stringify({ orchestrationProtocolVersion: 2 }));
+      if (command.includes("well-known")) return server.running ? ok(JSON.stringify({ orchestrationProtocolVersion: 2 })) : failed;
+      if (command.startsWith("rm -f ")) for (const path of command.slice(6).split(" ")) delete files[path];
       return ok();
     },
     files: {
-      read: async () => {
-        throw new Error("No such file.");
+      read: async (path: string) => {
+        if (files[path] === undefined) throw new Error("No such file.");
+        return files[path];
       },
-      write: async () => {},
+      write: async (written: Record<string, string>) => void Object.assign(files, written),
     },
+    start: async () => {
+      server.starts++;
+      startServer();
+    },
+    process: () => ({
+      restart: async () => {
+        server.restarts++;
+        for (const socket of t3.sockets) socket.close();
+        startServer();
+      },
+    }),
     preview: async () => ({ url: t3.url, headers: {} }),
   } as unknown as Box;
   const events: string[] = [];
+  // Pauses by default, like boxd and Instabox: T3 keeps running through sleep.
   const driver = {
     create: async () => (events.push("create"), box),
     wake: async () => (events.push("wake"), box),
@@ -109,8 +132,15 @@ function setup() {
     keepAlive: async () => {},
     deleteCheckpoint: async (checkpoint: string) => void events.push(`delete checkpoint ${checkpoint}`),
   };
-  fleet.driver = () => driver as unknown as Driver;
-  return { t3, store, settings, fleet, driver, box, events, traffic };
+  /** Another Fleet on the same database, as after VM Bridge restarts. */
+  const newFleet = () => {
+    const fleet = new Fleet(store, settings, secrets, traffic, agents);
+    fleet.driver = () => driver as unknown as Driver;
+    fleets.push(fleet);
+    return fleet;
+  };
+  const fleet = newFleet();
+  return { t3, store, settings, secrets, fleet, newFleet, driver, box, events, traffic, signIns, files, server };
 }
 
 describe("creating and deleting VMs", () => {
@@ -208,16 +238,16 @@ describe("checkpoints", () => {
   });
 });
 
+function idleFleet() {
+  const context = setup();
+  const hub = new Hub(context.store, context.settings, context.fleet, context.traffic);
+  // Only the fleet's own lifecycle is under test here, not T3's streams.
+  context.fleet.onConnect = async () => {};
+  return { ...context, hub };
+}
+
 describe("idle sleep", () => {
   const later = () => Date.now() + 24 * 60 * 60_000;
-
-  function idleFleet() {
-    const context = setup();
-    const hub = new Hub(context.store, context.settings, context.fleet, context.traffic);
-    // Only the fleet's own lifecycle is under test here, not T3's streams.
-    context.fleet.onConnect = async () => {};
-    return { ...context, hub };
-  }
 
   test("is dropped when a request takes the VM while transcripts are being saved", async () => {
     const { fleet, hub, t3, events } = idleFleet();
@@ -279,5 +309,160 @@ describe("idle sleep", () => {
     });
     await fleet.sleep(vm.id);
     expect(seen).toEqual(["sleeping"]);
+  });
+});
+
+describe("sign-in changes", () => {
+  const working: Shell = { threads: [{ id: "t1", status: "running" }] };
+  const idle: Shell = { threads: [{ id: "t1", status: "idle" }] };
+
+  test("an idle VM restarts T3 with the new sign-ins, and its streams see it starting rather than dropping", async () => {
+    const { fleet, hub, store, server, signIns } = idleFleet();
+    const vm = await fleet.create();
+    const before = await fleet.ensure(vm.id);
+    const ended: (string | undefined)[] = [];
+    before.request("orchestration.subscribeThread", { threadId: "t1" }, (frame) => {
+      if (frame._tag === "Exit") ended.push(store.vm(vm.id)?.state);
+    });
+    const awake: string[] = [];
+    fleet.on("awake", (id) => awake.push(id));
+
+    signIns.opencodeApiKey = "oc-new";
+    await hub.credentialsChanged();
+    expect(server.restarts).toBe(1);
+    expect(server.env).toContain("export OPENCODE_API_KEY='oc-new'");
+    expect(ended).toEqual(["starting"]);
+    expect(awake).toEqual([vm.id]);
+    expect(fleet.backend(vm.id)?.open).toBe(true);
+    expect(fleet.backend(vm.id)).not.toBe(before);
+    expect(store.vm(vm.id)?.state).toBe("ready");
+
+    // Nothing changed since, so nothing restarts.
+    await hub.credentialsChanged();
+    await hub.sweep();
+    expect(server.restarts).toBe(1);
+  });
+
+  test("a busy VM gets the files now and restarts T3 only once its work ends", async () => {
+    const { fleet, hub, t3, files, server, signIns } = idleFleet();
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    t3.state.shell = working;
+
+    signIns.opencodeApiKey = "oc-new";
+    await hub.credentialsChanged();
+    expect(files[envPath]).toContain("export OPENCODE_API_KEY='oc-new'");
+    await hub.sweep();
+    expect(server.restarts).toBe(0);
+    expect(server.env).not.toContain("OPENCODE_API_KEY=");
+
+    t3.state.shell = idle;
+    await hub.sweep();
+    expect(server.restarts).toBe(1);
+    expect(server.env).toContain("export OPENCODE_API_KEY='oc-new'");
+  });
+
+  test("a VM held by a request restarts only once the request is done", async () => {
+    const { fleet, hub, server, signIns } = idleFleet();
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    const release = fleet.lease(vm.id);
+
+    signIns.opencodeApiKey = "oc-new";
+    await hub.credentialsChanged();
+    await hub.sweep();
+    expect(server.restarts).toBe(0);
+
+    release();
+    await hub.sweep();
+    expect(server.restarts).toBe(1);
+  });
+
+  test.each(["pause", "stop"])("a VM that sleeps by %s gets the new sign-ins when it wakes", async (style) => {
+    const { fleet, hub, driver, events, server, signIns } = idleFleet();
+    if (style === "stop") {
+      driver.sleep = async () => {
+        events.push("sleep");
+        server.running = false;
+        return {};
+      };
+    }
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    await fleet.sleep(vm.id);
+
+    signIns.opencodeApiKey = "oc-new";
+    await hub.credentialsChanged();
+    expect(server.env).not.toContain("OPENCODE_API_KEY=");
+    await fleet.ensure(vm.id);
+    expect(server.env).toContain("export OPENCODE_API_KEY='oc-new'");
+    expect([server.starts, server.restarts]).toEqual(style === "pause" ? [1, 1] : [2, 0]);
+  });
+
+  test("switching Codex accounts restarts T3, a Codex token refresh does not", async () => {
+    const { fleet, hub, files, server, signIns } = idleFleet();
+    Object.assign(signIns, { codexAuthJson: '{"account":"a","refresh":1}', codexSignIn: "codex-a@1" });
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+
+    signIns.codexAuthJson = '{"account":"a","refresh":2}';
+    await hub.credentialsChanged();
+    expect(files["/workspace/.vmbridge/codex/auth.json"]).toBe(signIns.codexAuthJson);
+    expect(server.restarts).toBe(0);
+
+    Object.assign(signIns, { codexAuthJson: '{"account":"b","refresh":1}', codexSignIn: "codex-b@2" });
+    await hub.credentialsChanged();
+    expect(server.restarts).toBe(1);
+  });
+
+  test("after VM Bridge restarts, an idle VM with older sign-ins restarts T3 before it is used", async () => {
+    const { fleet, newFleet, server, signIns } = setup();
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    fleet.close();
+
+    signIns.opencodeApiKey = "oc-new";
+    const restarted = newFleet();
+    await restarted.ensure(vm.id);
+    expect(server.restarts).toBe(1);
+    expect(server.env).toContain("export OPENCODE_API_KEY='oc-new'");
+  });
+
+  test("after VM Bridge restarts, a busy VM with older sign-ins restarts T3 once its work ends", async () => {
+    const { fleet, newFleet, store, settings, traffic, t3, server, signIns } = setup();
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    fleet.close();
+    t3.state.shell = working;
+
+    signIns.opencodeApiKey = "oc-new";
+    const restarted = newFleet();
+    const hub = new Hub(store, settings, restarted, traffic);
+    restarted.onConnect = async () => {};
+    await restarted.ensure(vm.id);
+    await hub.sweep();
+    expect(server.restarts).toBe(0);
+
+    t3.state.shell = idle;
+    await hub.sweep();
+    expect(server.restarts).toBe(1);
+    expect(server.env).toContain("export OPENCODE_API_KEY='oc-new'");
+  });
+
+  test("a removed GitHub token leaves the VM at once, even mid-turn", async () => {
+    const { fleet, hub, t3, files, secrets, settings, server } = idleFleet();
+    secrets.set("github.token", "github_pat_old");
+    settings.set("github", { login: "octo", name: null, avatarUrl: "", profileUrl: "", email: "1+octo@users.noreply.github.com", scopes: null, expiresAt: null, checkedAt: 0 });
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    expect(files["/workspace/.vmbridge/git-credentials"]).toContain("github_pat_old");
+    t3.state.shell = working;
+
+    secrets.set("github.token", null);
+    settings.set("github", null);
+    await hub.credentialsChanged();
+    expect(files["/workspace/.vmbridge/git-credentials"]).toBeUndefined();
+    expect(files[envPath]).not.toContain("GH_TOKEN=");
+    expect(server.restarts).toBe(0);
   });
 });
