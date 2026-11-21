@@ -28,6 +28,7 @@ const sections: DocsSection[] = [
   { id: "sleep", title: "Sleep and wake" },
   { id: "providers", title: "Providers" },
   { id: "sign-in", title: "Agent sign-ins and GitHub" },
+  { id: "env", title: "Environment variables" },
   { id: "skills", title: "Skills" },
   { id: "instructions", title: "AGENTS.md" },
   { id: "network", title: "Addresses and Tailscale" },
@@ -331,6 +332,27 @@ bun run build          # dist/vmbridge
               <p>
                 Signing in with your Claude account makes the same one-year token as <Code>claude setup-token</Code>. Approve on claude.ai, then
                 paste the code it shows into the dashboard.
+              </p>
+            </Section>
+
+            <Section id="env" title="Environment variables">
+              <p>
+                Under <strong>Settings</strong>, <strong>Environment</strong> in the dashboard, add variables every VM gets. T3, the agents and the
+                commands they run see them, and so do login and interactive shells on the VM, such as over SSH.
+              </p>
+              <List
+                items={[
+                  "An awake VM restarts T3 to apply a change as soon as nothing runs on it. A running turn finishes with the values it started with.",
+                  "A sleeping or stopped VM applies it when it wakes, before T3 serves anything.",
+                  "A new VM has them before T3 first starts.",
+                  "VM cards show Update pending until a VM has the latest values.",
+                ]}
+              />
+              <p>
+                Values are kept with VM Bridge&apos;s other secrets and are never shown again: to change one, set it anew. On the VM they live in a
+                file only the VM user can read. Names VM Bridge sets itself, or that would break shells, are refused: for example{" "}
+                <Code>PATH</Code>, <Code>HOME</Code>, <Code>CLAUDE_CONFIG_DIR</Code>, <Code>CODEX_HOME</Code>, <Code>GH_TOKEN</Code> and anything
+                starting with <Code>T3CODE_</Code> or <Code>VMBRIDGE_</Code>.
               </p>
             </Section>
 
