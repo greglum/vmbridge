@@ -29,6 +29,7 @@ const sections: DocsSection[] = [
   { id: "providers", title: "Providers" },
   { id: "sign-in", title: "Agent sign-ins and GitHub" },
   { id: "skills", title: "Skills" },
+  { id: "instructions", title: "Instructions" },
   { id: "network", title: "Addresses and Tailscale" },
   { id: "security", title: "Data and security" },
   { id: "troubleshooting", title: "Troubleshooting" },
@@ -357,6 +358,27 @@ bun run build          # dist/vmbridge
               <p>
                 Claude Code picks up new skills in a running session. Codex notices changes on its own; if a skill does not show, start a new
                 thread. skills.sh skills download as text files.
+              </p>
+            </Section>
+
+            <Section id="instructions" title="Instructions">
+              <p>
+                The Skills page also lists each agent&apos;s global instructions file found on this machine. Switch one on and every VM gets it, at
+                the path that agent reads, on the same terms as skills: awake VMs right away, sleeping VMs before they serve anything on wake, new
+                VMs at setup, and edits here within a few seconds.
+              </p>
+              <Table
+                head={["Agent", "On this machine", "On each VM"]}
+                rows={[
+                  ["Claude Code", <Code key="c">~/.claude/CLAUDE.md</Code>, <Code key="cv">$CLAUDE_CONFIG_DIR/CLAUDE.md</Code>],
+                  ["Codex", <Code key="x">~/.codex/AGENTS.md</Code>, <Code key="xv">$CODEX_HOME/AGENTS.md</Code>],
+                  ["OpenCode", <Code key="o">~/.config/opencode/AGENTS.md</Code>, <Code key="ov">~/.config/opencode/AGENTS.md</Code>],
+                ]}
+              />
+              <p>
+                Only files that exist here are copied, so an agent without one gets none. Switching a file off, or deleting it here, takes it off
+                the VMs. VM Bridge only replaces or removes a file it wrote: a file a VM already had, or one edited on the VM, is left alone. The
+                files stay in memory on this machine and are never logged.
               </p>
             </Section>
 
