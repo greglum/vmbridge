@@ -1,12 +1,13 @@
 import { EventEmitter } from "node:events";
 import { SandboxError } from "@opencoredev/sandbox-sdk";
-import type { ProviderId, VmState } from "@vmbridge/contracts";
+import type { ProviderId, VmSize, VmState } from "@vmbridge/contracts";
 import { providers, type Box, type Driver } from "./providers/index.ts";
 import type { Settings, Secrets } from "./settings.ts";
 import type { ProjectRow, Store, VmRow } from "./store.ts";
 import type { Traffic } from "./traffic.ts";
 import { Backend, TokenRejected } from "./vm/backend.ts";
 import type { AgentAuth } from "./agent-auth/profiles.ts";
+import { githubName } from "./gateway/repos.ts";
 import { checkoutRoot, prepareVm, quote, readCodexAuth, resolveT3Version, startT3, t3Port, writeCodexAuth } from "./vm/runtime.ts";
 
 type FleetEvents = {
@@ -126,13 +127,14 @@ export class Fleet extends EventEmitter<FleetEvents> {
     return { vmbridge: this.settings.get("bridgeId").slice(0, 12) };
   }
 
-  /** Creates a VM on the active provider. It is not started or connected yet. */
-  async create(): Promise<VmRow> {
-    const provider = this.settings.get("activeProvider");
+  /** Creates a VM, on the default provider and size unless told otherwise. It is not started or connected yet. */
+  async create(choice: { provider?: ProviderId; size?: VmSize } = {}): Promise<VmRow> {
+    const provider = choice.provider ?? this.settings.get("defaultProvider");
     if (!provider) throw new NoProvider();
+    if (!this.settings.get("providers").includes(provider)) throw new Error(`Add ${providers[provider].label} in Setup first.`);
     const driver = this.driver(provider);
     const id = shortId();
-    const size = this.settings.get("vmSize");
+    const size = choice.size ?? this.settings.get("vmSize");
     this.store.insertVm({ id, provider, name: `vm-${id.slice(0, 6)}`, size, state: "provisioning", createdAt: Date.now() });
     this.emit("changed");
     const started = performance.now();
@@ -288,15 +290,20 @@ export class Fleet extends EventEmitter<FleetEvents> {
     });
   }
 
-  /** VMs on the active provider. VMs left on an earlier provider keep their projects but get no new work. */
-  private current() {
-    const provider = this.settings.get("activeProvider");
-    return this.store.vms().filter((vm) => vm.provider === provider);
+  /** Provider and size for a new VM holding this repository: its rule, else the defaults. */
+  placement(url: string): { provider: ProviderId; size: VmSize } {
+    const name = githubName(url)?.toLowerCase();
+    const rule = name ? this.settings.get("repoRules").find((entry) => entry.repo.toLowerCase() === name) : undefined;
+    // A rule naming a provider that was removed since falls back to the default.
+    const provider = rule?.provider && this.settings.get("providers").includes(rule.provider) ? rule.provider : this.settings.get("defaultProvider");
+    if (!provider) throw new NoProvider();
+    return { provider, size: rule?.size ?? this.settings.get("vmSize") };
   }
 
   /** A VM to read T3's configuration from when none is cached: any existing VM, or a new one. */
   async any(): Promise<string> {
-    const vms = this.current().filter((vm) => vm.state !== "gone" && vm.sandboxId);
+    const added = this.settings.get("providers");
+    const vms = this.store.vms().filter((vm) => added.includes(vm.provider) && vm.state !== "gone" && vm.sandboxId);
     const awake = vms.find((vm) => this.backend(vm.id));
     if (awake) return awake.id;
     const vmId = vms[0]?.id ?? (await this.create()).id;
@@ -325,9 +332,12 @@ export class Fleet extends EventEmitter<FleetEvents> {
     if (project.vmId && project.checkoutPath) return project.vmId;
     if (!project.vmId) {
       const taken = new Set(this.store.projects().flatMap((p) => (p.vmId ? [p.vmId] : [])));
-      const free = this.current().find((vm) => !taken.has(vm.id) && vm.state !== "gone" && vm.state !== "error" && vm.sandboxId);
-      progress(free ? "Using an idle VM" : "Creating a VM");
-      const vmId = free?.id ?? (await this.create()).id;
+      const target = this.placement(project.url);
+      const free = this.store
+        .vms()
+        .find((vm) => vm.provider === target.provider && vm.size === target.size && !taken.has(vm.id) && vm.state !== "gone" && vm.state !== "error" && vm.sandboxId);
+      progress(free ? "Using an idle VM" : `Creating a VM on ${providers[target.provider].label}`);
+      const vmId = free?.id ?? (await this.create(target)).id;
       this.store.updateProject(projectId, { vmId });
       this.emit("changed");
       project = { ...project, vmId };

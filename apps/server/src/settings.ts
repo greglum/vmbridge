@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { AgentKind, GitHubAccount, ProviderId, VmSize } from "@vmbridge/contracts";
+import type { AgentKind, GitHubAccount, ProviderId, RepoRule, VmSize } from "@vmbridge/contracts";
 
 export interface ProviderPreference {
   enabled?: boolean;
@@ -10,7 +10,11 @@ interface SettingValues {
   /** Stable T3 environment identity. Never changes once created. */
   bridgeId: string;
   dashboardKeyHash: string | null;
-  activeProvider: ProviderId | null;
+  /** Providers added in Setup, in order. VMs on a removed provider keep running but get no new VMs beside them. */
+  providers: ProviderId[];
+  /** One of `providers`. New VMs go here unless a repository rule picks another. */
+  defaultProvider: ProviderId | null;
+  repoRules: RepoRule[];
   /** Non-secret provider fields, such as a Boat environment name. Secrets live in the secrets table. */
   providerOptions: Partial<Record<ProviderId, Record<string, string>>>;
   vmSize: VmSize;
@@ -30,7 +34,9 @@ interface SettingValues {
 const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
   bridgeId: () => crypto.randomUUID(),
   dashboardKeyHash: () => null,
-  activeProvider: () => null,
+  providers: () => [],
+  defaultProvider: () => null,
+  repoRules: () => [],
   providerOptions: () => ({}),
   vmSize: () => "medium",
   idleMinutes: () => 5,

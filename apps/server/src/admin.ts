@@ -6,15 +6,18 @@ import {
   type Overview,
   type ProviderId,
   type ProviderInfo,
+  type RepoRule,
   type VmInfo,
+  type VmSize,
 } from "@vmbridge/contracts";
 import { InvalidSignIn, type AgentAuth, type TokenInput } from "./agent-auth/profiles.ts";
 import { TooManyAttempts, type DashboardAuth } from "./auth/dashboard.ts";
-import { fetchGitHubAccount, GitHubRejected } from "./github.ts";
+import { fetchGitHubAccount, fetchGitHubRepos, GitHubRejected } from "./github.ts";
 import type { Clients } from "./auth/clients.ts";
 import { message, providerValues, type Fleet } from "./fleet.ts";
 import type { Hub } from "./gateway/hub.ts";
 import type { T3Gateway } from "./gateway/http.ts";
+import { githubName } from "./gateway/repos.ts";
 import { isWorking } from "./gateway/types.ts";
 import { disableTailscaleHttps, enableTailscaleHttps, networkInfo } from "./network.ts";
 import { providers } from "./providers/index.ts";
@@ -42,7 +45,8 @@ export interface AdminDeps {
 class BadRequest extends Error {}
 
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
-const isProvider = (id: string): id is ProviderId => (providerIds as readonly string[]).includes(id);
+const isProvider = (id: unknown): id is ProviderId => (providerIds as readonly unknown[]).includes(id);
+const isSize = (size: unknown): size is VmSize => (vmSizes as readonly unknown[]).includes(size);
 
 async function body(request: Request): Promise<Record<string, unknown>> {
   const value: unknown = await request.json().catch(() => null);
@@ -142,13 +146,51 @@ export class Admin {
         const field = new URL(request.url).searchParams.get("field") ?? "";
         return json(await fleet.driver(id).options(field));
       }
-      if (action === "activate" && method === "POST") {
+      if (action === "add" && method === "POST") {
         await fleet.driver(id).verify();
-        settings.set("activeProvider", id);
-        fleet.emit("changed");
-        hub.emit("config");
+        const added = settings.get("providers");
+        if (!added.includes(id)) settings.set("providers", [...added, id]);
+        // The first provider added becomes the default.
+        if (!settings.get("defaultProvider")) settings.set("defaultProvider", id);
+        this.providersChanged();
         return json(this.providerInfo(id));
       }
+      if (action === "default" && method === "POST") {
+        if (!settings.get("providers").includes(id)) throw new BadRequest(`Add ${definition.label} first.`);
+        settings.set("defaultProvider", id);
+        this.providersChanged();
+        return json(this.providerInfo(id));
+      }
+      // VMs already on the provider keep running. Only new VMs stop going there.
+      if (!action && method === "DELETE") {
+        const remaining = settings.get("providers").filter((entry) => entry !== id);
+        settings.set("providers", remaining);
+        if (settings.get("defaultProvider") === id) settings.set("defaultProvider", remaining[0] ?? null);
+        this.providersChanged();
+        return json(this.providerInfo(id));
+      }
+    }
+
+    if (path === "/github/repos" && method === "GET") {
+      const token = secrets.get("github.token");
+      return json(token ? await fetchGitHubRepos(token) : []);
+    }
+    if (path === "/repo-rules" && method === "PUT") {
+      const { rules } = await body(request);
+      if (!Array.isArray(rules)) throw new BadRequest("Send the repository rules.");
+      const seen = new Set<string>();
+      const parsed = rules.map((rule): RepoRule => {
+        const repo = typeof rule?.repo === "string" ? githubName(rule.repo) : undefined;
+        if (!repo) throw new BadRequest("Name each repository as owner/name.");
+        if (seen.has(repo.toLowerCase())) throw new BadRequest(`${repo} is listed twice.`);
+        seen.add(repo.toLowerCase());
+        if (rule.provider !== null && !isProvider(rule.provider)) throw new BadRequest("Unknown provider.");
+        if (rule.size !== null && !isSize(rule.size)) throw new BadRequest("Pick small, medium or large.");
+        return { repo, provider: rule.provider, size: rule.size };
+      });
+      settings.set("repoRules", parsed);
+      fleet.emit("changed");
+      return json(parsed);
     }
 
     if (path === "/github" && method === "PUT") {
@@ -224,8 +266,8 @@ export class Admin {
     if (path === "/settings" && method === "PUT") {
       const input = await body(request);
       if (input.vmSize !== undefined) {
-        if (!(vmSizes as readonly unknown[]).includes(input.vmSize)) throw new BadRequest("Pick small, medium or large.");
-        settings.set("vmSize", input.vmSize as (typeof vmSizes)[number]);
+        if (!isSize(input.vmSize)) throw new BadRequest("Pick small, medium or large.");
+        settings.set("vmSize", input.vmSize);
       }
       if (input.idleMinutes !== undefined) {
         const minutes = Number(input.idleMinutes);
@@ -286,7 +328,10 @@ export class Admin {
       }
     }
     if (section === "vms" && !id && method === "POST") {
-      const vm = await fleet.create();
+      const { provider, size } = await body(request);
+      if (provider !== undefined && !isProvider(provider)) throw new BadRequest("Unknown provider.");
+      if (size !== undefined && !isSize(size)) throw new BadRequest("Pick small, medium or large.");
+      const vm = await fleet.create({ provider, size });
       void fleet.ensure(vm.id).catch(() => {});
       return json({ id: vm.id });
     }
@@ -312,14 +357,20 @@ export class Admin {
       values,
       secretsSet,
       configured: definition.fields.every((field) => !field.required || Boolean(all[field.key])),
-      active: settings.get("activeProvider") === id,
+      added: settings.get("providers").includes(id),
+      isDefault: settings.get("defaultProvider") === id,
     };
+  }
+
+  private providersChanged() {
+    this.deps.fleet.emit("changed");
+    // T3's agent list labels agents with the provider when there is only one.
+    this.deps.hub.emit("config");
   }
 
   overview(): Overview {
     const { settings, secrets, store, fleet, hub, clients, gateway } = this.deps;
-    const active = settings.get("activeProvider");
-    const provider = active ? this.providerInfo(active) : null;
+    const defaultProvider = settings.get("defaultProvider");
     const agents = this.deps.agents.list();
     const projects = store.projects();
     const idleMs = settings.get("idleMinutes") * 60_000;
@@ -332,6 +383,7 @@ export class Admin {
           id: vm.id,
           name: vm.name,
           provider: vm.provider,
+          providerLabel: providers[vm.provider].label,
           sandboxId: vm.sandboxId,
           size: vm.size,
           sizeLabel: providers[vm.provider].sizes[vm.size],
@@ -362,11 +414,13 @@ export class Admin {
     return {
       bridge: { id: settings.get("bridgeId"), version: this.deps.version, startedAt: this.deps.startedAt },
       setup: {
-        provider: Boolean(provider?.configured && provider.active),
+        provider: Boolean(defaultProvider),
         github: secrets.has("github.token"),
         agents: agents.some((profile) => profile.inUse),
       },
-      provider,
+      providers: settings.get("providers").map((id) => this.providerInfo(id)),
+      defaultProvider,
+      repoRules: settings.get("repoRules"),
       github: secrets.has("github.token") ? settings.get("github") : null,
       agents,
       settings: { vmSize: settings.get("vmSize"), idleMinutes: settings.get("idleMinutes"), t3Version: settings.get("t3Version") },

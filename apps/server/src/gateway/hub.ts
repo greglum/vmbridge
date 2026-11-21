@@ -343,8 +343,8 @@ export class Hub extends EventEmitter<HubEvents> {
     }
     for (const driver of defaultAgents) if (!byId.has(driver)) byId.set(driver, { vmId: null, entry: pendingAgent(driver) });
     const preferences = this.settings.get("agentPreferences");
-    const active = this.settings.get("activeProvider");
-    const badge = active ? providers[active].label : "VM Bridge";
+    const added = this.settings.get("providers");
+    const badge = added.length === 1 ? providers[added[0]!].label : "VM Bridge";
     return [...byId.values()].map(({ vmId, entry }) => {
       const shown = vmId ? (this.out(entry, vmId) as ProviderEntry) : entry;
       const report = presentAgent(shown, preferences[entry.instanceId], badge);

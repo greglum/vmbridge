@@ -37,7 +37,18 @@ export interface ProviderInfo {
   values: Record<string, string>;
   secretsSet: string[];
   configured: boolean;
-  active: boolean;
+  /** Added in Setup, so VM Bridge can create VMs on it. */
+  added: boolean;
+  /** New VMs go here unless a repository rule picks another provider. */
+  isDefault: boolean;
+}
+
+/** Where new VMs for one GitHub repository go. Null fields fall back to the defaults. */
+export interface RepoRule {
+  /** `owner/name` */
+  repo: string;
+  provider: ProviderId | null;
+  size: VmSize | null;
 }
 
 export interface SelectOption {
@@ -102,6 +113,7 @@ export interface VmInfo {
   id: string;
   name: string;
   provider: ProviderId;
+  providerLabel: string;
   sandboxId: string | null;
   size: VmSize;
   sizeLabel: string;
@@ -195,7 +207,10 @@ export interface BridgeSettings {
 export interface Overview {
   bridge: { id: string; version: string; startedAt: number };
   setup: Setup;
-  provider: ProviderInfo | null;
+  /** Added providers, in the order they were added. */
+  providers: ProviderInfo[];
+  defaultProvider: ProviderId | null;
+  repoRules: RepoRule[];
   github: GitHubAccount | null;
   agents: AgentProfile[];
   settings: BridgeSettings;

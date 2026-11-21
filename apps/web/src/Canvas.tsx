@@ -17,7 +17,7 @@ import {
 } from "@xyflow/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Add01Icon, Cancel01Icon, CenterFocusIcon, Delete02Icon, Folder01Icon, LaptopIcon, Message01Icon, Moon02Icon, PowerIcon, ZoomInIcon, ZoomOutIcon } from "@hugeicons/core-free-icons";
-import type { ClientInfo, Overview, ProjectInfo, TrafficEvent, VmInfo, VmState } from "@vmbridge/contracts";
+import { vmSizes, type ClientInfo, type Overview, type ProjectInfo, type ProviderId, type TrafficEvent, type VmInfo, type VmSize, type VmState } from "@vmbridge/contracts";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,7 +32,9 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
+import { Field, FieldLabel } from "@/components/ui/field";
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAction } from "@/hooks/use-action";
@@ -118,7 +120,6 @@ function DeviceCard({ data }: NodeProps<DeviceNode>) {
 
 function BridgeCard({ data }: NodeProps<BridgeNode>) {
   const { overview } = data;
-  const provider = overview.provider?.active ? overview.provider : null;
   const stacked = useContext(Stacked);
   return (
     <div className="w-72 rounded-xl border border-primary/40 bg-card shadow-[0_0_0_4px_color-mix(in_oklab,var(--primary)_10%,transparent)]">
@@ -130,15 +131,15 @@ function BridgeCard({ data }: NodeProps<BridgeNode>) {
           <div className="font-mono text-xs text-muted-foreground">v{overview.bridge.version}</div>
         </div>
       </div>
-      <div className="flex items-center gap-2 border-t px-3.5 py-2.5 text-[13px] text-muted-foreground">
-        {provider ? (
-          <>
-            <ProviderLogo id={provider.id} className="size-4 rounded" />
-            {provider.label}
-          </>
-        ) : (
-          "No provider yet"
-        )}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t px-3.5 py-2.5 text-[13px] text-muted-foreground">
+        {overview.providers.length
+          ? overview.providers.map((provider) => (
+              <span key={provider.id} className="flex items-center gap-2">
+                <ProviderLogo id={provider.id} className="size-4 rounded" />
+                {provider.label}
+              </span>
+            ))
+          : "No provider yet"}
       </div>
       <Handle type="source" position={stacked ? Position.Bottom : Position.Right} style={stacked ? stackedHandle : undefined} isConnectable={false} className={hidden} />
     </div>
@@ -282,7 +283,6 @@ function Controls({ fitKey }: { fitKey: string }) {
 export function Canvas({ overview, traffic, onPair }: { overview: Overview; traffic: TrafficEvent[]; onPair: () => void }) {
   const now = useTick(1_000);
   const [selected, setSelected] = useState<string | null>(null);
-  const create = useAction();
   const vm = overview.vms.find((entry) => entry.id === selected) ?? null;
   const narrow = useNarrow();
   // The nodes are rebuilt every tick. Without their measured sizes React Flow hides each card until it
@@ -360,18 +360,7 @@ export function Canvas({ overview, traffic, onPair }: { overview: Overview; traf
           <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
           <Controls fitKey={`${nodes.length}-${narrow}`} />
           <Panel position="top-right" className="!m-4 flex flex-col items-end gap-2">
-            <Button
-              variant="outline"
-              size="lg"
-              className="bg-card"
-              disabled={create.busy || !overview.setup.provider}
-              title={overview.setup.provider ? undefined : "Choose a provider first"}
-              onClick={() => void create.run(() => api("/vms", { body: {} }))}
-            >
-              <HugeiconsIcon icon={Add01Icon} data-icon="inline-start" strokeWidth={2} />
-              New VM
-            </Button>
-            {create.error && <p className="max-w-64 text-right text-xs text-destructive">{create.error}</p>}
+            <NewVm overview={overview} />
           </Panel>
         </ReactFlow>
       </Stacked.Provider>
@@ -380,14 +369,84 @@ export function Canvas({ overview, traffic, onPair }: { overview: Overview; traf
   );
 }
 
+
+/** With one provider, creates a VM there right away. With several, asks which provider and size first. */
+function NewVm({ overview }: { overview: Overview }) {
+  const create = useAction();
+  const [picking, setPicking] = useState(false);
+  const [provider, setProvider] = useState(overview.defaultProvider);
+  const [size, setSize] = useState(overview.settings.vmSize);
+  const chosen = overview.providers.find((entry) => entry.id === provider) ?? overview.providers[0];
+  const make = (body: object) => void create.run(() => api("/vms", { body })).then((ok) => ok && setPicking(false));
+  return (
+    <>
+      <Button
+        variant="outline"
+        size="lg"
+        className="bg-card"
+        disabled={create.busy || !overview.setup.provider}
+        title={overview.setup.provider ? undefined : "Add a provider first"}
+        onClick={() => (overview.providers.length > 1 ? setPicking(!picking) : make({}))}
+      >
+        <HugeiconsIcon icon={Add01Icon} data-icon="inline-start" strokeWidth={2} />
+        New VM
+      </Button>
+      {picking && chosen && (
+        <div className="flex w-64 flex-col gap-4 rounded-xl border bg-card p-3.5 shadow-sm">
+          <Field>
+            <FieldLabel htmlFor="new-vm-provider">Provider</FieldLabel>
+            <Select value={chosen.id} onValueChange={(value) => setProvider(value as ProviderId)}>
+              <SelectTrigger id="new-vm-provider" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {overview.providers.map((entry) => (
+                  <SelectItem key={entry.id} value={entry.id}>
+                    <ProviderLogo id={entry.id} className="size-4 rounded" />
+                    {entry.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="new-vm-size">Size</FieldLabel>
+            <Select value={size} onValueChange={(value) => setSize(value as VmSize)}>
+              <SelectTrigger id="new-vm-size" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {vmSizes.map((entry) => (
+                  <SelectItem key={entry} value={entry}>
+                    <span className="capitalize">{entry}</span>
+                    <span className="text-muted-foreground">{chosen.sizes[entry]}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+          <div className="flex gap-2">
+            <Button size="sm" disabled={create.busy} onClick={() => make({ provider: chosen.id, size })}>
+              Create
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setPicking(false)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+      {create.error && <p className="max-w-64 text-right text-xs text-destructive">{create.error}</p>}
+    </>
+  );
+}
+
 function VmDetails({ vm, overview, now, onClose }: { vm: VmInfo; overview: Overview; now: number; onClose: () => void }) {
   const action = useAction();
   const projects = overview.projects.filter((project) => vm.projects.includes(project.id));
   const awake = vm.state === "ready" || vm.state === "busy";
   const settling = vm.state === "provisioning" || vm.state === "starting";
-  const providerLabel = overview.provider?.id === vm.provider ? overview.provider.label : vm.provider;
   const rows: [string, string][] = [
-    ["Provider", providerLabel],
+    ["Provider", vm.providerLabel],
     ["Size", vm.sizeLabel],
     ["Sandbox", vm.sandboxId ?? "Not created"],
     ["T3", vm.t3Version ?? "Not installed"],

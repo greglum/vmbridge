@@ -9,7 +9,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useAction } from "@/hooks/use-action";
 import { cn } from "@/lib/utils";
 import { api, onLoggedOut, useLive } from "./api.ts";
-import { Logo, ProviderLogo } from "./brand.tsx";
+import { Logo } from "./brand.tsx";
 import { Canvas } from "./Canvas.tsx";
 import { Devices } from "./Devices.tsx";
 import { Logs } from "./Logs.tsx";
@@ -93,7 +93,6 @@ function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
   const [chosen, go] = useView();
   const view: View = chosen ?? (overview && !overview.setup.provider ? "setup" : "canvas");
   const setupDone = overview && overview.setup.provider && overview.setup.github && overview.setup.agents;
-  const provider = overview?.provider?.active ? overview.provider : null;
   const current = views.find((entry) => entry.id === view)!;
 
   return (
@@ -102,16 +101,7 @@ function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
         <Logo className="size-7" />
         <span className="text-lg text-faint">/</span>
         <nav className="flex min-w-0 items-center gap-2 text-sm">
-          {provider ? (
-            <span className="flex min-w-0 items-center gap-2 font-medium">
-              <ProviderLogo id={provider.id} className="size-5 rounded" />
-              <span className="truncate">{provider.label}</span>
-            </span>
-          ) : (
-            <span className="text-muted-foreground">No provider</span>
-          )}
-          <span className="text-faint">/</span>
-          <span className="truncate text-muted-foreground">{current.label}</span>
+          <span className="truncate font-medium">{current.label}</span>
         </nav>
         <div className={cn("ml-auto flex items-center gap-2 text-xs", online ? "text-muted-foreground" : "text-warning")}>
           <span className={cn("size-2 rounded-full", online ? "bg-success" : "bg-warning")} />

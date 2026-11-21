@@ -196,7 +196,7 @@ export class Rpc {
     if (!this.hub.hasConfig()) {
       // T3 needs one VM's config before it can show anything. Start one now.
       void this.hub.fleet.any().catch(() => {});
-      if (!this.hub.settings.get("activeProvider")) throw new NoProvider();
+      if (!this.hub.settings.get("defaultProvider")) throw new NoProvider();
     }
     return this.hub.config() as Wire & { settings?: Wire };
   }

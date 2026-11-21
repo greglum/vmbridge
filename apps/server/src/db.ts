@@ -100,6 +100,12 @@ const migrations = [
     created_at INTEGER NOT NULL
   );
   `,
+  // One active provider became a list of added providers with a default.
+  `
+  INSERT INTO settings (key, value) SELECT 'providers', json_array(json(value)) FROM settings WHERE key = 'activeProvider' AND value != 'null';
+  INSERT INTO settings (key, value) SELECT 'defaultProvider', value FROM settings WHERE key = 'activeProvider';
+  DELETE FROM settings WHERE key = 'activeProvider';
+  `,
 ];
 
 export function openDatabase(path: string): Database {

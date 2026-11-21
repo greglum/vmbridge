@@ -24,38 +24,45 @@ const sleepModes = { pause: "Pauses: memory and disk kept", stop: "Stops: disk k
 
 export function Setup({ overview }: { overview: Overview }) {
   const [tab, setTab] = useState<SetupTab>(overview.setup.provider ? "agents" : "provider");
-  const provider = overview.provider?.active ? overview.provider : null;
   const tabs: Tab<SetupTab>[] = [
-    { id: "provider", label: "Provider", icon: Plug01Icon, attention: !overview.setup.provider },
+    { id: "provider", label: "Providers", icon: Plug01Icon, attention: !overview.setup.provider },
     { id: "github", label: "GitHub", icon: GithubIcon, attention: !overview.setup.github },
     { id: "agents", label: "Agent sign-in", icon: Robot01Icon, attention: !overview.setup.agents },
   ];
   return (
     <Page title="Setup" tabs={tabs} tab={tab} onTab={setTab}>
-      {tab === "provider" && <Providers active={provider?.id ?? null} />}
+      {tab === "provider" && <Providers overview={overview} />}
       {tab === "github" && <GitHub account={overview.github} />}
       {tab === "agents" && <Agents profiles={overview.agents} />}
     </Page>
   );
 }
 
-function Providers({ active }: { active: ProviderId | null }) {
+function providerStatus(provider: ProviderInfo) {
+  if (provider.isDefault) return "Default";
+  if (provider.added) return "Added";
+  return provider.configured ? "Ready" : "Not set up";
+}
+
+function Providers({ overview }: { overview: Overview }) {
   const [list, setList] = useState<ProviderInfo[]>([]);
-  const [chosen, setChosen] = useState<ProviderId | null>(active);
+  const [chosen, setChosen] = useState<ProviderId | null>(overview.defaultProvider);
   const load = useAction();
+  // Adding, removing or changing the default on one provider changes the others' status too.
+  const added = overview.providers.map((provider) => provider.id).join();
   useEffect(() => {
     void load.run(async () => {
       const providers = await api<ProviderInfo[]>("/providers");
       setList(providers);
-      setChosen((current) => current ?? providers.find((provider) => provider.active)?.id ?? providers[0]?.id ?? null);
+      setChosen((current) => current ?? providers[0]?.id ?? null);
     });
-  }, [active]);
+  }, [added, overview.defaultProvider]);
   const provider = list.find((entry) => entry.id === chosen);
-  const replace = (next: ProviderInfo) => setList((current) => current.map((entry) => (entry.id === next.id ? next : { ...entry, active: next.active ? false : entry.active })));
+  const replace = (next: ProviderInfo) => setList((current) => current.map((entry) => (entry.id === next.id ? next : entry)));
 
   return (
     <>
-      <Section title="Provider">
+      <Section title="Providers">
         <RadioGroup value={chosen ?? ""} onValueChange={(value) => setChosen(value as ProviderId)} className="grid gap-2 sm:grid-cols-2">
           {list.map((entry) => (
             <FieldLabel key={entry.id} htmlFor={`provider-${entry.id}`}>
@@ -63,7 +70,7 @@ function Providers({ active }: { active: ProviderId | null }) {
                 <ProviderLogo id={entry.id} className="size-9 rounded-lg" />
                 <FieldContent>
                   <FieldTitle>{entry.label}</FieldTitle>
-                  <FieldDescription>{entry.active ? "In use" : entry.configured ? "Ready" : "Not set up"}</FieldDescription>
+                  <FieldDescription>{providerStatus(entry)}</FieldDescription>
                 </FieldContent>
                 <RadioGroupItem value={entry.id} id={`provider-${entry.id}`} />
               </Field>
@@ -93,14 +100,26 @@ function ProviderForm({ provider, onSaved }: { provider: ProviderInfo; onSaved: 
       setOptions((current) => ({ ...current, [field]: loaded }));
     });
 
-  const submit = (activate: boolean) =>
+  const submit = (add: boolean) =>
     save.run(async () => {
       let next = await api<ProviderInfo>(`/providers/${provider.id}`, { method: "PUT", body: { values: changes() } });
-      if (activate) next = await api<ProviderInfo>(`/providers/${provider.id}/activate`, { body: {} });
+      if (add) next = await api<ProviderInfo>(`/providers/${provider.id}/add`, { body: {} });
       else await api(`/providers/${provider.id}/verify`, { body: {} });
       onSaved(next);
       setValues(next.values);
-      toast.success(activate ? `${provider.label} is now in use.` : `${provider.label} settings saved and checked.`);
+      toast.success(add ? `${provider.label} added.` : `${provider.label} settings saved and checked.`);
+    });
+
+  const makeDefault = () =>
+    save.run(async () => {
+      onSaved(await api<ProviderInfo>(`/providers/${provider.id}/default`, { body: {} }));
+      toast.success(`New VMs now go to ${provider.label}.`);
+    });
+
+  const remove = () =>
+    save.run(async () => {
+      onSaved(await api<ProviderInfo>(`/providers/${provider.id}`, { method: "DELETE" }));
+      toast.success(`${provider.label} removed. Its VMs keep running.`);
     });
 
   return (
@@ -109,7 +128,7 @@ function ProviderForm({ provider, onSaved }: { provider: ProviderInfo; onSaved: 
         className="flex flex-col gap-6"
         onSubmit={(event) => {
           event.preventDefault();
-          void submit(!provider.active);
+          void submit(!provider.added);
         }}
       >
         <div className="flex flex-wrap gap-1.5">
@@ -169,11 +188,21 @@ function ProviderForm({ provider, onSaved }: { provider: ProviderInfo; onSaved: 
         {save.error && <FieldError>{save.error}</FieldError>}
         <div className="flex flex-wrap items-center gap-2">
           <Button type="submit" size="lg" className="h-9 px-4" disabled={save.busy}>
-            {provider.active ? "Save" : `Use ${provider.label}`}
+            {provider.added ? "Save" : `Add ${provider.label}`}
           </Button>
-          {!provider.active && (
+          {!provider.added && (
             <Button type="button" variant="outline" size="lg" className="h-9 px-4" disabled={save.busy} onClick={() => void submit(false)}>
               Save and check
+            </Button>
+          )}
+          {provider.added && !provider.isDefault && (
+            <Button type="button" variant="outline" size="lg" className="h-9 px-4" disabled={save.busy} onClick={() => void makeDefault()}>
+              Make default
+            </Button>
+          )}
+          {provider.added && (
+            <Button type="button" variant="ghost" size="lg" className="h-9 px-4 text-destructive" disabled={save.busy} onClick={() => void remove()}>
+              Remove
             </Button>
           )}
           <Button asChild variant="link" className="ml-auto text-muted-foreground">

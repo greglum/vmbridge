@@ -1,23 +1,30 @@
 import { useEffect, useState } from "react";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "sonner";
-import { ComputerIcon, GlobalIcon, Key01Icon } from "@hugeicons/core-free-icons";
-import { vmSizes, type BridgeSettings, type NetworkInfo, type Overview, type VmSize } from "@vmbridge/contracts";
+import { Add01Icon, ComputerIcon, Delete02Icon, GitBranchIcon, GithubIcon, GlobalIcon, Key01Icon, UnfoldMoreIcon } from "@hugeicons/core-free-icons";
+import { vmSizes, type BridgeSettings, type NetworkInfo, type Overview, type ProviderId, type RepoRule, type VmSize } from "@vmbridge/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Switch } from "@/components/ui/switch";
 import { useAction } from "@/hooks/use-action";
+import { cn } from "@/lib/utils";
 import { api } from "./api.ts";
+import { ProviderLogo } from "./brand.tsx";
 import { CopyButton } from "./CopyButton.tsx";
 import { Page, Section, type Tab } from "./Page.tsx";
 
-type SettingsTab = "vms" | "addresses" | "key";
+type SettingsTab = "vms" | "repos" | "addresses" | "key";
 
 const tabs: Tab<SettingsTab>[] = [
   { id: "vms", label: "VMs", icon: ComputerIcon },
+  { id: "repos", label: "Repositories", icon: GitBranchIcon },
   { id: "addresses", label: "Addresses", icon: GlobalIcon },
   { id: "key", label: "Dashboard key", icon: Key01Icon },
 ];
@@ -27,6 +34,7 @@ export function Settings({ overview, onLoggedOut }: { overview: Overview; onLogg
   return (
     <Page title="Settings" tabs={tabs} tab={tab} onTab={setTab}>
       {tab === "vms" && <VmSettings overview={overview} />}
+      {tab === "repos" && <RepoRules overview={overview} />}
       {tab === "addresses" && <Addresses />}
       {tab === "key" && <DashboardKey onLoggedOut={onLoggedOut} />}
     </Page>
@@ -36,7 +44,7 @@ export function Settings({ overview, onLoggedOut }: { overview: Overview; onLogg
 function VmSettings({ overview }: { overview: Overview }) {
   const [form, setForm] = useState<BridgeSettings>(overview.settings);
   const action = useAction();
-  const sizes = overview.provider?.sizes;
+  const sizes = overview.providers.find((provider) => provider.id === overview.defaultProvider)?.sizes;
   return (
     <Section title="VMs">
       <form
@@ -88,6 +96,166 @@ function VmSettings({ overview }: { overview: Overview }) {
           </Button>
         </div>
       </form>
+    </Section>
+  );
+}
+
+const fallback = "default";
+
+/** Provider and size pickers for one repository rule. "Default" leaves the choice to the VM settings. */
+function RuleChoices({ overview, rule, onChange }: { overview: Overview; rule: RepoRule; onChange: (rule: RepoRule) => void }) {
+  const provider = overview.providers.find((entry) => entry.id === (rule.provider ?? overview.defaultProvider));
+  return (
+    <>
+      <Select value={rule.provider ?? fallback} onValueChange={(value) => onChange({ ...rule, provider: value === fallback ? null : (value as ProviderId) })}>
+        <SelectTrigger aria-label="Provider" size="sm" className="w-full sm:w-40">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={fallback}>Default provider</SelectItem>
+          {overview.providers.map((entry) => (
+            <SelectItem key={entry.id} value={entry.id}>
+              <ProviderLogo id={entry.id} className="size-4 rounded" />
+              {entry.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Select value={rule.size ?? fallback} onValueChange={(value) => onChange({ ...rule, size: value === fallback ? null : (value as VmSize) })}>
+        <SelectTrigger aria-label="Size" size="sm" className="w-full max-sm:[&_.spec]:hidden sm:w-48">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={fallback}>Default size</SelectItem>
+          {vmSizes.map((size) => (
+            <SelectItem key={size} value={size}>
+              <span className="capitalize">{size}</span>
+              {provider && <span className="spec text-muted-foreground">{provider.sizes[size]}</span>}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </>
+  );
+}
+
+const repoName = /^[\w.-]+\/[\w.-]+$/;
+
+/** Searchable list of the repositories VM Bridge's GitHub token reaches. A typed `owner/name` works too. */
+function RepoPicker({ id, value, repos, onChange }: { id: string; value: string; repos: string[]; onChange: (repo: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const typed = search.trim();
+  const custom = repoName.test(typed) && !repos.some((repo) => repo.toLowerCase() === typed.toLowerCase()) ? typed : null;
+  const pick = (repo: string) => {
+    onChange(repo);
+    setSearch("");
+    setOpen(false);
+  };
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          id={id}
+          type="button"
+          role="combobox"
+          aria-expanded={open}
+          className="flex h-8 w-full min-w-0 items-center justify-between gap-1.5 rounded-lg border border-input bg-transparent py-2 pr-2 pl-2.5 text-sm transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 sm:flex-1 dark:bg-input/30 dark:hover:bg-input/50"
+        >
+          <span className={cn("truncate", !value && "text-muted-foreground")}>{value || "Choose a repository"}</span>
+          <HugeiconsIcon icon={UnfoldMoreIcon} strokeWidth={2} className="size-4 shrink-0 text-muted-foreground" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-(--radix-popover-trigger-width) min-w-72 p-0">
+        <Command>
+          <CommandInput placeholder="Search repositories" value={search} onValueChange={setSearch} />
+          <CommandList>
+            <CommandEmpty>{repos.length ? "No match. Type owner/name to add any repository." : "Type owner/name."}</CommandEmpty>
+            {custom && (
+              <CommandGroup>
+                <CommandItem value={custom} onSelect={() => pick(custom)}>
+                  Use {custom}
+                </CommandItem>
+              </CommandGroup>
+            )}
+            <CommandGroup>
+              {repos.map((repo) => (
+                <CommandItem key={repo} value={repo} data-checked={repo === value} onSelect={() => pick(repo)}>
+                  <span className="truncate">{repo}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function RepoRules({ overview }: { overview: Overview }) {
+  const [rules, setRules] = useState(overview.repoRules);
+  const [repos, setRepos] = useState<string[]>([]);
+  const [draft, setDraft] = useState<RepoRule>({ repo: "", provider: null, size: null });
+  const action = useAction();
+  useEffect(() => void api<string[]>("/github/repos").then(setRepos, () => {}), []);
+  const save = (next: RepoRule[]) => action.run(async () => setRules(await api<RepoRule[]>("/repo-rules", { method: "PUT", body: { rules: next } })));
+  const listed = new Set(rules.map((rule) => rule.repo.toLowerCase()));
+  return (
+    <Section title="Repositories">
+      <div className="flex flex-col gap-3">
+        <div className="divide-y overflow-hidden rounded-xl border bg-card">
+          {rules.map((rule, index) => {
+            const [owner, name] = rule.repo.split("/");
+            return (
+              <div key={rule.repo} className="flex flex-wrap items-center gap-3 p-3 sm:flex-nowrap">
+                <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
+                  <HugeiconsIcon icon={GithubIcon} className="size-[18px]" strokeWidth={1.75} />
+                </span>
+                <div className="min-w-0 flex-1 truncate">
+                  <span className="text-muted-foreground">{owner}/</span>
+                  <span className="font-medium">{name}</span>
+                </div>
+                <div className="order-last grid w-full grid-cols-2 gap-2 sm:order-none sm:flex sm:w-auto">
+                  <RuleChoices overview={overview} rule={rule} onChange={(next) => void save(rules.map((entry, at) => (at === index ? next : entry)))} />
+                </div>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`Remove ${rule.repo}`}
+                      className="text-muted-foreground hover:text-destructive"
+                      disabled={action.busy}
+                      onClick={() => void save(rules.filter((_, at) => at !== index))}
+                    >
+                      <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Remove</TooltipContent>
+                </Tooltip>
+              </div>
+            );
+          })}
+          <form
+            className="flex flex-col gap-2 bg-muted/30 p-3 sm:flex-row sm:items-center"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void save([...rules, { ...draft, repo: draft.repo.trim() }]).then((ok) => ok && setDraft({ repo: "", provider: null, size: null }));
+            }}
+          >
+            <RepoPicker id="rule-repo" value={draft.repo} repos={repos.filter((repo) => !listed.has(repo.toLowerCase()))} onChange={(repo) => setDraft({ ...draft, repo })} />
+            <div className="grid grid-cols-2 gap-2 sm:flex">
+              <RuleChoices overview={overview} rule={draft} onChange={setDraft} />
+            </div>
+            <Button type="submit" size="sm" className="h-8 px-3" disabled={action.busy || !draft.repo.trim()}>
+              <HugeiconsIcon icon={Add01Icon} data-icon="inline-start" strokeWidth={2} />
+              Add
+            </Button>
+          </form>
+        </div>
+        {action.error && <FieldError>{action.error}</FieldError>}
+        <p className="text-[13px] text-muted-foreground">New VMs for a repository use its provider and size. A repository already on a VM stays there.</p>
+      </div>
     </Section>
   );
 }
