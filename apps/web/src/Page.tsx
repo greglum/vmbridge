@@ -14,12 +14,15 @@ export interface Tab<T extends string> {
 /** A settings-style page: a title, an optional list of sub-pages on the left, and the content. */
 export function Page<T extends string>({
   title,
+  actions,
   tabs,
   tab,
   onTab,
   children,
 }: {
   title: string;
+  /** Shown beside the title, for state that applies to every tab. */
+  actions?: ReactNode;
   tabs?: Tab<T>[];
   tab?: T;
   onTab?: (tab: T) => void;
@@ -27,8 +30,9 @@ export function Page<T extends string>({
 }) {
   return (
     <div className="flex h-full flex-col">
-      <header className="shrink-0 border-b px-5 py-6 sm:px-10 sm:py-8">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b px-5 py-6 sm:px-10 sm:py-8">
         <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+        {actions}
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="flex flex-col gap-6 px-5 py-6 sm:px-10 sm:py-8 md:flex-row md:gap-12">
