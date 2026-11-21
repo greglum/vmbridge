@@ -42,6 +42,7 @@ export function Environment({ overview }: { overview: Overview }) {
                       size="icon-sm"
                       aria-label={`Change ${entry}`}
                       className="text-muted-foreground"
+                      disabled={action.busy}
                       onClick={() => {
                         setName(entry);
                         setValue("");
@@ -73,6 +74,7 @@ export function Environment({ overview }: { overview: Overview }) {
           ))}
           <form
             className="flex flex-col gap-2 bg-muted/30 p-3 sm:flex-row sm:items-start"
+            // The fields stay read-only while a save is pending, so clearing them after it cannot drop a newer draft.
             onSubmit={(event) => {
               event.preventDefault();
               void action.run(() => api(`/env/${encodeURIComponent(key)}`, { method: "PUT", body: { value } })).then((ok) => {
@@ -90,6 +92,7 @@ export function Environment({ overview }: { overview: Overview }) {
               autoComplete="off"
               spellCheck={false}
               value={name}
+              readOnly={action.busy}
               onChange={(event) => setName(event.target.value)}
             />
             <Textarea
@@ -101,6 +104,7 @@ export function Environment({ overview }: { overview: Overview }) {
               autoComplete="off"
               spellCheck={false}
               value={value}
+              readOnly={action.busy}
               onChange={(event) => setValue(event.target.value)}
             />
             <Button type="submit" size="sm" className="h-8 px-3" disabled={action.busy || !key}>
