@@ -143,16 +143,7 @@ function BridgeCard({ data }: NodeProps<BridgeNode>) {
           <div className="font-mono text-xs text-muted-foreground">v{overview.bridge.version}</div>
         </div>
       </div>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t px-3.5 py-2.5 text-[13px] text-muted-foreground">
-        {overview.providers.length
-          ? overview.providers.map((provider) => (
-              <span key={provider.id} className="flex items-center gap-2">
-                <ProviderLogo id={provider.id} className="size-4 rounded" />
-                {provider.label}
-              </span>
-            ))
-          : "No provider yet"}
-      </div>
+      {overview.providers.length === 0 && <div className="border-t px-3.5 py-2.5 text-[13px] text-muted-foreground">No provider yet</div>}
       <Handle type="source" position={stacked ? Position.Bottom : Position.Right} style={stacked ? stackedHandle : undefined} isConnectable={false} className={hidden} />
     </div>
   );
@@ -326,8 +317,10 @@ export function Canvas({ overview, traffic, onPair }: { overview: Overview; traf
     // Stacked: devices from the top, the bridge under them, then VMs, indented so connections fit on the left.
     const deviceCount = Math.max(clients.length, 1);
     const bridgeTop = deviceCount * 84 + 24;
+    // The bridge is taller while it says "No provider yet", so it is placed by its measured height.
+    const bridgeHeight = sizes.bridge?.height ?? 66;
     const devicePosition = (index: number) => (narrow ? { x: 48, y: index * 84 } : { x: 0, y: column(deviceCount, 68, 20)(index) });
-    const vmPosition = (index: number) => (narrow ? { x: 48, y: bridgeTop + 148 + index * 236 } : { x: 780, y: column(Math.max(overview.vms.length, 1), 190, 28)(index) });
+    const vmPosition = (index: number) => (narrow ? { x: 48, y: bridgeTop + bridgeHeight + 40 + index * 236 } : { x: 780, y: column(Math.max(overview.vms.length, 1), 190, 28)(index) });
     if (clients.length === 0) nodes.push({ id: "empty-devices", type: "empty", position: devicePosition(0), data: { label: "Pair a device to start" } });
     clients.forEach((client, index) => {
       nodes.push({ id: `device-${client.id}`, type: "device", position: devicePosition(index), data: { client } });
@@ -339,7 +332,7 @@ export function Canvas({ overview, traffic, onPair }: { overview: Overview; traf
         data: { ...flow((event) => event.clientId === client.id), live: client.connected },
       });
     });
-    nodes.push({ id: "bridge", type: "bridge", position: narrow ? { x: 0, y: bridgeTop } : { x: 380, y: -60 }, data: { overview } });
+    nodes.push({ id: "bridge", type: "bridge", position: narrow ? { x: 0, y: bridgeTop } : { x: 380, y: -bridgeHeight / 2 }, data: { overview } });
     if (overview.vms.length === 0) {
       const position = vmPosition(0);
       nodes.push({ id: "empty-vms", type: "empty", position: narrow ? position : { ...position, y: position.y + 60 }, data: { label: "VMs appear when work starts" } });
