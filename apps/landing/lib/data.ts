@@ -1,4 +1,4 @@
-export type ProviderId = "boxd" | "instabox" | "daytona" | "boat" | "railway";
+export type ProviderId = "boxd" | "instabox" | "daytona" | "boat" | "railway" | "e2b" | "freestyle" | "superserve";
 
 export interface Provider {
   id: ProviderId;
@@ -88,6 +88,48 @@ export const providers: Provider[] = [
     safetyNet: "None",
     measured: { ready: "57 s", wakeSeconds: [45, 45], browseMs: 211 },
   },
+  {
+    id: "e2b",
+    name: "E2B",
+    logo: "/providers/e2b.png",
+    tile: "#000",
+    inset: "0%",
+    color: "#ff8800",
+    sleep: "Pause, memory kept",
+    wake: "Resume",
+    sizes: ["2 vCPU, 2 GB", "4 vCPU, 4 GB", "8 vCPU, 8 GB"],
+    reach: "Public URL",
+    safetyNet: "Pauses 60 min after start, pushed back while agents work",
+    measured: { ready: "95 s", wakeSeconds: [16, 16], browseMs: 278 },
+  },
+  {
+    id: "freestyle",
+    name: "Freestyle",
+    logo: "/providers/freestyle.png",
+    tile: "#fff",
+    inset: "18%",
+    color: "#f472b6",
+    sleep: "Pause, memory kept",
+    wake: "Resume",
+    sizes: ["4 vCPU, 8 GB", "4 vCPU, 8 GB", "4 vCPU, 8 GB"],
+    reach: "Public domain",
+    safetyNet: "Pauses after 60 min without traffic",
+    measured: { ready: "60 to 61 s", wakeSeconds: [8, 8], browseMs: 218 },
+  },
+  {
+    id: "superserve",
+    name: "Superserve",
+    logo: "/providers/superserve.svg",
+    tile: "#141414",
+    inset: "0%",
+    color: "#b2fab4",
+    sleep: "Pause, memory kept",
+    wake: "Resume",
+    sizes: ["2 vCPU, 4 GB", "2 vCPU, 4 GB", "2 vCPU, 4 GB"],
+    reach: "Private preview with a token header",
+    safetyNet: "Pauses after 12 h awake",
+    measured: { ready: "55 s", wakeSeconds: [16, 16], browseMs: 320 },
+  },
 ];
 
 export const github = "https://github.com/vkpdeveloper/vmbridge";
@@ -126,7 +168,7 @@ export const faq = [
   {
     question: "Which cloud providers does VM Bridge support?",
     answer:
-      "VM Bridge supports boxd, Instabox, Daytona, Boat and Railway. You can add several at once, pick a default for new VMs, and send a repository to a given provider.",
+      "VM Bridge supports boxd, Instabox, Daytona, Boat, Railway, E2B, Freestyle and Superserve. You can add several at once, pick a default for new VMs, and send a repository to a given provider.",
   },
   {
     question: "Which coding agents can I use?",

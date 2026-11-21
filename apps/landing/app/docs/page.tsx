@@ -132,7 +132,7 @@ export default function Docs() {
                 items={[
                   "One project per VM. Projects never share a disk, a process list or a shell.",
                   "A VM sleeps after it has been idle for a set time, and wakes when you send a message.",
-                  "Several providers at once: boxd, Instabox, Daytona, Boat and Railway. Pick one per repository, or let new VMs use the default.",
+                  "Several providers at once: boxd, Instabox, Daytona, Boat, Railway, E2B, Freestyle and Superserve. Pick one per repository, or let new VMs use the default.",
                   "Everything is set up from a web dashboard behind one password: provider keys, GitHub, agent sign-ins and device pairing.",
                   "T3 Code needs no changes. To the app, VM Bridge looks like a single T3 server.",
                 ]}
@@ -256,8 +256,8 @@ bun run build          # dist/vmbridge
                 ])}
               />
               <p>
-                Each provider also has its own idle limit as a safety net in case VM Bridge is offline. Railway has none, so VM Bridge never sets
-                one there.
+                Each provider also has its own idle or time limit as a safety net in case VM Bridge is offline. Railway has none, so VM Bridge never
+                sets one there.
               </p>
             </Section>
 
@@ -268,7 +268,7 @@ bun run build          # dist/vmbridge
                     <ProviderLogo provider={p} className="size-9" />
                     <div className="min-w-0 text-sm">
                       <div className="font-medium text-foreground">{p.name}</div>
-                      <div>{p.sizes.join(" · ")}</div>
+                      <div>{[...new Set(p.sizes)].join(" · ")}</div>
                       <div className="text-faint">Reached through: {p.reach}</div>
                     </div>
                   </div>
@@ -291,6 +291,13 @@ bun run build          # dist/vmbridge
                   </>,
                   <>
                     <strong>Instabox</strong> uses the agent-browser template.
+                  </>,
+                  <>
+                    <strong>E2B</strong> fixes CPU and memory per template. VM Bridge builds one template per size in your account the first time
+                    you use that size, which takes about 15 s.
+                  </>,
+                  <>
+                    <strong>Freestyle</strong> and <strong>Superserve</strong> have one machine size, so small, medium and large are the same VM.
                   </>,
                 ]}
               />

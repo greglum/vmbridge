@@ -26,7 +26,7 @@ export const steps: Step[] = [
   },
   {
     title: "Choose a provider",
-    body: "Paste a key for boxd, Instabox, Daytona, Boat or Railway in the dashboard. Pick a VM size and how long a VM may sit idle.",
+    body: "Paste a key for boxd, Instabox, Daytona, Boat, Railway, E2B, Freestyle or Superserve in the dashboard. Pick a VM size and how long a VM may sit idle.",
     links: [false, false],
     paired: false,
     vm: "pick",
@@ -175,7 +175,7 @@ function VmCard({ view, provider, onPick, onToggle, onProvider }: {
     return (
       <div className="w-44 rounded-xl border border-primary/40 bg-card p-2 shadow-[0_0_30px_-10px_var(--primary)] sm:w-48" role="radiogroup" aria-label="Provider">
         <div className="mb-2 px-0.5 text-[10px] tracking-wide text-muted-foreground uppercase">Provider</div>
-        <div className="grid grid-cols-5 gap-1.5">
+        <div className="grid grid-cols-4 gap-1.5">
           {providers.map((p) => (
             <button
               key={p.id}
