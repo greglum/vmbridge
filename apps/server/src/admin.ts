@@ -1,5 +1,6 @@
 import type { Server } from "bun";
 import {
+  agentKinds,
   providerIds,
   vmSizes,
   type LiveMessage,
@@ -338,6 +339,15 @@ export class Admin {
       }
     }
 
+    if (section === "instructions" && id && !action && method === "PUT") {
+      const agent = agentKinds.find((kind) => kind === id);
+      if (!agent) return json({ error: "No such agent." }, 404);
+      const input = await body(request);
+      if (typeof input.sync !== "boolean") throw new BadRequest("Say whether to sync it.");
+      skills.instructions.setSync(agent, input.sync);
+      return json(skills.instructions.list());
+    }
+
     if (section === "vms" && id) {
       if (!store.vm(id)) return json({ error: "No such VM." }, 404);
       if (action === "wake" && method === "POST") {
@@ -440,7 +450,8 @@ export class Admin {
           }),
           t3Version: vm.t3Version,
           stats: vm.state === "ready" || vm.state === "busy" ? this.deps.stats.get(vm.id) : null,
-          skillsPending: vm.sandboxId !== null && vm.skills !== skills.fingerprint && (skills.skills.length > 0 || vm.skills !== null),
+          skillsPending:
+            vm.sandboxId !== null && vm.skills !== skills.fingerprint && (skills.skills.length > 0 || skills.instructions.length > 0 || vm.skills !== null),
         };
       });
     return {
@@ -467,6 +478,7 @@ export class Admin {
         createdAt: project.createdAt,
       })),
       skills: this.deps.skills.list(),
+      instructions: this.deps.skills.instructions.list(),
     };
   }
 

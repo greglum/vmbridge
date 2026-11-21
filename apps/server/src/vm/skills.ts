@@ -1,3 +1,4 @@
+import type { AgentKind } from "@vmbridge/contracts";
 import type { Box } from "../providers/index.ts";
 import { check, root } from "./runtime.ts";
 
@@ -9,16 +10,22 @@ export interface SkillFile {
   executable?: boolean;
 }
 
-/** The skills every VM should have, by name and content hash. */
+/** The global instructions files every VM should have, one per agent. */
+export type InstructionsState = { agent: AgentKind; hash: string; text: string }[];
+
+/** The skills and instructions every VM should have. One fingerprint covers both. */
 export interface SkillsState {
   fingerprint: string;
   skills: { name: string; hash: string }[];
+  instructions: InstructionsState;
 }
 
 /** What the VM last applied, kept in `skills.json` next to the skills VM Bridge put there. */
 interface Manifest {
   fingerprint: string;
   skills: Record<string, string>;
+  /** The hash of each instructions file VM Bridge wrote and still manages. */
+  instructions?: Partial<Record<AgentKind, string>>;
 }
 
 const sha256 = (value: string) => new Bun.CryptoHasher("sha256").update(value).digest("hex");
@@ -28,9 +35,15 @@ export function skillHash(files: SkillFile[]) {
   return sha256(JSON.stringify(sorted.map((file) => [file.path, Boolean(file.executable), file.data])));
 }
 
-/** Identifies a set of skills, to tell when a VM has an older one. */
-export function skillsFingerprint(skills: { name: string; hash: string }[]) {
-  return sha256(JSON.stringify(skills.map((skill) => [skill.name, skill.hash]).sort()));
+export const instructionHash = sha256;
+
+/**
+ * Identifies a set of skills and instructions, to tell when a VM has an older one. Instructions go in under `@agent`,
+ * which no skill name can be, so a set without them keeps the fingerprint it had before VM Bridge synced instructions.
+ */
+export function skillsFingerprint(skills: { name: string; hash: string }[], instructions: { agent: AgentKind; hash: string }[] = []) {
+  const entries = [...skills.map((skill) => [skill.name, skill.hash]), ...instructions.map((file) => [`@${file.agent}`, file.hash])];
+  return sha256(JSON.stringify(entries.sort()));
 }
 
 /**
@@ -39,8 +52,13 @@ export function skillsFingerprint(skills: { name: string; hash: string }[]) {
  * skills the last manifest listed that are no longer wanted, and links every wanted skill into the folders Claude
  * Code and Codex read personal skills from. It only ever removes links that point into `skills/`, so skills a user
  * or a repository put on the VM stay, and one already there under the same name wins over VM Bridge's.
+ *
+ * It also writes each agent's global instructions file where that agent reads it, and deletes those no longer wanted.
+ * VM Bridge only writes a file that is missing or still exactly what it last wrote there (or already what it wants).
+ * Anything else was put there another way, or edited on the VM, so it is left alone and VM Bridge stops managing it.
  */
-export const applyScript = `import { lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+export const applyScript = `import { createHash } from "node:crypto";
+import { lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -49,6 +67,11 @@ const store = join(root, "skills");
 const manifestPath = join(root, "skills.json");
 const incomingPath = join(root, "skills-incoming.json");
 const agentDirs = [join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "skills"), join(homedir(), ".agents", "skills")];
+const instructionPaths = {
+  claude: join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "CLAUDE.md"),
+  codex: join(process.env.CODEX_HOME || join(homedir(), ".codex"), "AGENTS.md"),
+  opencode: join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "opencode", "AGENTS.md"),
+};
 const exists = (path) => { try { lstatSync(path); return true; } catch { return false; } };
 
 const incoming = JSON.parse(readFileSync(incomingPath, "utf8"));
@@ -82,20 +105,43 @@ for (const dir of agentDirs) {
   for (const name of wanted) if (!exists(join(dir, name))) symlinkSync(join(store, name), join(dir, name));
 }
 
-writeFileSync(manifestPath, JSON.stringify({ fingerprint: incoming.fingerprint, skills: Object.fromEntries(incoming.skills.map((skill) => [skill.name, skill.hash])) }));
+const managed = {};
+for (const [agent, path] of Object.entries(instructionPaths)) {
+  const wanted = incoming.instructions.find((file) => file.agent === agent);
+  let current = null;
+  try {
+    current = createHash("sha256").update(readFileSync(path)).digest("hex");
+  } catch {
+    // A folder, or a link to nothing, in the file's place is not VM Bridge's either.
+    if (exists(path)) current = "unreadable";
+  }
+  const ours = current !== null && (current === previous.instructions?.[agent] || current === wanted?.hash);
+  if (current !== null && !ours) continue;
+  if (wanted) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path + ".vmbridge-new", wanted.text, { mode: 0o600 });
+    renameSync(path + ".vmbridge-new", path);
+    managed[agent] = wanted.hash;
+  } else if (ours) rmSync(path);
+}
+
+writeFileSync(
+  manifestPath,
+  JSON.stringify({ fingerprint: incoming.fingerprint, skills: Object.fromEntries(incoming.skills.map((skill) => [skill.name, skill.hash])), instructions: managed }),
+);
 rmSync(incomingPath);
 `;
 
 /**
- * Brings the VM's skills to `state`, sending only skills whose content the VM does not have. Agents see them on
- * their next session, so nothing restarts. Returns whether anything changed on the VM.
+ * Brings the VM's skills and instructions to `state`, sending only skills whose content the VM does not have.
+ * Agents see them on their next session, so nothing restarts. Returns whether anything changed on the VM.
  */
 export async function syncSkills(box: Box, state: SkillsState, files: (name: string) => SkillFile[]) {
   const manifest = await box.files.read(`${root}/skills.json`).then((text) => JSON.parse(text) as Manifest, () => null);
   if (manifest?.fingerprint === state.fingerprint) return false;
   const skills = state.skills.map((skill) => (manifest?.skills[skill.name] === skill.hash ? skill : { ...skill, files: files(skill.name) }));
   await box.files.write(
-    { [`${root}/skills.mjs`]: applyScript, [`${root}/skills-incoming.json`]: JSON.stringify({ fingerprint: state.fingerprint, skills }) },
+    { [`${root}/skills.mjs`]: applyScript, [`${root}/skills-incoming.json`]: JSON.stringify({ fingerprint: state.fingerprint, skills, instructions: state.instructions }) },
     { mode: 0o600 },
   );
   await check(box, `. ${root}/env && node ${root}/skills.mjs ${root}`, "Syncing skills");

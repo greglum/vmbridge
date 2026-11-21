@@ -29,6 +29,8 @@ interface SettingValues {
   agentPreferences: Record<string, ProviderPreference>;
   /** The sign-in profile each agent uses on every VM. Profiles live under `<data dir>/auths`. */
   agentProfiles: Partial<Record<AgentKind, string>>;
+  /** Agents whose global instructions file on this machine every VM gets. */
+  instructionSync: Partial<Record<AgentKind, boolean>>;
 }
 
 const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
@@ -45,6 +47,7 @@ const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
   shellSequence: () => 0,
   agentPreferences: () => ({}),
   agentProfiles: () => ({}),
+  instructionSync: () => ({}),
 };
 
 export class Settings {

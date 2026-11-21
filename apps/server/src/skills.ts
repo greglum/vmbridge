@@ -4,6 +4,8 @@ import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, relative, sep } from "node:path";
 import type { LocalSkill, SkillInfo, SkillSearchResult, SkillSource } from "@vmbridge/contracts";
+import { Instructions } from "./instructions.ts";
+import { Settings } from "./settings.ts";
 import { skillHash, skillsFingerprint, type SkillFile, type SkillsState } from "./vm/skills.ts";
 
 export class SkillError extends Error {}
@@ -94,11 +96,16 @@ export function readSkillFolder(dir: string): SkillFile[] {
 
 /**
  * The skills every VM gets, kept in VM Bridge's database with their files: from skills.sh, or copied from a folder
- * on this machine and re-read when that folder changes. Emits `changed` whenever the set or a skill's content changes.
+ * on this machine and re-read when that folder changes. The agents' global instructions files go to every VM with
+ * them, in the same sync. Emits `changed` whenever the set or a skill's or instructions file's content changes.
  */
 export class Skills extends EventEmitter<{ changed: [] }> {
-  constructor(private readonly db: Database) {
+  constructor(
+    private readonly db: Database,
+    readonly instructions = new Instructions(new Settings(db)),
+  ) {
     super();
+    instructions.on("changed", () => this.emit("changed"));
   }
 
   private rows() {
@@ -121,7 +128,8 @@ export class Skills extends EventEmitter<{ changed: [] }> {
 
   state(): SkillsState {
     const skills = this.db.query<{ name: string; hash: string }, []>("SELECT name, hash FROM skills ORDER BY name").all();
-    return { fingerprint: skillsFingerprint(skills), skills };
+    const instructions = this.instructions.state();
+    return { fingerprint: skillsFingerprint(skills, instructions), skills, instructions };
   }
 
   files(name: string): SkillFile[] {
