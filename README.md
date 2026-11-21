@@ -51,18 +51,19 @@ secrets and never shown again. Names VM Bridge sets itself, such as `PATH`, `HOM
 
 ## Skills
 
-Under **Skills**, install agent skills from skills.sh, or pick ones found in `~/.claude/skills`,
-`~/.agents/skills` or `~/.codex/skills` on this machine. Every VM gets them for Claude Code and
-Codex: awake VMs right away, without restarting anything, and sleeping VMs before they serve
-anything when they wake. Edits to a local skill reach the VMs within a few seconds. Removing a
-skill takes it off every VM, and skills put on a VM some other way are left alone.
+Under **Skills**, press **Add skill** to install one from skills.sh, or use the **This machine** tab
+to pick ones found in `~/.claude/skills`, `~/.agents/skills` or `~/.codex/skills`. Every VM gets
+them for Claude Code and Codex: awake VMs right away, without restarting anything, and sleeping VMs
+before they serve anything when they wake. Edits to a local skill reach the VMs within a few
+seconds. Removing a skill takes it off every VM, and skills put on a VM some other way are left
+alone.
 
 Switch on **Sync all** to install every skill on this machine without picking them one by one. New
 skills in those folders follow within a few seconds, and a skill deleted here comes off the VMs. When
 two folders hold a skill with the same name, the first in the order above wins. Skills over 5 MB are
 skipped. Turning it off keeps what it installed until you remove it.
 
-The AGENTS.md section on the same page lists each agent's global file found on this machine,
+The AGENTS.md tab on the same page lists each agent's global file found on this machine,
 `~/.claude/CLAUDE.md` for Claude Code, `~/.codex/AGENTS.md` for Codex and
 `~/.config/opencode/AGENTS.md` for OpenCode (`$CLAUDE_CONFIG_DIR`, `$CODEX_HOME` and
 `$XDG_CONFIG_HOME` move them). Switch one on and every VM gets it where that agent reads it, the

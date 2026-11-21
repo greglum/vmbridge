@@ -358,7 +358,8 @@ bun run build          # dist/vmbridge
 
             <Section id="skills" title="Skills">
               <p>
-                Under <strong>Skills</strong> in the dashboard, search skills.sh and install a skill, or install one found on this machine in{" "}
+                Under <strong>Skills</strong> in the dashboard, press <strong>Add skill</strong> to install one from skills.sh, or use the{" "}
+                <strong>This machine</strong> tab to install one found in{" "}
                 <Code>~/.claude/skills</Code>, <Code>~/.agents/skills</Code> or <Code>~/.codex/skills</Code>. Every VM gets every installed skill:
               </p>
               <List
@@ -390,7 +391,7 @@ bun run build          # dist/vmbridge
 
             <Section id="instructions" title="AGENTS.md">
               <p>
-                The AGENTS.md section of the Skills page lists each agent&apos;s global file found on this machine. Switch one on and every VM gets it, at
+                The AGENTS.md tab of the Skills page lists each agent&apos;s global file found on this machine. Switch one on and every VM gets it, at
                 the path that agent reads, on the same terms as skills: awake VMs right away, sleeping VMs before they serve anything on wake, new
                 VMs at setup, and edits here within a few seconds.
               </p>
