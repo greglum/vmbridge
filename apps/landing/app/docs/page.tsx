@@ -5,8 +5,18 @@ import { Command, CopyButton } from "@/components/CopyButton";
 import { DocsFlow } from "@/components/DocsFlow";
 import { DocsNav, type DocsSection } from "@/components/DocsNav";
 import { commands, install, providers } from "@/lib/data";
+import { openGraph } from "@/lib/site";
 
-export const metadata: Metadata = { title: "Docs" };
+const title = "VM Bridge docs: install, providers, sleep and wake";
+const description =
+  "Install VM Bridge on macOS or Linux, add a cloud provider and pair T3 Code. How VMs sleep and wake, where your data lives, and fixes for common problems.";
+
+export const metadata: Metadata = {
+  title: { absolute: title },
+  description,
+  alternates: { canonical: "/docs" },
+  openGraph: { ...openGraph, url: "/docs", title, description },
+};
 
 const sections: DocsSection[] = [
   { id: "overview", title: "Overview" },

@@ -107,3 +107,54 @@ export const agents = [
   { id: "claude", name: "Claude", logo: "/agents/claude.svg" },
 ] as const;
 export type Agent = (typeof agents)[number];
+
+/**
+ * Questions people ask, shown on the home page and repeated in its structured data and llms.txt.
+ * Each answer stands alone when quoted. Text in backticks is code.
+ */
+export const faq = [
+  {
+    question: "What is VM Bridge?",
+    answer:
+      "VM Bridge is a free, open source server that runs T3 Code agents on cloud VMs. You pair T3 Code with it once, and it gives each project its own VM, puts idle VMs to sleep and wakes them when you send a message.",
+  },
+  {
+    question: "Does VM Bridge work with T3 Code?",
+    answer:
+      "Yes. VM Bridge is built for T3 Code and needs no changes to the app. You add it in T3 Code as a remote environment with a pairing link, and T3 Code sees it as one T3 server.",
+  },
+  {
+    question: "Which cloud providers does VM Bridge support?",
+    answer:
+      "VM Bridge supports boxd, Instabox, Daytona, Boat and Railway. You can add several at once, pick a default for new VMs, and send a repository to a given provider.",
+  },
+  {
+    question: "Which coding agents can I use?",
+    answer:
+      "Codex, Claude Code and OpenCode. VM Bridge installs them on each VM and signs them in with the accounts and keys you add in the dashboard.",
+  },
+  {
+    question: "How much does VM Bridge cost?",
+    answer:
+      "VM Bridge is free and open source under the MIT license. You pay your cloud provider for the VMs, and idle VMs go to sleep so they stop using compute.",
+  },
+  {
+    question: "Does VM Bridge run on Windows?",
+    answer:
+      "No. VM Bridge runs on macOS and Linux. T3 Code on your other devices connects to it over your local network or Tailscale.",
+  },
+  {
+    question: "How do sleep and wake work?",
+    answer:
+      "A VM goes to sleep after it has been idle for a set time, 5 minutes by default, with no agent turn running. When you send a message in one of its threads, VM Bridge wakes the VM and then delivers the message. Waking takes about 6 to 21 seconds on most providers and about a minute on Railway.",
+  },
+  {
+    question: "Where are my data and keys stored?",
+    answer:
+      "On the machine that runs VM Bridge, in `~/.vmbridge`, readable only by your user. Provider keys, the GitHub token and agent sign-ins stay there, and the dashboard never shows a saved secret again.",
+  },
+  {
+    question: "How do I install VM Bridge?",
+    answer: `On macOS or Linux, run \`${install}\`. Then run \`vmbridge\`, choose a dashboard password and open \`/dashboard\` to add a provider and pair T3 Code.`,
+  },
+];
