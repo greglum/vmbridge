@@ -204,6 +204,10 @@ function VmCard({ data }: NodeProps<VmNode>) {
             <HugeiconsIcon icon={Alert02Icon} className="size-3.5" strokeWidth={2} />
             High memory
           </span>
+        ) : vm.updatePending ? (
+          <span className="text-[13px] text-muted-foreground" title={vm.state === "sleeping" ? "It gets the latest sign-ins and variables when it wakes." : "It gets the latest sign-ins and variables once nothing runs on it."}>
+            Update pending
+          </span>
         ) : (
           vm.skillsPending && (
             <span className="text-[13px] text-muted-foreground" title={vm.state === "sleeping" ? "It gets the latest skills and AGENTS.md when it wakes." : undefined}>

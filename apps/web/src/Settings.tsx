@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { parseAsStringLiteral, useQueryState } from "nuqs";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "sonner";
-import { Add01Icon, ComputerIcon, Delete02Icon, GitBranchIcon, GithubIcon, GlobalIcon, Key01Icon, UnfoldMoreIcon } from "@hugeicons/core-free-icons";
+import { Add01Icon, CommandLineIcon, ComputerIcon, Delete02Icon, GitBranchIcon, GithubIcon, GlobalIcon, Key01Icon, UnfoldMoreIcon } from "@hugeicons/core-free-icons";
 import { vmSizes, type BridgeSettings, type NetworkInfo, type Overview, type ProviderId, type RepoRule, type VmSize } from "@vmbridge/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,13 +19,15 @@ import { cn } from "@/lib/utils";
 import { api } from "./api.ts";
 import { ProviderLogo } from "./brand.tsx";
 import { CopyButton } from "./CopyButton.tsx";
+import { Environment } from "./Environment.tsx";
 import { Page, Section, type Tab } from "./Page.tsx";
 
-type SettingsTab = "vms" | "repos" | "addresses" | "password";
+type SettingsTab = "vms" | "repos" | "env" | "addresses" | "password";
 
 const tabs: Tab<SettingsTab>[] = [
   { id: "vms", label: "VMs", icon: ComputerIcon },
   { id: "repos", label: "Repositories", icon: GitBranchIcon },
+  { id: "env", label: "Environment", icon: CommandLineIcon },
   { id: "addresses", label: "Addresses", icon: GlobalIcon },
   { id: "password", label: "Password", icon: Key01Icon },
 ];
@@ -36,6 +38,7 @@ export function Settings({ overview, onLoggedOut }: { overview: Overview; onLogg
     <Page title="Settings" tabs={tabs} tab={tab} onTab={setTab}>
       {tab === "vms" && <VmSettings overview={overview} />}
       {tab === "repos" && <RepoRules overview={overview} />}
+      {tab === "env" && <Environment overview={overview} />}
       {tab === "addresses" && <Addresses />}
       {tab === "password" && <Password onLoggedOut={onLoggedOut} />}
     </Page>
