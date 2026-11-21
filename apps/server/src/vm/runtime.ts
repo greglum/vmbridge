@@ -62,7 +62,9 @@ function managedVars(credentials: VmCredentials): Record<string, string | undefi
 
 /**
  * Names the dashboard cannot set: those VM Bridge sets or clears, and those that would break shells, T3 or the
- * agents. Prefixes cover T3's and VM Bridge's own settings, the dynamic linker and exported bash functions.
+ * agents. Bash refuses to assign its readonly and array variables (UID, SHELLOPTS, GROUPS), which would stop every
+ * script that reads the env file. Prefixes cover T3's and VM Bridge's own settings, bash's own variables (BASHOPTS,
+ * BASHPID, BASH_FUNC_ and the rest) and the dynamic linker.
  */
 const reservedNames = new Set([
   ...Object.keys(managedVars({})),
@@ -78,8 +80,17 @@ const reservedNames = new Set([
   "ENV",
   "BASH_ENV",
   "SHLVL",
+  "UID",
+  "EUID",
+  "PPID",
+  "SHELLOPTS",
+  "GROUPS",
+  "FUNCNAME",
+  "DIRSTACK",
+  "PIPESTATUS",
+  "POSIXLY_CORRECT",
 ]);
-const reservedPrefixes = ["T3CODE_", "VMBRIDGE_", "LD_", "BASH_FUNC_"];
+const reservedPrefixes = ["T3CODE_", "VMBRIDGE_", "LD_", "BASH"];
 
 /** Why a name cannot be an environment variable on the VMs, or null when it can. */
 export function envNameProblem(name: string) {
@@ -92,7 +103,7 @@ export function envNameProblem(name: string) {
 /** Why a value cannot be an environment variable's, or null when it can. */
 export function envValueProblem(value: string) {
   if (value.includes("\0")) return "Values cannot contain a null character.";
-  if (value.length > 32_768) return "Use at most 32,768 characters.";
+  if (Buffer.byteLength(value) > 32_768) return "Use at most 32,768 bytes.";
   return null;
 }
 
@@ -104,8 +115,9 @@ function envFile(credentials: VmCredentials) {
     `VMBRIDGE_CREDENTIALS=${credentialsFingerprint(credentials)}`,
   ];
   for (const [name, value] of Object.entries(managedVars(credentials))) if (value) lines.push(`export ${name}=${quote(value)}`);
-  // Single quotes keep every value exact, newlines and `$` included. An empty one is still set.
-  for (const [name, value] of Object.entries(credentials.env ?? {})) lines.push(`export ${name}=${quote(value)}`);
+  // Single quotes keep every value exact, newlines and `$` included. An empty one is still set. A name saved before it
+  // was reserved is left out: one that bash refuses would stop setup on every VM.
+  for (const [name, value] of Object.entries(credentials.env ?? {})) if (!envNameProblem(name)) lines.push(`export ${name}=${quote(value)}`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -137,8 +149,9 @@ function gitConfig(github: VmCredentials["github"]) {
 const setupScript = `#!/bin/bash
 set -euo pipefail
 umask 077
+# First, so the script's own variables below replace any of the same name from the dashboard.
+. ${root}/env
 root=${root}
-. "$root/env"
 version="$1"
 
 fetch() { if command -v curl >/dev/null; then curl -fsSL "$1"; else wget -qO- "$1"; fi; }
@@ -192,21 +205,21 @@ for rc in .profile .bashrc .bash_profile .bash_login; do
 done
 `;
 
+// Sets only VMBRIDGE_ variables, which the dashboard cannot: assigning a name the env file exported would change it for T3
+// and its agents, and a value set in the dashboard would change the script.
 const startScript = `#!/bin/bash
 set -euo pipefail
-root=${root}
-data=${t3DataDir}
-. "$root/env"
-mkdir -p "$data"
-printf '%s' "$VMBRIDGE_CREDENTIALS" > "$data/credentials"
+. ${root}/env
+mkdir -p ${t3DataDir}
+printf '%s' "$VMBRIDGE_CREDENTIALS" > ${startedCredentialsPath}
 # T3 refuses to start when a runtime record from before a VM stop names a dead or reused PID.
-runtime="$data/userdata/server-runtime.json"
-if [ -f "$runtime" ]; then
-  pid="$(node -e 'try{const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).pid;if(Number.isSafeInteger(p))process.stdout.write(String(p))}catch{}' "$runtime")"
-  if [ -z "$pid" ] || ! tr '\\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -- "$data"; then rm -f "$runtime"; fi
+VMBRIDGE_RUNTIME=${t3DataDir}/userdata/server-runtime.json
+if [ -f "$VMBRIDGE_RUNTIME" ]; then
+  VMBRIDGE_PID="$(node -e 'try{const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).pid;if(Number.isSafeInteger(p))process.stdout.write(String(p))}catch{}' "$VMBRIDGE_RUNTIME")"
+  if [ -z "$VMBRIDGE_PID" ] || ! tr '\\0' ' ' < "/proc/$VMBRIDGE_PID/cmdline" 2>/dev/null | grep -q -- ${t3DataDir}; then rm -f "$VMBRIDGE_RUNTIME"; fi
 fi
-cd /workspace
-exec t3 --base-dir "$data" --host 0.0.0.0 --port ${t3Port} --no-browser
+cd ${checkoutRoot}
+exec t3 --base-dir ${t3DataDir} --host 0.0.0.0 --port ${t3Port} --no-browser
 `;
 
 const probe = `. ${root}/env && node -e 'fetch("http://127.0.0.1:${t3Port}/.well-known/t3/environment").then(r=>r.ok?r.text():Promise.reject()).then(t=>process.stdout.write(t),()=>process.exit(1))'`;
