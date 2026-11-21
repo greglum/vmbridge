@@ -23,7 +23,7 @@ function setup() {
   const hub = new Hub(store, new Settings(store.db), fleet, traffic);
   const rpc = new Rpc(hub, {} as never, {} as never, traffic, () => false);
   const sent: { exit?: { _tag: string; value?: unknown } }[] = [];
-  const client: RpcClient = { clientId: "c1", cancels: new Map(), send: (frame) => sent.push(frame as (typeof sent)[number]) };
+  const client: RpcClient = { clientId: "c1", cancels: new Map(), send: (frame) => sent.push(frame as (typeof sent)[number]), open: () => true };
   const dispatch = (payload: object) =>
     rpc.handle(client, { _tag: "Request", id: sent.length, tag: "orchestration.dispatchCommand", payload: { commandId: crypto.randomUUID(), ...payload } });
   return { store, fleet, hub, backends, sent, dispatch };
