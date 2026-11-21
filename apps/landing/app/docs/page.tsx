@@ -28,6 +28,7 @@ const sections: DocsSection[] = [
   { id: "sleep", title: "Sleep and wake" },
   { id: "providers", title: "Providers" },
   { id: "sign-in", title: "Agent sign-ins and GitHub" },
+  { id: "skills", title: "Skills" },
   { id: "network", title: "Addresses and Tailscale" },
   { id: "security", title: "Data and security" },
   { id: "troubleshooting", title: "Troubleshooting" },
@@ -322,6 +323,33 @@ bun run build          # dist/vmbridge
               <p>
                 Signing in with your Claude account makes the same one-year token as <Code>claude setup-token</Code>. Approve on claude.ai, then
                 paste the code it shows into the dashboard.
+              </p>
+            </Section>
+
+            <Section id="skills" title="Skills">
+              <p>
+                Under <strong>Skills</strong> in the dashboard, search skills.sh and install a skill, or install one found on this machine in{" "}
+                <Code>~/.claude/skills</Code>, <Code>~/.agents/skills</Code> or <Code>~/.codex/skills</Code>. Every VM gets every installed skill:
+              </p>
+              <List
+                items={[
+                  "Awake VMs get it right away, even during an agent turn, without restarting T3 or the agents.",
+                  "A sleeping or stopped VM gets it when it wakes, before T3 starts serving.",
+                  "A new VM has every skill before T3 first starts.",
+                  "Edits to a skill on this machine reach the VMs within a few seconds. A skills.sh skill changes only when you press Update.",
+                  "Removing a skill takes it off every VM. Skills put on a VM some other way, and a skill with the same name already there, are left alone.",
+                ]}
+              />
+              <Table
+                head={["Agent", "Reads skills from"]}
+                rows={[
+                  ["Claude Code", <Code key="c">$CLAUDE_CONFIG_DIR/skills</Code>],
+                  ["Codex", <Code key="x">~/.agents/skills</Code>],
+                ]}
+              />
+              <p>
+                Claude Code picks up new skills in a running session. Codex notices changes on its own; if a skill does not show, start a new
+                thread. skills.sh skills download as text files.
               </p>
             </Section>
 
