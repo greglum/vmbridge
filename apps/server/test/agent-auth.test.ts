@@ -178,6 +178,19 @@ describe("Codex sign-in", () => {
     expect(auth.codexDue()).toBe(false);
     expect(JSON.parse((await auth.vmSecrets()).codexAuthJson!).tokens.refresh_token).toBe("from-vm");
   });
+
+  test("VMs tell a new Codex sign-in apart from a token refresh", async () => {
+    const { auth } = setup();
+    await signInCodex(auth, codexFile("acct-1", "refresh-1", day));
+    const first = (await auth.vmSecrets()).codexSignIn;
+    fakeFetch(() => Response.json(codexFile("acct-1", "refresh-2", 10 * day).tokens));
+    await auth.refreshCodex(true);
+    expect((await auth.vmSecrets()).codexSignIn).toBe(first!);
+
+    await Bun.sleep(2);
+    await signInCodex(auth, codexFile("acct-1", "refresh-3", 10 * day));
+    expect((await auth.vmSecrets()).codexSignIn).not.toBe(first!);
+  });
 });
 
 describe("VM sign-ins", () => {
@@ -201,7 +214,7 @@ describe("VM sign-ins", () => {
     expect(env).toContain("export CLAUDE_CONFIG_DIR='/workspace/.vmbridge/claude'");
     expect(env).not.toContain("OPENCODE_API_KEY=");
     expect(written["/workspace/.vmbridge/codex/auth.json"]).toBe("{}");
-    expect(commands.at(-1)).toStartWith("CODEX_AUTH=1 bash");
+    expect(commands.at(-1)).toStartWith("bash /workspace/.vmbridge/setup.sh");
     // Without a GitHub token, the provider's GitHub helpers are still switched off.
     expect(written["/workspace/.vmbridge/gitconfig"]).toBe('[credential "https://github.com"]\n\thelper =\n');
   });
