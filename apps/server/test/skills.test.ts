@@ -3,29 +3,38 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { skillDescription } from "../src/skills.ts";
-import { applyScript, skillHash, type SkillFile } from "../src/vm/skills.ts";
+import { applyScript, instructionHash, skillHash, type InstructionsState, type SkillFile } from "../src/vm/skills.ts";
 
 const temps: string[] = [];
 afterEach(() => {
   for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** A VM's file system: VM Bridge's folder, a home folder, and Claude's config folder. */
+/** A VM's file system: VM Bridge's folder, a home folder, and Claude's and Codex's config folders, as the env file sets them. */
 function vm() {
   const base = mkdtempSync(join(tmpdir(), "vmbridge-vm-"));
   temps.push(base);
   const root = join(base, "vmbridge");
   const home = join(base, "home");
   const claude = join(root, "claude");
+  const codex = join(root, "codex");
   mkdirSync(root, { recursive: true });
   writeFileSync(join(root, "skills.mjs"), applyScript);
-  const apply = (skills: { name: string; files?: SkillFile[] }[]) => {
+  const apply = (skills: { name: string; files?: SkillFile[] }[], instructions: Partial<Record<InstructionsState[number]["agent"], string>> = {}) => {
     const withHashes = skills.map((skill) => ({ ...skill, hash: skillHash(skill.files ?? []) }));
-    writeFileSync(join(root, "skills-incoming.json"), JSON.stringify({ fingerprint: crypto.randomUUID(), skills: withHashes }));
-    const result = Bun.spawnSync(["bun", join(root, "skills.mjs"), root], { env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: claude } });
+    const files = Object.entries(instructions).map(([agent, text]) => ({ agent, text, hash: instructionHash(text) }));
+    writeFileSync(join(root, "skills-incoming.json"), JSON.stringify({ fingerprint: crypto.randomUUID(), skills: withHashes, instructions: files }));
+    const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: claude, CODEX_HOME: codex, XDG_CONFIG_HOME: "" };
+    const result = Bun.spawnSync(["bun", join(root, "skills.mjs"), root], { env });
     if (result.exitCode !== 0) throw new Error(result.stderr.toString());
   };
-  return { root, apply, claudeSkills: join(claude, "skills"), codexSkills: join(home, ".agents", "skills") };
+  return {
+    root,
+    apply,
+    claudeSkills: join(claude, "skills"),
+    codexSkills: join(home, ".agents", "skills"),
+    instructions: { claude: join(claude, "CLAUDE.md"), codex: join(codex, "AGENTS.md"), opencode: join(home, ".config", "opencode", "AGENTS.md") },
+  };
 }
 
 const file = (path: string, text: string): SkillFile => ({ path, data: Buffer.from(text).toString("base64") });
@@ -69,6 +78,36 @@ describe("the skills script on a VM", () => {
     const { root, apply } = vm();
     expect(() => apply([{ name: "evil", files: [file("../../escape", "x")] }])).toThrow("Unsafe path");
     expect(existsSync(join(root, "escape"))).toBe(false);
+  });
+});
+
+describe("instructions on a VM", () => {
+  test("go where each agent reads them, and only the files VM Bridge wrote change", () => {
+    const { apply, instructions: paths } = vm();
+    apply([], { claude: "claude v1", codex: "codex v1" });
+    expect(readFileSync(paths.claude, "utf8")).toBe("claude v1");
+    expect(readFileSync(paths.codex, "utf8")).toBe("codex v1");
+    expect(existsSync(paths.opencode)).toBe(false);
+
+    // Edited on the VM, so no longer VM Bridge's: an update leaves it, and so does turning it off.
+    writeFileSync(paths.codex, "edited on the VM");
+    // Put there some other way.
+    mkdirSync(join(paths.opencode, ".."), { recursive: true });
+    writeFileSync(paths.opencode, "the VM's own");
+    apply([], { claude: "claude v2", codex: "codex v2", opencode: "opencode v1" });
+    expect(readFileSync(paths.claude, "utf8")).toBe("claude v2");
+    expect(readFileSync(paths.codex, "utf8")).toBe("edited on the VM");
+    expect(readFileSync(paths.opencode, "utf8")).toBe("the VM's own");
+
+    apply([]);
+    expect(existsSync(paths.claude)).toBe(false);
+    expect(readFileSync(paths.codex, "utf8")).toBe("edited on the VM");
+    expect(readFileSync(paths.opencode, "utf8")).toBe("the VM's own");
+
+    // Once the VM's own file is gone, VM Bridge writes and manages it again.
+    rmSync(paths.codex);
+    apply([], { codex: "codex v3" });
+    expect(readFileSync(paths.codex, "utf8")).toBe("codex v3");
   });
 });
 
