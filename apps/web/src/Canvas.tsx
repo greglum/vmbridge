@@ -285,6 +285,9 @@ export function Canvas({ overview, traffic, onPair }: { overview: Overview; traf
   const create = useAction();
   const vm = overview.vms.find((entry) => entry.id === selected) ?? null;
   const narrow = useNarrow();
+  // The nodes are rebuilt every tick. Without their measured sizes React Flow hides each card until it
+  // measures it again, which waits for a paint; a window on another desktop gets none and stays blank.
+  const [sizes, setSizes] = useState<Record<string, { width: number; height: number }>>({});
 
   const { nodes, edges } = useMemo(() => {
     const recent = traffic.filter((event) => now - event.at < flowWindowMs && event.kind !== "system");
@@ -326,8 +329,8 @@ export function Canvas({ overview, traffic, onPair }: { overview: Overview; traf
         data: { ...traffic, flowing: traffic.flowing || entry.state === "busy", live },
       });
     });
-    return { nodes, edges };
-  }, [overview, traffic, now, selected, narrow]);
+    return { nodes: nodes.map((node) => ({ ...node, measured: sizes[node.id] })), edges };
+  }, [overview, traffic, now, selected, narrow, sizes]);
 
   return (
     <div className="relative h-full">
@@ -337,6 +340,10 @@ export function Canvas({ overview, traffic, onPair }: { overview: Overview; traf
           edges={edges}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
+          onNodesChange={(changes) => {
+            const measured = changes.getByType("dimensions").flatMap((change) => (change.dimensions ? [[change.id, change.dimensions] as const] : []));
+            if (measured.length) setSizes((current) => ({ ...current, ...Object.fromEntries(measured) }));
+          }}
           nodesDraggable={false}
           nodesConnectable={false}
           zoomOnDoubleClick={false}
