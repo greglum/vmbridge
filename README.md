@@ -9,8 +9,8 @@ cloud provider for the VMs.
 
 Website and docs: [vmbridge.ordinity.com](https://vmbridge.ordinity.com)
 
-- Use several providers at once: boxd, Instabox, Daytona, Boat and Railway. New VMs go to your
-  default provider, or to the one you pick for a repository.
+- Use several providers at once: boxd, Instabox, Daytona, Boat, Railway, E2B, Freestyle and
+  Superserve. New VMs go to your default provider, or to the one you pick for a repository.
 - A VM sleeps when it sits idle and wakes when you send a message.
 - One dashboard, behind a password, for providers, GitHub, agent sign-ins, pairing devices and a
   live view of your VMs.
