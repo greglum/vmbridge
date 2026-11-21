@@ -17,5 +17,5 @@ export const openGraph = {
   type: "website",
   siteName: site.name,
   locale: "en_US",
-  images: [{ url: "/og.png", width: 1200, height: 630, alt: "VM Bridge: every T3 Code project gets its own cloud computer" }],
+  images: [{ url: "/og.png", type: "image/png", width: 1200, height: 630, alt: "VM Bridge: every T3 Code project gets its own cloud computer" }],
 } satisfies Metadata["openGraph"];
