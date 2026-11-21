@@ -292,7 +292,7 @@ function GitHub({ account }: { account: GitHubAccount | null }) {
 
 const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 
-const agentNames: Record<AgentKind, string> = { codex: "Codex", claude: "Claude", opencode: "OpenCode" };
+export const agentNames: Record<AgentKind, string> = { codex: "Codex", claude: "Claude", opencode: "OpenCode" };
 const methodNames: Record<AgentAuthMethod, string> = {
   chatgpt: "ChatGPT sign-in",
   "setup-token": "Claude account",
