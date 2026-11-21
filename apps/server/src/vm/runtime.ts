@@ -99,9 +99,10 @@ version="$1"
 
 fetch() { if command -v curl >/dev/null; then curl -fsSL "$1"; else wget -qO- "$1"; fi; }
 
+# t3 needs Node 20.11 or later (import.meta.dirname). E2B's base image has 20.9.
 node_ok() {
   command -v node >/dev/null || return 1
-  [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 20 ]
+  node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 20 || (major === 20 && minor >= 11) ? 0 : 1)'
 }
 if ! node_ok; then
   case "$(uname -m)" in x86_64) arch=x64 ;; aarch64|arm64) arch=arm64 ;; *) echo "unsupported CPU" >&2; exit 70 ;; esac
