@@ -133,6 +133,12 @@
   --xy-handle-border-color: #000;
 }
 
+/* Nodes are focusable wrappers around rounded-xl cards; match the card radius
+   so the keyboard focus outline follows the card instead of a square box. */
+.react-flow__node {
+  border-radius: var(--radius-xl);
+}
+
 .react-flow__handle {
   opacity: 0;
 }
