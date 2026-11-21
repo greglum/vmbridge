@@ -199,11 +199,17 @@ function VmCard({ data }: NodeProps<VmNode>) {
       </div>
       <div className="flex items-center justify-between gap-3 rounded-b-xl border-t px-3.5 py-2.5">
         <Status {...state} />
-        {vm.stats?.highMemory && (
+        {vm.stats?.highMemory ? (
           <span className="flex items-center gap-1.5 text-[13px] text-destructive" title={vm.stats.memory ? `${usage(vm.stats.memory)} used` : undefined}>
             <HugeiconsIcon icon={Alert02Icon} className="size-3.5" strokeWidth={2} />
             High memory
           </span>
+        ) : (
+          vm.skillsPending && (
+            <span className="text-[13px] text-muted-foreground" title={vm.state === "sleeping" ? "It gets the latest skills when it wakes." : undefined}>
+              Skills pending
+            </span>
+          )
         )}
       </div>
     </div>
