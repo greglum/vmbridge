@@ -98,7 +98,7 @@ export const commands = [
   { command: "vmbridge stop", args: "", does: "Stop, including the background service" },
   { command: "vmbridge service install", args: "[--host] [--port]", does: "Run in the background at login (launchd or systemd)" },
   { command: "vmbridge service uninstall", args: "", does: "Remove the background service" },
-  { command: "vmbridge key", args: "", does: "Set a new dashboard key" },
+  { command: "vmbridge password", args: "", does: "Set a new dashboard password" },
 ];
 
 /** The agent CLIs VM Bridge installs on every VM. */
