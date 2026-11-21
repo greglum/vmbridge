@@ -109,6 +109,28 @@ export interface VmSession {
   updatedAt: string | null;
 }
 
+/** Used and total, in bytes. */
+export interface Usage {
+  used: number;
+  total: number;
+}
+
+/** One reading of an awake VM's resources. A part the VM could not report is null. */
+export interface VmStats {
+  /** When VM Bridge took the reading. */
+  at: number;
+  /** The VM's own memory, or its container's limit when it has one. */
+  memory: Usage | null;
+  /** Share of the last 10 s some task waited on memory (PSI `some avg10`), 0 to 100. Null without PSI. */
+  memoryPressure: number | null;
+  /** CPU use over one second as a share of all cores, 0 to 1. */
+  cpu: { usage: number; cores: number } | null;
+  /** The filesystem holding /workspace. */
+  disk: Usage | null;
+  /** Memory is nearly full or tasks often wait on it. */
+  highMemory: boolean;
+}
+
 export interface VmInfo {
   id: string;
   name: string;
@@ -128,6 +150,8 @@ export interface VmInfo {
   projects: string[];
   sessions: VmSession[];
   t3Version: string | null;
+  /** The latest resource reading while the VM is awake. */
+  stats: VmStats | null;
 }
 
 export interface ProjectInfo {

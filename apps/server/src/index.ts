@@ -18,6 +18,7 @@ import { networkInfo } from "./network.ts";
 import { Secrets, Settings } from "./settings.ts";
 import { Store } from "./store.ts";
 import { Traffic } from "./traffic.ts";
+import { Stats } from "./vm/stats.ts";
 
 export { version };
 export const defaultPort = 3774;
@@ -62,7 +63,8 @@ export async function start(options: StartOptions = {}) {
   const rpc = new Rpc(hub, clones, branches, traffic, () => secrets.has("github.token"));
   const gateway = new T3Gateway(hub, rpc, clients);
   const auth = new DashboardAuth(db, settings);
-  const admin = new Admin({ version, startedAt: Date.now(), host, port, settings, secrets, store, fleet, hub, traffic, clients, auth, gateway, agents });
+  const stats = new Stats(fleet);
+  const admin = new Admin({ version, startedAt: Date.now(), host, port, settings, secrets, store, fleet, hub, traffic, clients, auth, gateway, agents, stats });
 
   const server = Bun.serve<SocketData>({
     hostname: host,
@@ -92,6 +94,8 @@ export async function start(options: StartOptions = {}) {
       .finally(() => (sweeping = false));
   }, 15_000);
   const codexSync = setInterval(() => void fleet.syncCodexAuth().catch(() => {}), 60 * 60_000);
+  // Often enough for the dashboard's high memory warning; opening a VM's details reads it right away.
+  const statsTimer = setInterval(() => void stats.sampleAll().catch(() => {}), 30_000);
   void fleet.resume();
   // Accounts saved by older versions lack the details the dashboard shows.
   const githubToken = secrets.get("github.token");
@@ -107,6 +111,7 @@ export async function start(options: StartOptions = {}) {
     async stop() {
       clearInterval(sweep);
       clearInterval(codexSync);
+      clearInterval(statsTimer);
       gateway.close();
       await server.stop(true);
       hub.close();

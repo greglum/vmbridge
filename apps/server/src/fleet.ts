@@ -85,6 +85,11 @@ export class Fleet extends EventEmitter<FleetEvents> {
     return backend?.open ? backend : undefined;
   }
 
+  /** The provider handle of a connected VM. Undefined while it sleeps, so callers cannot wake it. */
+  box(vmId: string): Box | undefined {
+    return this.backend(vmId) ? this.boxes.get(vmId) : undefined;
+  }
+
   connected(): string[] {
     return [...this.backends.keys()].filter((id) => this.backend(id));
   }
