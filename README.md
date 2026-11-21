@@ -14,6 +14,7 @@ Website and docs: [vmbridge.ordinity.com](https://vmbridge.ordinity.com)
 - A VM sleeps when it sits idle and wakes when you send a message.
 - One dashboard, behind a password, for providers, GitHub, agent sign-ins, pairing devices and a
   live view of your VMs.
+- Environment variables you set once reach every VM, for agents and shells.
 - Agent skills from [skills.sh](https://skills.sh) or from this machine reach every VM, for Claude
   Code and Codex.
 - Your global `AGENTS.md` (and Claude Code's `CLAUDE.md`) on this machine can follow you to every VM.
@@ -38,6 +39,15 @@ Run the same command again to update.
 4. Under **Devices**, create a pairing link and paste it into T3 Code as a remote environment.
 
 Start a thread in T3 Code and VM Bridge brings up a VM for it.
+
+## Environment variables
+
+Under **Settings**, **Environment**, add variables such as `NPM_TOKEN` or `API_URL`. Every VM gets
+them: T3, the agents and the commands they run, and login or interactive shells such as SSH. Awake
+VMs restart T3 to apply a change once nothing runs on them, so a running turn is never cut off.
+Sleeping VMs apply it when they wake, before serving anything. Values are stored with your other
+secrets and never shown again. Names VM Bridge sets itself, such as `PATH`, `HOME`,
+`CLAUDE_CONFIG_DIR` or `GH_TOKEN`, are refused.
 
 ## Skills
 

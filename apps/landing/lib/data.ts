@@ -176,6 +176,11 @@ export const faq = [
       "Codex, Claude Code and OpenCode. VM Bridge installs them on each VM and signs them in with the accounts and keys you add in the dashboard.",
   },
   {
+    question: "Can I set environment variables on the VMs?",
+    answer:
+      "Yes. Add them once in the dashboard and every VM gets them, for the agents, the commands they run and shells on the VM. A VM applies a change once nothing runs on it, or when it wakes, so a running turn is never cut off. Values are stored as secrets and never shown again.",
+  },
+  {
     question: "Can agents on the VMs use skills?",
     answer:
       "Yes. Install agent skills from skills.sh, or pick ones already on the machine that runs VM Bridge, and every VM gets them for Claude Code and Codex. Awake VMs get them right away without a restart, sleeping VMs get them when they wake, and edits to a local skill follow on their own. Switch on Sync all and every skill on that machine goes, including new ones.",
