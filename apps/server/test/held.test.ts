@@ -132,4 +132,27 @@ describe("agent updates", () => {
     expect(updated?.updateState).toMatchObject({ status: "succeeded" });
     expect(store.snapshot<ServerConfig>("vm1", "config")?.providers?.[0]?.version).toBe("2.1.330");
   });
+
+  test("a waking VM re-checks agent releases and the dialog offers what it finds", async () => {
+    const { fleet, hub } = setup();
+    const calls: string[] = [];
+    let pushConfig: (frame: unknown) => void = () => {};
+    const backend = {
+      call: async (tag: string) => {
+        calls.push(tag);
+        return { environment: { orchestrationProtocolVersion: 2 }, providers: [] };
+      },
+      request: (tag: string, _payload: unknown, handler: (frame: unknown) => void) => {
+        if (tag === "subscribeServerConfig") pushConfig = handler;
+        return () => {};
+      },
+    } as unknown as Backend;
+    await fleet.onConnect("vm1", backend);
+    expect(calls).toContain("server.refreshProviders");
+
+    const advisory = { status: "behind_latest", currentVersion: "0.171.0", latestVersion: "0.172.0", updateCommand: "npm i -g @openai/codex@latest", canUpdate: true };
+    const codex = { instanceId: "codex", driver: "codex", enabled: true, installed: true, version: "0.171.0", versionAdvisory: advisory };
+    pushConfig({ _tag: "Chunk", values: [{ type: "providerStatuses", payload: { providers: [codex] } }] });
+    expect(hub.agents().find((agent) => agent.instanceId === "codex")?.versionAdvisory).toMatchObject({ latestVersion: "0.172.0" });
+  });
 });

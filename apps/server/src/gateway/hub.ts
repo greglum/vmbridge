@@ -149,6 +149,9 @@ export class Hub extends EventEmitter<HubEvents> {
       }
       this.emit("scheduledTasks");
     });
+    // A VM may have slept through agent releases. T3 checks for them when its agents refresh
+    // and reports the result on the config stream above.
+    void backend.call("server.refreshProviders", { omitProviders: true }, 5 * 60_000).catch(() => {});
     this.emit("config");
   }
 
