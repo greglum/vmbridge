@@ -88,10 +88,12 @@ function setup() {
 
   /** The VM's files, and its T3 server: whether it runs and the env file it started with, as agents inherit it. */
   const files: Record<string, string> = {};
-  const server = { running: false, env: "", starts: 0, restarts: 0 };
+  const server = { running: false, env: "", starts: 0, restarts: 0, failRestart: false };
   const startServer = () => {
     server.running = true;
     server.env = files[envPath] ?? "";
+    // As start-t3.sh does.
+    files["/workspace/.vmbridge/t3/credentials"] = /^VMBRIDGE_CREDENTIALS=(.*)$/m.exec(server.env)?.[1] ?? "";
   };
   const box = {
     id: "sb1",
@@ -117,6 +119,7 @@ function setup() {
         server.restarts++;
         for (const socket of t3.sockets) socket.close();
         startServer();
+        if (server.failRestart) throw new Error("T3 did not answer in time.");
       },
     }),
     preview: async () => ({ url: t3.url, headers: {} }),
@@ -376,6 +379,24 @@ describe("sign-in changes", () => {
     release();
     await hub.sweep();
     expect(server.restarts).toBe(1);
+  });
+
+  test("a restart that reports failure after relaunching T3 still counts what T3 started with", async () => {
+    const { fleet, hub, server, signIns } = idleFleet();
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+
+    server.failRestart = true;
+    signIns.opencodeApiKey = "oc-new";
+    await hub.credentialsChanged();
+    expect(server.env).toContain("export OPENCODE_API_KEY='oc-new'");
+
+    // Going back to the old sign-ins must restart T3 again, as it now runs with the new ones.
+    server.failRestart = false;
+    delete signIns.opencodeApiKey;
+    await hub.credentialsChanged();
+    expect(server.restarts).toBe(2);
+    expect(server.env).not.toContain("OPENCODE_API_KEY=");
   });
 
   test.each(["pause", "stop"])("a VM that sleeps by %s gets the new sign-ins when it wakes", async (style) => {

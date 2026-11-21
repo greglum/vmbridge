@@ -250,8 +250,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
     if (server.descriptor.orchestrationProtocolVersion !== 2) {
       throw new Error(`T3 ${version} speaks orchestration protocol ${server.descriptor.orchestrationProtocolVersion}. VM Bridge supports 2.`);
     }
-    if (restart && !server.fresh) this.unrestartable.set(vm.id, fingerprint);
-    const t3Credentials = server.fresh ? fingerprint : vm.t3Credentials;
+    if (restart && server.credentials !== fingerprint) this.unrestartable.set(vm.id, fingerprint);
     let backend = new Backend(vm.id, preview, server.token);
     try {
       try {
@@ -262,7 +261,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
         backend = new Backend(vm.id, preview, server.token);
         await backend.connect();
       }
-      this.store.updateVm(vm.id, { t3Token: server.token, t3Version: version, t3Credentials, lastConnectedAt: Date.now() });
+      this.store.updateVm(vm.id, { t3Token: server.token, t3Version: version, t3Credentials: server.credentials, lastConnectedAt: Date.now() });
       await this.onConnect(vm.id, backend);
     } catch (error) {
       await backend.close();
