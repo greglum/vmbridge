@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { translate } from "../src/gateway/paths.ts";
 import { githubName, normalizeRemote } from "../src/gateway/repos.ts";
+import { Rpc, type RpcClient } from "../src/gateway/rpc.ts";
+import type { Traffic } from "../src/traffic.ts";
 import type { ProjectRow } from "../src/store.ts";
 
 const project: ProjectRow = {
@@ -42,5 +44,17 @@ describe("remotes", () => {
     for (const bad of ["http://example.com/a/b", "https://user:pass@example.com/a/b", "ext::sh -c id", "https://example.com/a b", "--upload-pack=x"]) {
       expect(() => normalizeRemote(bad)).toThrow();
     }
+  });
+});
+
+describe("rpc", () => {
+  test("answers with the request ID's own type, as T3 clients match replies by value", async () => {
+    const traffic = { record: () => {} } as unknown as Traffic;
+    const rpc = new Rpc({} as never, {} as never, {} as never, traffic, () => false);
+    const sent: unknown[] = [];
+    const client: RpcClient = { clientId: "c1", cancels: new Map(), send: (frame) => sent.push(frame) };
+    await rpc.handle(client, { _tag: "Request", id: 0, tag: "server.probe", payload: {} });
+    await rpc.handle(client, { _tag: "Request", id: "1", tag: "server.probe", payload: {} });
+    expect(sent.map((frame) => (frame as { requestId: unknown }).requestId)).toEqual([0, "1"]);
   });
 });

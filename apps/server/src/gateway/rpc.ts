@@ -15,8 +15,11 @@ export interface RpcClient {
   readonly cancels: Map<string, () => void>;
 }
 
+/** Echoed back with the type it arrived as: newer T3 clients send numbers and match replies by value. */
+type RequestId = string | number;
+
 interface Call {
-  id: string;
+  id: RequestId;
   tag: string;
   payload: Wire;
   client: RpcClient;
@@ -24,13 +27,13 @@ interface Call {
   forwarded?: boolean;
 }
 
-const success = (requestId: string, value: unknown) => ({ _tag: "Exit", requestId, exit: { _tag: "Success", value } });
-const defect = (requestId: string, text: string) => ({
+const success = (requestId: RequestId, value: unknown) => ({ _tag: "Exit", requestId, exit: { _tag: "Success", value } });
+const defect = (requestId: RequestId, text: string) => ({
   _tag: "Exit",
   requestId,
   exit: { _tag: "Failure", cause: [{ _tag: "Die", defect: text }] },
 });
-const tagged = (requestId: string, error: Wire) => ({
+const tagged = (requestId: RequestId, error: Wire) => ({
   _tag: "Exit",
   requestId,
   exit: { _tag: "Failure", cause: [{ _tag: "Fail", error }] },
@@ -142,7 +145,7 @@ export class Rpc {
     if (frame._tag !== "Request" || !["string", "number"].includes(typeof frame.id) || typeof frame.tag !== "string") {
       throw new Error("Invalid RPC frame.");
     }
-    const call: Call = { id: String(frame.id), tag: frame.tag, payload: (frame.payload ?? {}) as Wire, client };
+    const call: Call = { id: frame.id as RequestId, tag: frame.tag, payload: (frame.payload ?? {}) as Wire, client };
     const started = performance.now();
     const local = this.local[call.tag];
     try {
@@ -180,7 +183,7 @@ export class Rpc {
   private stream(call: Call, event: StreamEvent, value: () => unknown) {
     const push = () => this.chunk(call, value());
     this.hub.on(event, push);
-    call.client.cancels.set(call.id, () => this.hub.off(event, push));
+    call.client.cancels.set(String(call.id), () => this.hub.off(event, push));
     push();
     if (call.payload.requestCompletionMarker) this.chunk(call, { kind: "synchronized" });
   }
@@ -344,12 +347,12 @@ export class Rpc {
       this.hub.off("awake", onLifecycle);
       this.hub.off("offline", onLifecycle);
     };
-    call.client.cancels.set(call.id, cancel);
+    call.client.cancels.set(String(call.id), cancel);
     try {
       await update();
     } catch (error) {
       cancel();
-      call.client.cancels.delete(call.id);
+      call.client.cancels.delete(String(call.id));
       throw error;
     }
   }
@@ -386,7 +389,7 @@ export class Rpc {
     const onAwake = (vmId: string) => this.hub.store.threadVm(threadId) === vmId && update();
     this.hub.on("setup", onSetup);
     this.hub.on("awake", onAwake);
-    call.client.cancels.set(call.id, () => {
+    call.client.cancels.set(String(call.id), () => {
       this.hub.off("setup", onSetup);
       this.hub.off("awake", onAwake);
       upstream?.();
@@ -440,11 +443,11 @@ export class Rpc {
       this.hub.off("awake", onAwake);
       this.hub.off("wake", onWake);
     };
-    call.client.cancels.set(call.id, cancel);
+    call.client.cancels.set(String(call.id), cancel);
     if (this.hub.fleet.backend(vmId)) return attach();
     if (!sleepingSnapshot()) {
       cancel();
-      call.client.cancels.delete(call.id);
+      call.client.cancels.delete(String(call.id));
       throw new Error("This thread's VM is asleep and has no saved transcript. Send a message to wake it.");
     }
     if (call.payload.requestCompletionMarker) this.chunk(call, { kind: "synchronized" });
@@ -505,7 +508,7 @@ export class Rpc {
         if (frame._tag !== "Exit") return;
         done = true;
         release();
-        client.cancels.delete(call.id);
+        client.cancels.delete(String(call.id));
         const ok = (frame.exit as Wire | undefined)?._tag === "Success";
         this.traffic.record({ kind: "rpc", operation: tag, clientId: client.clientId, vmId, status: ok ? "ok" : "error", durationMs: Math.round(performance.now() - started) });
         if (launching) this.hub.reportSetup(launching, ok ? "Workspace handed to T3" : "T3 could not start the thread.", ok ? "done" : "failed");
@@ -516,7 +519,7 @@ export class Rpc {
     }
     call.forwarded = true;
     if (!done) {
-      client.cancels.set(call.id, () => {
+      client.cancels.set(String(call.id), () => {
         release();
         stop();
         if (launching) this.hub.reportSetup(launching, "The launch was interrupted.", "failed");
