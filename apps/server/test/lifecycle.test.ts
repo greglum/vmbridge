@@ -79,7 +79,7 @@ async function until(check: () => boolean) {
   expect(check()).toBe(true);
 }
 
-function setup() {
+function setup(skillRoots?: string[]) {
   const t3 = fakeT3();
   const db = openDatabase(":memory:");
   const settings = new Settings(db);
@@ -91,7 +91,7 @@ function setup() {
   const traffic = { record: () => {} } as unknown as Traffic;
   const signIns: AgentSecrets = {};
   const agents = { vmSecrets: async () => ({ ...signIns }), adoptCodex: () => {} } as unknown as AgentAuth;
-  const skills = new Skills(db);
+  const skills = skillRoots ? new Skills(db, () => skillRoots) : new Skills(db);
 
   /** The VM's files, and its T3 server: whether it runs and the env file it started with, as agents inherit it. */
   const files: Record<string, string> = {};
@@ -585,6 +585,46 @@ describe("skills", () => {
     expect(order).toEqual(style === "pause" ? ["skills", "connect"] : ["skills", "start", "connect"]);
     expect(synced.at(-1)!.skills.map((skill) => skill.name)).toEqual(["review"]);
     expect(store.vm(vm.id)?.skills).toBe(skills.state().fingerprint);
+  });
+
+  test("with sync all, every local skill reaches an awake VM, new ones follow and deleted ones go", async () => {
+    const base = mkdtempSync(join(tmpdir(), "vmbridge-roots-"));
+    temps.push(base);
+    const [claudeRoot, agentsRoot] = [join(base, "claude"), join(base, "agents")];
+    const add = (root: string, name: string, body: string) => {
+      mkdirSync(join(root, name), { recursive: true });
+      writeFileSync(join(root, name, "SKILL.md"), `---\nname: ${name}\ndescription: ${body}\n---\n`);
+    };
+    add(claudeRoot, "alpha", "Claude's alpha.");
+    add(agentsRoot, "alpha", "Another alpha.");
+    add(agentsRoot, "beta", "Beta.");
+    const { fleet, skills, synced } = setup([claudeRoot, agentsRoot]);
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    const names = () => synced.at(-1)!.skills.map((skill) => skill.name);
+
+    skills.setSyncAll(true);
+    await fleet.shareSkills();
+    expect(names()).toEqual(["alpha", "beta"]);
+    // The first folder with a name wins.
+    expect(skills.list().find((skill) => skill.name === "alpha")?.description).toBe("Claude's alpha.");
+
+    add(agentsRoot, "gamma", "Gamma.");
+    expect(skills.refreshLocal()).toBe(true);
+    await fleet.shareSkills();
+    expect(names()).toEqual(["alpha", "beta", "gamma"]);
+
+    rmSync(join(agentsRoot, "beta"), { recursive: true });
+    expect(skills.refreshLocal()).toBe(true);
+    await fleet.shareSkills();
+    expect(names()).toEqual(["alpha", "gamma"]);
+
+    // Off: what it installed stays, and a deleted folder keeps its last copy.
+    skills.setSyncAll(false);
+    rmSync(join(agentsRoot, "gamma"), { recursive: true });
+    add(agentsRoot, "delta", "Delta.");
+    expect(skills.refreshLocal()).toBe(false);
+    expect(skills.list().map((skill) => skill.name)).toEqual(["alpha", "gamma"]);
   });
 
   test("a new VM has every skill before T3 first starts", async () => {
