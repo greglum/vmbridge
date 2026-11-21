@@ -107,6 +107,7 @@ function setup() {
     destroy: async (sandboxId: string) => void events.push(`destroy ${sandboxId}`),
     connect: async () => box,
     keepAlive: async () => {},
+    deleteCheckpoint: async (checkpoint: string) => void events.push(`delete checkpoint ${checkpoint}`),
   };
   fleet.driver = () => driver as unknown as Driver;
   return { t3, store, settings, fleet, driver, box, events, traffic };
@@ -168,6 +169,31 @@ describe("waking", () => {
     expect(dropped).toBeInstanceOf(Error);
     expect(dropped).not.toBeInstanceOf(T3Rejected);
   });
+});
+
+describe("checkpoints", () => {
+  test("waking from a checkpoint deletes the checkpoint", async () => {
+    const { fleet, store, driver, box, events } = setup();
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    driver.sleep = async () => (events.push("sleep"), { checkpoint: "cp1" });
+    await fleet.sleep(vm.id);
+    driver.wake = async () => (events.push("wake"), { ...box, id: "sb2" });
+    await fleet.ensure(vm.id);
+    expect(events).toEqual(["create", "wake", "sleep", "wake", "delete checkpoint cp1"]);
+    expect(store.vm(vm.id)).toMatchObject({ sandboxId: "sb2", checkpoint: null });
+  });
+
+  test("deleting a VM asleep as a checkpoint deletes the checkpoint", async () => {
+    const { fleet, driver, events } = setup();
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    driver.sleep = async () => (events.push("sleep"), { checkpoint: "cp1" });
+    await fleet.sleep(vm.id);
+    await fleet.destroy(vm.id);
+    expect(events).toEqual(["create", "wake", "sleep", "destroy sb1", "delete checkpoint cp1"]);
+  });
+
 });
 
 describe("idle sleep", () => {

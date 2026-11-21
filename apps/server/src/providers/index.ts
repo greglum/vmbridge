@@ -2,6 +2,7 @@ import { boxd } from "@opencoredev/sandbox-sdk/boxd";
 import { instabox } from "@opencoredev/sandbox-sdk/instabox";
 import { railway } from "@opencoredev/sandbox-sdk/railway";
 import type { ProviderId } from "@vmbridge/contracts";
+import { Sandbox } from "railway";
 import { boatProvider } from "./boat.ts";
 import { daytonaProvider } from "./daytona.ts";
 import { sdkDriver } from "./sdk.ts";
@@ -97,6 +98,11 @@ const railwayProvider: ProviderDefinition = {
       // Railway sets CPU and memory per client, not per create.
       sized: (size) => railway({ ...auth, resources: railwayResources[size] }),
       sleep: "checkpoint",
+      // Railway keeps checkpoints until deleted, and deletes them by ID, not by the key the SDK returns.
+      async deleteCheckpoint(key) {
+        const checkpoint = (await Sandbox.checkpoints(auth)).find((entry) => entry.key === key);
+        if (checkpoint) await Sandbox.deleteCheckpoint(checkpoint.id, auth);
+      },
     });
   },
 };
