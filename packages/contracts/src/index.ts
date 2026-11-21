@@ -152,6 +152,38 @@ export interface VmInfo {
   t3Version: string | null;
   /** The latest resource reading while the VM is awake. */
   stats: VmStats | null;
+  /** The VM has not got the installed skills yet. A sleeping VM gets them when it wakes. */
+  skillsPending: boolean;
+}
+
+/** Where an installed skill comes from: skills.sh, or a folder on the machine running VM Bridge. */
+export type SkillSource = "skills.sh" | "local";
+
+/** A skill VM Bridge installs on every VM. */
+export interface SkillInfo {
+  /** Its folder name on the VMs. */
+  name: string;
+  source: SkillSource;
+  /** `owner/repo` for skills.sh, the folder for a local skill. */
+  ref: string;
+  description: string | null;
+  updatedAt: number;
+}
+
+/** A skill found in this machine's Claude Code or Codex skill folders. */
+export interface LocalSkill {
+  name: string;
+  path: string;
+  description: string | null;
+  installed: boolean;
+}
+
+export interface SkillSearchResult {
+  /** `owner/repo` */
+  source: string;
+  skillId: string;
+  name: string;
+  installs: number;
 }
 
 export interface ProjectInfo {
@@ -241,6 +273,7 @@ export interface Overview {
   clients: ClientInfo[];
   vms: VmInfo[];
   projects: ProjectInfo[];
+  skills: SkillInfo[];
 }
 
 export interface TrafficEvent {

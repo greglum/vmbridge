@@ -22,6 +22,7 @@ import { isWorking } from "./gateway/types.ts";
 import { disableTailscaleHttps, enableTailscaleHttps, networkInfo } from "./network.ts";
 import { providers } from "./providers/index.ts";
 import type { Secrets, Settings } from "./settings.ts";
+import { SkillError, type Skills } from "./skills.ts";
 import type { Store } from "./store.ts";
 import type { Traffic } from "./traffic.ts";
 import type { Stats } from "./vm/stats.ts";
@@ -42,6 +43,7 @@ export interface AdminDeps {
   gateway: T3Gateway;
   agents: AgentAuth;
   stats: Stats;
+  skills: Skills;
 }
 
 class BadRequest extends Error {}
@@ -88,13 +90,13 @@ export class Admin {
       return await this.route(request, path);
     } catch (error) {
       if (error instanceof TooManyAttempts) return json({ error: error.message }, 429);
-      if (error instanceof BadRequest || error instanceof InvalidSignIn || error instanceof GitHubRejected) return json({ error: error.message }, 400);
+      if (error instanceof BadRequest || error instanceof InvalidSignIn || error instanceof GitHubRejected || error instanceof SkillError) return json({ error: error.message }, 400);
       return json({ error: message(error) }, 500);
     }
   }
 
   private async route(request: Request, path: string): Promise<Response> {
-    const { settings, secrets, store, fleet, hub, clients, auth, gateway, agents } = this.deps;
+    const { settings, secrets, store, fleet, hub, clients, auth, gateway, agents, skills } = this.deps;
     const method = request.method;
     const [, section, id, action] = path.split("/");
 
@@ -316,6 +318,26 @@ export class Admin {
       return json({ ok: true });
     }
 
+    if (section === "skills") {
+      if (id === "local" && !action && method === "GET") return json(skills.discover());
+      if (id === "search" && !action && method === "GET") {
+        const query = new URL(request.url).searchParams.get("q")?.trim() ?? "";
+        return json(query ? await skills.search(query) : []);
+      }
+      if (!id && method === "POST") {
+        const input = await body(request);
+        if (input.source === "skills.sh") await skills.installFromSkillsSh(text(input.repo, "The repository"), text(input.skill, "The skill"));
+        else if (input.source === "local") await skills.installLocal(text(input.path, "The folder"));
+        else throw new BadRequest("Pick a skill from skills.sh or this machine.");
+        return json(skills.list());
+      }
+      if (id && action === "update" && method === "POST") return json({ changed: await skills.update(decodeURIComponent(id)) });
+      if (id && !action && method === "DELETE") {
+        skills.remove(decodeURIComponent(id));
+        return json(skills.list());
+      }
+    }
+
     if (section === "vms" && id) {
       if (!store.vm(id)) return json({ error: "No such VM." }, 404);
       if (action === "wake" && method === "POST") {
@@ -381,6 +403,7 @@ export class Admin {
     const agents = this.deps.agents.list();
     const projects = store.projects();
     const idleMs = settings.get("idleMinutes") * 60_000;
+    const skills = this.deps.skills.state();
     const vms = store
       .vms()
       .filter((vm) => vm.state !== "gone")
@@ -417,6 +440,7 @@ export class Admin {
           }),
           t3Version: vm.t3Version,
           stats: vm.state === "ready" || vm.state === "busy" ? this.deps.stats.get(vm.id) : null,
+          skillsPending: vm.sandboxId !== null && vm.skills !== skills.fingerprint && (skills.skills.length > 0 || vm.skills !== null),
         };
       });
     return {
@@ -442,6 +466,7 @@ export class Admin {
         vmId: project.vmId,
         createdAt: project.createdAt,
       })),
+      skills: this.deps.skills.list(),
     };
   }
 

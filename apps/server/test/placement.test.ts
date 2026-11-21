@@ -11,7 +11,7 @@ function setup() {
   settings.set("providers", ["boxd", "railway"]);
   settings.set("defaultProvider", "boxd");
   settings.set("vmSize", "medium");
-  const fleet = new Fleet(new Store(db), settings, new Secrets(db), { record: () => {} } as unknown as Traffic, {} as never);
+  const fleet = new Fleet(new Store(db), settings, new Secrets(db), { record: () => {} } as unknown as Traffic, {} as never, {} as never);
   return { settings, fleet };
 }
 

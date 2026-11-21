@@ -107,6 +107,19 @@ const migrations = [
   DELETE FROM settings WHERE key = 'activeProvider';
   `,
   `ALTER TABLE vms ADD COLUMN t3_credentials TEXT;`,
+  `
+  CREATE TABLE skills (
+    name TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    description TEXT,
+    hash TEXT NOT NULL,
+    files TEXT NOT NULL,
+    installed_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  ALTER TABLE vms ADD COLUMN skills TEXT;
+  `,
 ];
 
 export function openDatabase(path: string): Database {
