@@ -758,7 +758,8 @@ export class Hub extends EventEmitter<HubEvents> {
 
   /**
    * Sleeps VMs idle longer than the configured minutes. The VM's own shell decides: a running
-   * turn, queued work, a pending approval, or an enabled automation keeps it awake.
+   * turn, queued work, a pending approval, or an enabled automation keeps it awake. First, an idle
+   * VM still running with older sign-ins restarts T3 to take the new ones.
    */
   async sweep(now = Date.now()) {
     const idleMs = this.settings.get("idleMinutes") * 60_000;
@@ -772,6 +773,7 @@ export class Hub extends EventEmitter<HubEvents> {
       if (!backend || !vm || this.fleet.leased(vmId)) continue;
       const shell = await backend.json<Shell>("/api/orchestration/shell").catch(() => null);
       if (!shell) continue;
+      if (await this.updateCredentials(vmId, shell)) continue;
       if (hasLiveWork(shell) || this.hasEnabledSchedule(vmId)) {
         this.fleet.touch(vmId, now);
         this.setBusy(vmId, hasLiveWork(shell));
@@ -783,6 +785,27 @@ export class Hub extends EventEmitter<HubEvents> {
       this.traffic.record({ kind: "system", operation: `Idle ${this.settings.get("idleMinutes")} min, sleeping VM`, vmId });
       await this.sleepVm(vmId, shell);
     }
+  }
+
+  /**
+   * Sign-ins changed: every awake VM gets the new ones written now, and those with nothing running restart
+   * T3 so their agents get them too. Busy VMs restart in a later sweep, once idle; sleeping ones when they wake.
+   */
+  async credentialsChanged() {
+    await this.fleet.shareCredentials();
+    await Promise.all(
+      this.fleet.connected().map(async (vmId) => {
+        const shell = await this.fleet.backend(vmId)?.json<Shell>("/api/orchestration/shell").catch(() => null);
+        if (shell) await this.updateCredentials(vmId, shell);
+      }),
+    );
+  }
+
+  /** Restarts T3 on an idle VM running with older sign-ins. Returns whether it tried. */
+  private async updateCredentials(vmId: string, shell: Shell) {
+    if (!this.fleet.stale(vmId) || hasLiveWork(shell) || this.fleet.leased(vmId)) return false;
+    await this.fleet.restart(vmId, async (live) => !hasLiveWork(await live.json<Shell>("/api/orchestration/shell"))).catch(() => {});
+    return true;
   }
 
   /** Puts an idle VM to sleep, caching every transcript first so threads stay readable. */
