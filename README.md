@@ -14,6 +14,8 @@ Website and docs: [vmbridge.ordinity.com](https://vmbridge.ordinity.com)
 - A VM sleeps when it sits idle and wakes when you send a message.
 - One dashboard, behind a password, for providers, GitHub, agent sign-ins, pairing devices and a
   live view of your VMs.
+- Agent skills from [skills.sh](https://skills.sh) or from this machine reach every VM, for Claude
+  Code and Codex.
 - Works over your local network and Tailscale.
 
 ## Install
@@ -35,6 +37,14 @@ Run the same command again to update.
 4. Under **Devices**, create a pairing link and paste it into T3 Code as a remote environment.
 
 Start a thread in T3 Code and VM Bridge brings up a VM for it.
+
+## Skills
+
+Under **Skills**, install agent skills from skills.sh, or pick ones found in `~/.claude/skills`,
+`~/.agents/skills` or `~/.codex/skills` on this machine. Every VM gets them for Claude Code and
+Codex: awake VMs right away, without restarting anything, and sleeping VMs before they serve
+anything when they wake. Edits to a local skill reach the VMs within a few seconds. Removing a
+skill takes it off every VM, and skills put on a VM some other way are left alone.
 
 ## Commands
 
