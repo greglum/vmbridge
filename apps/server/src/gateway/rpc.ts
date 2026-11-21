@@ -2,6 +2,7 @@ import type { Traffic } from "../traffic.ts";
 import { message, NoProvider } from "../fleet.ts";
 import type { Frame } from "../vm/backend.ts";
 import type { Clones } from "./clones.ts";
+import { heldCommandTypes } from "./held.ts";
 import type { Hub } from "./hub.ts";
 import { projectForPath, projectRoot } from "./paths.ts";
 import { githubName, githubRepository, type RemoteBranches } from "./repos.ts";
@@ -465,6 +466,10 @@ export class Rpc {
     }
     if (scheduled && (payload.schedule as Wire | undefined)?.type === "webhook") {
       throw new Error("Webhook automations need a directly reachable T3 server.");
+    }
+    if (tag === "orchestration.dispatchCommand" && heldCommandTypes.has(String(payload.type))) {
+      const sequence = this.hub.holdCommand(payload);
+      if (sequence !== null) return this.reply(call, { sequence });
     }
     const mutating = scheduled || tag === "orchestration.launchThread" || tag === "orchestration.dispatchCommand" || mutation.test(tag);
     const launching = tag === "orchestration.launchThread" ? str(payload.threadId) : undefined;

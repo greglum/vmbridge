@@ -213,4 +213,24 @@ export class Store {
       )
       .run(projectId, JSON.stringify(snapshot));
   }
+
+  /** Thread commands applied while their VM was away, waiting to be replayed on it. Oldest first. */
+  heldCommands(vmId: string) {
+    return this.db
+      .query<{ id: string; payload: string; createdAt: number }, [string]>(
+        "SELECT id, payload, created_at AS createdAt FROM held_commands WHERE vm_id = ? ORDER BY created_at, rowid",
+      )
+      .all(vmId)
+      .map((row) => ({ id: row.id, payload: JSON.parse(row.payload) as Record<string, unknown>, createdAt: row.createdAt }));
+  }
+
+  holdCommand(id: string, vmId: string, payload: unknown, createdAt: number) {
+    this.db
+      .query("INSERT OR IGNORE INTO held_commands (id, vm_id, payload, created_at) VALUES (?, ?, ?, ?)")
+      .run(id, vmId, JSON.stringify(payload), createdAt);
+  }
+
+  dropHeldCommand(id: string) {
+    this.db.query("DELETE FROM held_commands WHERE id = ?").run(id);
+  }
 }

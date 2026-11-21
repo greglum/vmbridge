@@ -6,6 +6,7 @@ import type { ProjectRow, Store } from "../store.ts";
 import type { Traffic } from "../traffic.ts";
 import type { Backend, Frame } from "../vm/backend.ts";
 import { defaultAgents, pendingAgent, presentAgent, type AgentReport } from "./agents.ts";
+import { applyHeldCommand } from "./held.ts";
 import { isPathKey, projectForPath, projectRoot, translate, vmForPath } from "./paths.ts";
 import { repositoryIdentity } from "./repos.ts";
 import {
@@ -82,8 +83,12 @@ export class Hub extends EventEmitter<HubEvents> {
     this.schedules = store.snapshots<ScheduledTasks>("scheduled_tasks");
     this.sequence = settings.get("shellSequence");
     fleet.onConnect = (vmId, backend) => this.attach(vmId, backend);
-    fleet.on("awake", (vmId) => this.emit("awake", vmId));
+    fleet.on("awake", (vmId) => {
+      this.emit("awake", vmId);
+      void this.replayHeld(vmId);
+    });
     fleet.on("offline", (vmId) => {
+      if (!store.vm(vmId)) this.forget(vmId);
       this.emit("offline", vmId);
       this.emit("config");
     });
@@ -163,6 +168,8 @@ export class Hub extends EventEmitter<HubEvents> {
       if (typeof item.sequence === "number") shell.snapshotSequence = item.sequence;
     }
     const shell = this.shells.get(vmId)!;
+    // Commands VM Bridge applied while the VM was away stay visible until the VM has replayed them.
+    for (const held of this.store.heldCommands(vmId)) applyHeldCommand(shell, held.payload, new Date(held.createdAt).toISOString());
     for (const thread of threadsOf(shell)) this.store.setThreadVm(thread.id, vmId);
     this.store.saveSnapshot(vmId, "shell", shell);
     if (item.kind === "thread.updated" && item.thread) this.refreshProjectionSoon(vmId, item.thread.id);
@@ -173,6 +180,55 @@ export class Hub extends EventEmitter<HubEvents> {
     this.setBusy(vmId, working);
     this.bump();
     this.emit("shell");
+  }
+
+  /** A removed VM's rows are gone from the store; drop what is still cached in memory too. */
+  private forget(vmId: string) {
+    this.shells.delete(vmId);
+    this.configs.delete(vmId);
+    this.schedules.delete(vmId);
+    this.bump();
+    this.emit("shell");
+    this.emit("scheduledTasks");
+  }
+
+  /**
+   * Applies a sidebar-only thread command (see `heldCommandTypes`) without its VM, when the VM is
+   * not connected. It is saved and replayed on the VM when it next connects. Returns the shell
+   * sequence to answer with, or null when the VM is connected and should apply it itself.
+   */
+  holdCommand(payload: Wire): number | null {
+    const threadId = str(payload.threadId);
+    const vmId = threadId ? this.store.threadVm(threadId) : null;
+    const vm = vmId ? this.store.vm(vmId) : null;
+    // No VM holds this thread any more (removed, or lost by the provider), so there is nothing left to change.
+    if (!vm || vm.state === "gone") return this.sequence;
+    if (this.fleet.backend(vm.id)) return null;
+    const shell = this.shells.get(vm.id);
+    const commandId = str(payload.commandId) ?? crypto.randomUUID();
+    const now = Date.now();
+    this.store.holdCommand(commandId, vm.id, this.into({ ...payload }, vm.id), now);
+    if (shell) {
+      applyHeldCommand(shell, payload, new Date(now).toISOString());
+      this.store.saveSnapshot(vm.id, "shell", shell);
+    }
+    this.bump();
+    this.emit("shell");
+    return this.sequence;
+  }
+
+  /** Sends held commands to a VM that just connected. A command the VM rejects is dropped: its state wins. */
+  private async replayHeld(vmId: string) {
+    for (const held of this.store.heldCommands(vmId)) {
+      const backend = this.fleet.backend(vmId);
+      if (!backend) return;
+      const ok = await backend.call("orchestration.dispatchCommand", held.payload).then(
+        () => true,
+        () => false,
+      );
+      this.traffic.record({ kind: "system", operation: `replay ${String(held.payload.type)}`, vmId, status: ok ? "ok" : "error" });
+      this.store.dropHeldCommand(held.id);
+    }
   }
 
   /** The merged shell: every registered project, then each VM's threads. */

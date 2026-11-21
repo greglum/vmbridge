@@ -92,6 +92,14 @@ const migrations = [
     snapshot TEXT NOT NULL
   );
   `,
+  `
+  CREATE TABLE held_commands (
+    id TEXT PRIMARY KEY,
+    vm_id TEXT NOT NULL REFERENCES vms(id) ON DELETE CASCADE,
+    payload TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  `,
 ];
 
 export function openDatabase(path: string): Database {
