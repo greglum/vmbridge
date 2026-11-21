@@ -194,6 +194,18 @@ describe("checkpoints", () => {
     expect(events).toEqual(["create", "wake", "sleep", "destroy sb1", "delete checkpoint cp1"]);
   });
 
+  test("a VM a failed wake put back to sleep as a checkpoint is not slept again", async () => {
+    const { fleet, store, driver, events } = setup();
+    fleet.onConnect = async () => {
+      throw new Error("T3 sent something unexpected.");
+    };
+    driver.sleep = async () => (events.push("sleep"), { checkpoint: "cp1" });
+    const vm = await fleet.create();
+    await expect(fleet.ensure(vm.id)).rejects.toThrow("T3 sent something unexpected.");
+    await fleet.sleep(vm.id);
+    expect(events).toEqual(["create", "wake", "sleep"]);
+    expect(store.vm(vm.id)).toMatchObject({ state: "error", checkpoint: "cp1" });
+  });
 });
 
 describe("idle sleep", () => {
