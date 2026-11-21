@@ -53,6 +53,8 @@ export class Fleet extends EventEmitter<FleetEvents> {
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly leases = new Map<string, number>();
   private readonly drivers = new Map<ProviderId, { signature: string; driver: Driver }>();
+  /** The first VM started to read T3's configuration, shared by everyone asking at once. */
+  private bootstrapping?: Promise<string>;
   private closed = false;
 
   /** Runs once a VM's backend is connected, before anyone else can use it. */
@@ -137,18 +139,28 @@ export class Fleet extends EventEmitter<FleetEvents> {
     const size = choice.size ?? this.settings.get("vmSize");
     this.store.insertVm({ id, provider, name: `vm-${id.slice(0, 6)}`, size, state: "provisioning", createdAt: Date.now() });
     this.emit("changed");
-    const started = performance.now();
-    try {
-      const box = await driver.create({ key: id, size, labels: this.labels(), ports: [t3Port] });
-      this.boxes.set(id, box);
+    // Under the VM's lock, so deleting a VM that is still being created waits and then deletes it at the provider too.
+    return this.exclusive(id, async () => {
+      const started = performance.now();
+      let box: Box;
+      try {
+        box = await driver.create({ key: id, size, labels: this.labels(), ports: [t3Port] });
+      } catch (error) {
+        this.traffic.record({ kind: "provider", operation: "create VM", vmId: id, status: "error" });
+        this.setState(id, "error", message(error));
+        throw error;
+      }
       this.store.updateVm(id, { sandboxId: box.id });
+      const vm = this.store.vm(id);
+      if (!vm) {
+        // The row went away some other way: do not leave a billable VM nobody knows about.
+        await driver.destroy(box.id).catch(() => {});
+        throw new Error(`VM ${id} was deleted while it was being created.`);
+      }
+      this.boxes.set(id, box);
       this.traffic.record({ kind: "provider", operation: "create VM", vmId: id, status: "ok", durationMs: Math.round(performance.now() - started) });
-    } catch (error) {
-      this.traffic.record({ kind: "provider", operation: "create VM", vmId: id, status: "error" });
-      this.setState(id, "error", message(error));
-      throw error;
-    }
-    return this.store.vm(id)!;
+      return vm;
+    });
   }
 
   /** Wakes and connects a VM. Concurrent callers share one attempt. */
@@ -171,11 +183,15 @@ export class Fleet extends EventEmitter<FleetEvents> {
     if (!vm) throw new Error(`VM ${vmId} does not exist.`);
     if (vm.state === "gone") throw new Error("This VM was removed from the provider. Start a new thread to get a new VM.");
     if (!vm.sandboxId) throw new Error(`VM ${vmId} was never created at the provider.`);
+    // Asleep (or never started) until now, so nothing runs there that restarting T3, or putting it back to sleep, could interrupt.
+    const wasAsleep = (vm.lastSleptAt ?? 0) >= (vm.lastConnectedAt ?? 0);
     this.setState(vmId, "starting");
     const started = performance.now();
+    let box: Box | undefined;
+    let backend: Backend | undefined;
     try {
       const driver = this.driver(vm.provider);
-      const box = await driver.wake({
+      box = await driver.wake({
         key: vm.id,
         size: vm.size,
         labels: this.labels(),
@@ -192,12 +208,12 @@ export class Fleet extends EventEmitter<FleetEvents> {
       const codexAuth = await readCodexAuth(box);
       if (codexAuth) this.agents.adoptCodex(codexAuth);
       await prepareVm(box, version, await this.credentials());
-      let server = await startT3(box, vm.t3Token);
+      let server = await startT3(box, vm.t3Token, wasAsleep);
       if (server.descriptor.orchestrationProtocolVersion !== 2) {
         throw new Error(`T3 ${version} speaks orchestration protocol ${server.descriptor.orchestrationProtocolVersion}. VM Bridge supports 2.`);
       }
       const preview = await box.preview(t3Port);
-      let backend = new Backend(vmId, preview, server.token);
+      backend = new Backend(vmId, preview, server.token);
       try {
         await backend.connect();
       } catch (error) {
@@ -207,20 +223,32 @@ export class Fleet extends EventEmitter<FleetEvents> {
         await backend.connect();
       }
       this.store.updateVm(vmId, { t3Token: server.token, t3Version: version, lastConnectedAt: Date.now() });
-      await this.onConnect(vmId, backend);
-      backend.onClose = () => this.disconnected(vmId, backend);
-      this.backends.set(vmId, backend);
+      const connected = backend;
+      await this.onConnect(vmId, connected);
+      connected.onClose = () => this.disconnected(vmId, connected);
+      this.backends.set(vmId, connected);
       this.touch(vmId);
       this.setState(vmId, "ready");
       this.traffic.record({ kind: "provider", operation: "wake VM", vmId, status: "ok", durationMs: Math.round(performance.now() - started) });
       this.emit("awake", vmId);
-      return backend;
+      return connected;
     } catch (error) {
       this.traffic.record({ kind: "provider", operation: "wake VM", vmId, status: "error" });
       if (error instanceof SandboxError && error.code === "not_found") this.markGone(vmId);
-      else this.setState(vmId, "error", message(error));
+      else {
+        await backend?.close();
+        // Woken but unusable: put it back to sleep so it does not run, and bill, outside the idle sweep.
+        if (box && wasAsleep) await this.sleepBox(vmId, this.driver(vm.provider), box).catch(() => {});
+        this.setState(vmId, "error", message(error));
+      }
       throw error;
     }
+  }
+
+  private async sleepBox(vmId: string, driver: Driver, box: Box) {
+    this.boxes.delete(vmId);
+    const { checkpoint } = await driver.sleep(box);
+    this.store.updateVm(vmId, { checkpoint: checkpoint ?? null, lastSleptAt: Date.now() });
   }
 
   private disconnected(vmId: string, backend: Backend) {
@@ -240,24 +268,30 @@ export class Fleet extends EventEmitter<FleetEvents> {
     this.emit("changed");
   }
 
-  /** Puts a VM to sleep. `beforeSleep` runs with the backend still connected. */
-  sleep(vmId: string, beforeSleep: (backend: Backend) => Promise<void> = async () => {}) {
+  /**
+   * Puts a VM to sleep. With `idle`, this is an idle sleep: `idle` runs with the backend still
+   * connected and says whether the VM is still idle, and the sleep is also dropped when a request
+   * holds the VM meanwhile. Once a sleep goes ahead, new requests wait for it and wake the VM again.
+   */
+  sleep(vmId: string, idle?: (backend: Backend) => Promise<boolean>) {
     return this.exclusive(vmId, async () => {
       const vm = this.store.vm(vmId);
       const backend = this.backends.get(vmId);
       if (!vm?.sandboxId || vm.state === "sleeping" || vm.state === "gone") return;
-      if (backend?.open) await beforeSleep(backend);
       const started = performance.now();
       const driver = this.driver(vm.provider);
       const box = this.boxes.get(vmId) ?? (await driver.connect(vm.sandboxId));
-      await backend?.close();
+      if (idle && backend?.open && !(await idle(backend))) return;
+      // Nothing may wait between this check and taking the backend away, or new work could start on a closing socket.
+      if (idle && this.leased(vmId)) return;
       this.backends.delete(vmId);
-      this.boxes.delete(vmId);
+      // Before the socket closes, so streams it ends see a VM going to sleep rather than a dropped connection.
+      this.setState(vmId, "sleeping");
+      await backend?.close();
       this.emit("offline", vmId);
       try {
-        const { checkpoint } = await driver.sleep(box);
-        this.store.updateVm(vmId, { checkpoint: checkpoint ?? null, lastSleptAt: Date.now() });
-        this.setState(vmId, "sleeping");
+        await this.sleepBox(vmId, driver, box);
+        this.emit("changed");
         this.traffic.record({ kind: "provider", operation: "sleep VM", vmId, status: "ok", durationMs: Math.round(performance.now() - started) });
       } catch (error) {
         this.setState(vmId, "error", message(error));
@@ -300,15 +334,18 @@ export class Fleet extends EventEmitter<FleetEvents> {
     return { provider, size: rule?.size ?? this.settings.get("vmSize") };
   }
 
-  /** A VM to read T3's configuration from when none is cached: any existing VM, or a new one. */
-  async any(): Promise<string> {
+  /** A VM to read T3's configuration from when none is cached: any existing VM, or a new one. Concurrent callers share one. */
+  any(): Promise<string> {
     const added = this.settings.get("providers");
     const vms = this.store.vms().filter((vm) => added.includes(vm.provider) && vm.state !== "gone" && vm.sandboxId);
     const awake = vms.find((vm) => this.backend(vm.id));
-    if (awake) return awake.id;
-    const vmId = vms[0]?.id ?? (await this.create()).id;
-    await this.ensure(vmId);
-    return vmId;
+    if (awake) return Promise.resolve(awake.id);
+    this.bootstrapping ??= (async () => {
+      const vmId = vms[0]?.id ?? (await this.create()).id;
+      await this.ensure(vmId);
+      return vmId;
+    })().finally(() => (this.bootstrapping = undefined));
+    return this.bootstrapping;
   }
 
   /**
