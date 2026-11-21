@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import type { AgentAuth, AgentSecrets } from "../src/agent-auth/profiles.ts";
 import { openDatabase } from "../src/db.ts";
@@ -7,6 +10,7 @@ import { Hub } from "../src/gateway/hub.ts";
 import type { Shell, Wire } from "../src/gateway/types.ts";
 import type { Box, Driver } from "../src/providers/index.ts";
 import { Secrets, Settings } from "../src/settings.ts";
+import { Skills } from "../src/skills.ts";
 import { Store } from "../src/store.ts";
 import type { Traffic } from "../src/traffic.ts";
 import { T3Rejected } from "../src/vm/backend.ts";
@@ -53,7 +57,9 @@ function fakeT3() {
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
 const fleets: Fleet[] = [];
+const temps: string[] = [];
 afterEach(() => {
+  for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true });
   for (const fleet of fleets.splice(0)) fleet.close();
   for (const server of servers.splice(0)) server.stop(true);
 });
@@ -85,10 +91,14 @@ function setup() {
   const traffic = { record: () => {} } as unknown as Traffic;
   const signIns: AgentSecrets = {};
   const agents = { vmSecrets: async () => ({ ...signIns }), adoptCodex: () => {} } as unknown as AgentAuth;
+  const skills = new Skills(db);
 
   /** The VM's files, and its T3 server: whether it runs and the env file it started with, as agents inherit it. */
   const files: Record<string, string> = {};
   const server = { running: false, env: "", starts: 0, restarts: 0, failRestart: false };
+  /** What each skills sync sent, and the order skill syncs and T3 starts happened in. */
+  const synced: { skills: { name: string; files?: unknown[] }[] }[] = [];
+  const order: string[] = [];
   const startServer = () => {
     server.running = true;
     server.env = files[envPath] ?? "";
@@ -101,6 +111,14 @@ function setup() {
       if (command.includes("auth session issue")) return ok("token");
       if (command.includes("well-known")) return server.running ? ok(JSON.stringify({ orchestrationProtocolVersion: 2 })) : failed;
       if (command.startsWith("rm -f ")) for (const path of command.slice(6).split(" ")) delete files[path];
+      // As skills.mjs does, minus the files.
+      if (command.includes("skills.mjs")) {
+        const incoming = JSON.parse(files["/workspace/.vmbridge/skills-incoming.json"]!) as { fingerprint: string; skills: { name: string; hash: string }[] };
+        synced.push(incoming);
+        order.push("skills");
+        const applied = Object.fromEntries(incoming.skills.map((skill) => [skill.name, skill.hash]));
+        files["/workspace/.vmbridge/skills.json"] = JSON.stringify({ fingerprint: incoming.fingerprint, skills: applied });
+      }
       return ok();
     },
     files: {
@@ -112,11 +130,13 @@ function setup() {
     },
     start: async () => {
       server.starts++;
+      order.push("start");
       startServer();
     },
     process: () => ({
       restart: async () => {
         server.restarts++;
+        order.push("restart");
         for (const socket of t3.sockets) socket.close();
         startServer();
         if (server.failRestart) throw new Error("T3 did not answer in time.");
@@ -137,13 +157,13 @@ function setup() {
   };
   /** Another Fleet on the same database, as after VM Bridge restarts. */
   const newFleet = () => {
-    const fleet = new Fleet(store, settings, secrets, traffic, agents);
+    const fleet = new Fleet(store, settings, secrets, traffic, agents, skills);
     fleet.driver = () => driver as unknown as Driver;
     fleets.push(fleet);
     return fleet;
   };
   const fleet = newFleet();
-  return { t3, store, settings, secrets, fleet, newFleet, driver, box, events, traffic, signIns, files, server };
+  return { t3, store, settings, secrets, fleet, newFleet, driver, box, events, traffic, signIns, files, server, skills, synced, order };
 }
 
 describe("creating and deleting VMs", () => {
@@ -485,5 +505,88 @@ describe("sign-in changes", () => {
     expect(files["/workspace/.vmbridge/git-credentials"]).toBeUndefined();
     expect(files[envPath]).not.toContain("GH_TOKEN=");
     expect(server.restarts).toBe(0);
+  });
+});
+
+describe("skills", () => {
+  /** A local skill folder holding just a SKILL.md, as written on this machine. */
+  function folder(name: string, body: string) {
+    const base = mkdtempSync(join(tmpdir(), "vmbridge-skill-"));
+    temps.push(base);
+    const dir = join(base, name);
+    mkdirSync(dir);
+    writeFileSync(join(dir, "SKILL.md"), `---\nname: ${name}\ndescription: ${body}\n---\n${body}\n`);
+    return dir;
+  }
+
+  test("reach an awake VM at once, even mid-turn, without restarting T3", async () => {
+    const { fleet, store, skills, t3, synced, server } = setup();
+    const vm = await fleet.create();
+    const backend = await fleet.ensure(vm.id);
+    t3.state.shell = { threads: [{ id: "t1", status: "running" }] };
+
+    skills.installLocal(folder("review", "Reviews code."));
+    await fleet.shareSkills();
+    expect(synced.map((sync) => sync.skills.map((skill) => skill.name))).toEqual([["review"]]);
+    expect(store.vm(vm.id)?.skills).toBe(skills.state().fingerprint);
+    expect([server.starts, server.restarts]).toEqual([1, 0]);
+    expect(fleet.backend(vm.id)).toBe(backend);
+
+    // Already there: nothing is sent again.
+    await fleet.shareSkills();
+    expect(synced).toHaveLength(1);
+  });
+
+  test("only a skill whose files changed is sent again", async () => {
+    const { fleet, skills, synced } = setup();
+    const review = folder("review", "Reviews code.");
+    skills.installLocal(review);
+    skills.installLocal(folder("deploy", "Deploys."));
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+
+    writeFileSync(join(review, "SKILL.md"), "---\nname: review\ndescription: Reviews code, carefully.\n---\n");
+    expect(skills.refreshLocal()).toBe(true);
+    await fleet.shareSkills();
+    const last = synced.at(-1)!.skills;
+    expect(last.map((skill) => [skill.name, Boolean(skill.files)])).toEqual([["deploy", false], ["review", true]]);
+  });
+
+  test.each(["pause", "stop"])("a VM asleep (%s) through changes has them before anything uses it on wake", async (style) => {
+    const { fleet, store, skills, driver, events, server, synced, order } = setup();
+    if (style === "stop") {
+      driver.sleep = async () => {
+        events.push("sleep");
+        server.running = false;
+        return {};
+      };
+    }
+    const kept = folder("review", "Reviews code.");
+    skills.installLocal(kept);
+    skills.installLocal(folder("deploy", "Deploys."));
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    await fleet.sleep(vm.id);
+    order.length = 0;
+
+    skills.remove("deploy");
+    writeFileSync(join(kept, "SKILL.md"), "---\nname: review\ndescription: Reviews code, carefully.\n---\n");
+    skills.refreshLocal();
+    await fleet.shareSkills();
+    expect(order).toEqual([]);
+    expect(store.vm(vm.id)?.skills).not.toBe(skills.state().fingerprint);
+
+    fleet.onConnect = async () => void order.push("connect");
+    await fleet.ensure(vm.id);
+    expect(order).toEqual(style === "pause" ? ["skills", "connect"] : ["skills", "start", "connect"]);
+    expect(synced.at(-1)!.skills.map((skill) => skill.name)).toEqual(["review"]);
+    expect(store.vm(vm.id)?.skills).toBe(skills.state().fingerprint);
+  });
+
+  test("a new VM has every skill before T3 first starts", async () => {
+    const { fleet, skills, order } = setup();
+    skills.installLocal(folder("review", "Reviews code."));
+    await fleet.ensure((await fleet.create()).id);
+    expect(order).toEqual(["skills", "start"]);
   });
 });
