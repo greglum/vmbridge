@@ -232,7 +232,7 @@ export class Admin {
     // Environment variables for every VM. Values go in and never come out.
     if (section === "env" && id) {
       const name = decodeURIComponent(id);
-      const vars = envVars(secrets);
+      // Each change reads the saved variables right before writing them, after any await, so overlapping saves keep each other's.
       if (!action && method === "PUT") {
         const problem = envNameProblem(name);
         if (problem) throw new BadRequest(problem);
@@ -240,9 +240,9 @@ export class Admin {
         if (typeof value !== "string") throw new BadRequest("The value must be text.");
         const invalid = envValueProblem(value);
         if (invalid) throw new BadRequest(invalid);
-        saveEnvVars(secrets, { ...vars, [name]: value });
+        saveEnvVars(secrets, { ...envVars(secrets), [name]: value });
       } else if (!action && method === "DELETE") {
-        const { [name]: _removed, ...rest } = vars;
+        const { [name]: _removed, ...rest } = envVars(secrets);
         saveEnvVars(secrets, rest);
       } else return json({ error: "Not found." }, 404);
       fleet.emit("changed");
