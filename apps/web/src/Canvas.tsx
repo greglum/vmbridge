@@ -16,8 +16,8 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Add01Icon, Cancel01Icon, CenterFocusIcon, Delete02Icon, Folder01Icon, InformationCircleIcon, LaptopIcon, Message01Icon, Moon02Icon, PowerIcon, ZoomInIcon, ZoomOutIcon } from "@hugeicons/core-free-icons";
-import { vmSizes, type ClientInfo, type Overview, type ProjectInfo, type ProviderId, type TrafficEvent, type VmInfo, type VmSize, type VmState } from "@vmbridge/contracts";
+import { Add01Icon, Alert02Icon, Cancel01Icon, CenterFocusIcon, Delete02Icon, Folder01Icon, InformationCircleIcon, LaptopIcon, Message01Icon, Moon02Icon, PowerIcon, ZoomInIcon, ZoomOutIcon } from "@hugeicons/core-free-icons";
+import { vmSizes, type ClientInfo, type Overview, type ProjectInfo, type ProviderId, type TrafficEvent, type Usage, type VmInfo, type VmSize, type VmState, type VmStats } from "@vmbridge/contracts";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -197,8 +197,14 @@ function VmCard({ data }: NodeProps<VmNode>) {
         {projects.length === 0 && <span className="text-faint">No repository yet</span>}
         {vm.state === "error" && vm.error && <p className="line-clamp-2 text-xs text-destructive">{vm.error}</p>}
       </div>
-      <div className="rounded-b-xl border-t px-3.5 py-2.5">
+      <div className="flex items-center justify-between gap-3 rounded-b-xl border-t px-3.5 py-2.5">
         <Status {...state} />
+        {vm.stats?.highMemory && (
+          <span className="flex items-center gap-1.5 text-[13px] text-destructive" title={vm.stats.memory ? `${usage(vm.stats.memory)} used` : undefined}>
+            <HugeiconsIcon icon={Alert02Icon} className="size-3.5" strokeWidth={2} />
+            High memory
+          </span>
+        )}
       </div>
     </div>
   );
@@ -564,6 +570,59 @@ function NewVm({ overview }: { overview: Overview }) {
   );
 }
 
+/** Binary gigabytes, as providers size VMs. One decimal below 10 GB. */
+function usage({ used, total }: Usage) {
+  const digits = total < 10 * 2 ** 30 ? 1 : 0;
+  return `${(used / 2 ** 30).toFixed(digits)} / ${(total / 2 ** 30).toFixed(digits)} GB`;
+}
+
+function Meter({ label, value, share, high }: { label: string; value: string; share: number; high?: boolean }) {
+  const color = high || share >= 0.9 ? "bg-destructive" : share >= 0.75 ? "bg-warning" : "bg-success";
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-baseline justify-between gap-6 text-[13px]">
+        <span className="text-muted-foreground">{label}</span>
+        <span className="truncate font-mono text-xs leading-5">{value}</span>
+      </div>
+      <div className="h-1 overflow-hidden rounded-full bg-accent">
+        <div className={cn("h-full rounded-full", color)} style={{ width: `${Math.min(100, Math.max(0, share * 100))}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function Resources({ stats, now }: { stats: VmStats | null; now: number }) {
+  return (
+    <section className="flex flex-col gap-2">
+      <h3 className="flex justify-between gap-3 text-xs font-medium text-muted-foreground">
+        Resources
+        {stats && <span className="font-normal text-faint">Updated {ago(stats.at, now)}</span>}
+      </h3>
+      {stats ? (
+        <div className="flex flex-col gap-3">
+          {stats.memory && <Meter label="Memory" value={usage(stats.memory)} share={stats.memory.used / stats.memory.total} high={stats.highMemory} />}
+          {stats.memoryPressure !== null && (
+            <div className="flex items-baseline justify-between gap-6 text-[13px]">
+              <span className="text-muted-foreground">Memory pressure</span>
+              <span className={cn("font-mono text-xs leading-5", stats.memoryPressure >= 10 && "text-destructive")}>{stats.memoryPressure.toFixed(1)}%</span>
+            </div>
+          )}
+          {stats.cpu && (
+            <Meter
+              label="CPU"
+              value={`${Math.round(stats.cpu.usage * 100)}% of ${stats.cpu.cores} ${stats.cpu.cores === 1 ? "core" : "cores"}`}
+              share={stats.cpu.usage}
+            />
+          )}
+          {stats.disk && <Meter label="Disk" value={usage(stats.disk)} share={stats.disk.used / stats.disk.total} />}
+        </div>
+      ) : (
+        <p className="text-[13px] text-muted-foreground">Measuring.</p>
+      )}
+    </section>
+  );
+}
+
 function VmDetails({ vm, overview, now, onClose }: { vm: VmInfo; overview: Overview; now: number; onClose: () => void }) {
   const action = useAction();
   const projects = overview.projects.filter((project) => vm.projects.includes(project.id));
@@ -578,6 +637,10 @@ function VmDetails({ vm, overview, now, onClose }: { vm: VmInfo; overview: Overv
     ["Last activity", ago(vm.lastActivityAt, now)],
   ];
   if (vm.sleepsAt) rows.push(["Sleeps", vm.sleepsAt <= now ? "Soon" : `In ${Math.ceil((vm.sleepsAt - now) / 60_000)} min`]);
+  // A fresh reading on open. It arrives through the overview, and the server never wakes a VM for it.
+  useEffect(() => {
+    if (awake) void api(`/vms/${vm.id}/stats`).catch(() => {});
+  }, [vm.id, awake]);
 
   return (
     <aside className="absolute inset-x-2 bottom-2 z-10 flex max-h-[65%] flex-col rounded-xl border bg-card shadow-2xl shadow-black sm:inset-x-auto sm:top-3 sm:right-3 sm:bottom-3 sm:max-h-none sm:w-[400px]">
@@ -602,6 +665,7 @@ function VmDetails({ vm, overview, now, onClose }: { vm: VmInfo; overview: Overv
           ))}
         </dl>
         {vm.error && <p className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-[13px] text-destructive">{vm.error}</p>}
+        {awake && <Resources stats={vm.stats} now={now} />}
         <section className="flex flex-col gap-2">
           <h3 className="text-xs font-medium text-muted-foreground">Repositories</h3>
           {projects.length === 0 && <p className="text-[13px] text-muted-foreground">None yet. Clone one from T3.</p>}
