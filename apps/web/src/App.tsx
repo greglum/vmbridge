@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Toaster } from "@/components/ui/sonner";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAction } from "@/hooks/use-action";
 import { cn } from "@/lib/utils";
 import { api, onLoggedOut, useLive } from "./api.ts";
@@ -14,6 +14,7 @@ import { Logo } from "./brand.tsx";
 import { Canvas } from "./Canvas.tsx";
 import { Devices } from "./Devices.tsx";
 import { Logs } from "./Logs.tsx";
+import { boxStyle, NavIndicator, useSlidingNav } from "./nav.tsx";
 import { Settings } from "./Settings.tsx";
 import { Setup } from "./Setup.tsx";
 import { Skills } from "./Skills.tsx";
@@ -103,40 +104,12 @@ function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
-        <nav className="order-last flex shrink-0 items-center justify-around gap-1 px-2 py-1.5 sm:order-none sm:w-14 sm:flex-col sm:justify-start sm:px-0 sm:py-2">
-          {views.map((entry) => (
-            <Tooltip key={entry.id}>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon-lg"
-                  aria-label={entry.label}
-                  aria-current={view === entry.id ? "page" : undefined}
-                  onClick={() => go(entry.id)}
-                  className={cn("relative size-10 rounded-lg text-muted-foreground", view === entry.id && "bg-accent text-foreground hover:bg-accent")}
-                >
-                  <HugeiconsIcon icon={entry.icon} className="size-5" strokeWidth={1.75} />
-                  {entry.id === "setup" && overview && !setupDone && <span className="absolute top-2 right-2 size-1.5 rounded-full bg-warning" />}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="right">{entry.label}</TooltipContent>
-            </Tooltip>
-          ))}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-lg"
-                aria-label="Log out"
-                className="size-10 rounded-lg text-muted-foreground max-sm:hidden sm:mt-auto"
-                onClick={() => void api("/logout", { body: {} }).finally(onLoggedOut)}
-              >
-                <HugeiconsIcon icon={Logout01Icon} className="size-5" strokeWidth={1.75} />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="right">Log out</TooltipContent>
-          </Tooltip>
-        </nav>
+        <Sidebar
+          view={overview ? view : undefined}
+          setupPending={Boolean(overview && !setupDone)}
+          onView={go}
+          onLogOut={() => void api("/logout", { body: {} }).finally(onLoggedOut)}
+        />
 
         <main className="relative mx-2 min-h-0 flex-1 overflow-hidden rounded-xl border bg-background sm:mr-3 sm:mb-3 sm:ml-0">
           {overview && view === "canvas" && <Canvas overview={overview} traffic={traffic} onPair={() => go("devices")} />}
@@ -148,5 +121,70 @@ function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
         </main>
       </div>
     </div>
+  );
+}
+
+/**
+ * The icon rail on the left, a bottom bar on phones. One tooltip follows the pointer from icon to icon.
+ * `view` waits for the overview, since that can change the default view; the highlight then starts in place instead of sliding there.
+ */
+function Sidebar({ view, setupPending, onView, onLogOut }: { view?: View; setupPending: boolean; onView: (view: View) => void; onLogOut: () => void }) {
+  const { hover, current, navProps, itemProps } = useSlidingNav(view);
+  // Like the tooltip provider's delay: the first tooltip waits, then it follows the pointer at once. Keyboard focus shows it right away.
+  const [tipReady, setTipReady] = useState(false);
+  const shown = hover?.shown ?? false;
+  const focused = hover?.focused ?? false;
+  useEffect(() => {
+    setTipReady(shown && focused);
+    if (!shown || focused) return;
+    const timer = setTimeout(() => setTipReady(true), 300);
+    return () => clearTimeout(timer);
+  }, [shown, focused]);
+  const item = "relative size-10 rounded-lg text-muted-foreground hover:bg-transparent dark:hover:bg-transparent";
+
+  return (
+    <nav
+      {...navProps}
+      className="relative order-last flex shrink-0 items-center justify-around gap-1 px-2 py-1.5 sm:order-none sm:w-14 sm:flex-col sm:justify-start sm:px-0 sm:py-2"
+    >
+      {hover && <NavIndicator box={hover.box} shown={hover.shown} slide={hover.slide} className="rounded-lg bg-muted/50" />}
+      {current && <NavIndicator box={current.box} slide={current.slide} className="rounded-lg bg-accent" />}
+      {views.map((entry) => (
+        <Button
+          key={entry.id}
+          {...itemProps(entry.id, entry.label)}
+          variant="ghost"
+          size="icon-lg"
+          aria-label={entry.label}
+          aria-current={view === entry.id ? "page" : undefined}
+          onClick={() => onView(entry.id)}
+          className={cn(item, view === entry.id && "text-foreground")}
+        >
+          <HugeiconsIcon icon={entry.icon} className="size-5" strokeWidth={1.75} />
+          {entry.id === "setup" && setupPending && <span className="absolute top-2 right-2 size-1.5 rounded-full bg-warning" />}
+        </Button>
+      ))}
+      <Button {...itemProps("logout", "Log out")} variant="ghost" size="icon-lg" aria-label="Log out" className={cn(item, "max-sm:hidden sm:mt-auto")} onClick={onLogOut}>
+        <HugeiconsIcon icon={Logout01Icon} className="size-5" strokeWidth={1.75} />
+      </Button>
+      {hover && (
+        // The buttons carry their names, so this label only repeats them for sighted users.
+        <span
+          aria-hidden
+          className={cn("pointer-events-none absolute top-0 left-0 z-50 ease-out motion-reduce:transition-none", hover.slide && tipReady && "transition-transform duration-200")}
+          style={boxStyle(hover.box)}
+        >
+          <span
+            className={cn(
+              "absolute bottom-full left-1/2 mb-2 w-max -translate-x-1/2 rounded-md bg-foreground px-3 py-1.5 text-xs text-background transition-opacity duration-150 motion-reduce:transition-none sm:top-1/2 sm:bottom-auto sm:left-full sm:mb-0 sm:ml-2 sm:translate-x-0 sm:-translate-y-1/2",
+              !(shown && tipReady) && "opacity-0",
+            )}
+          >
+            {hover.label}
+            <span className="absolute bottom-0 left-1/2 size-2.5 -translate-x-1/2 translate-y-1/2 rotate-45 rounded-[2px] bg-foreground sm:top-1/2 sm:bottom-auto sm:left-0 sm:-translate-y-1/2" />
+          </span>
+        </span>
+      )}
+    </nav>
   );
 }
