@@ -18,9 +18,14 @@ The password can also come from VMBRIDGE_PASSWORD. Data lives in ${dataDir()}.`;
 
 const pidFile = () => join(dataDir(), "vmbridge.pid");
 
+/**
+ * Another live VM Bridge process from the pid file. A file naming this process
+ * does not count: `bun --watch` restarts in place and keeps the pid, so `run` sees its own.
+ */
 function runningPid(): number | null {
   if (!existsSync(pidFile())) return null;
   const pid = Number(readFileSync(pidFile(), "utf8"));
+  if (pid === process.pid) return null;
   try {
     process.kill(pid, 0);
     return pid;
@@ -115,7 +120,7 @@ async function run(options: { host: string; port: number }) {
     if (stopping) return;
     stopping = true;
     await server.stop().catch(() => {});
-    if (runningPid() === process.pid) rmSync(pidFile(), { force: true });
+    if (!runningPid()) rmSync(pidFile(), { force: true });
     process.exit(0);
   };
   process.on("SIGINT", stop);
