@@ -1,10 +1,13 @@
 import { boxd } from "@opencoredev/sandbox-sdk/boxd";
+import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
 import { instabox } from "@opencoredev/sandbox-sdk/instabox";
 import { railway } from "@opencoredev/sandbox-sdk/railway";
+import { superserve } from "@opencoredev/sandbox-sdk/superserve";
 import type { ProviderId } from "@vmbridge/contracts";
 import { Sandbox } from "railway";
 import { boatProvider } from "./boat.ts";
 import { daytonaProvider } from "./daytona.ts";
+import { e2bProvider } from "./e2b.ts";
 import { sdkDriver } from "./sdk.ts";
 import { required, type ProviderDefinition } from "./types.ts";
 
@@ -107,10 +110,67 @@ const railwayProvider: ProviderDefinition = {
   },
 };
 
+const freestyleProvider: ProviderDefinition = {
+  id: "freestyle",
+  label: "Freestyle",
+  website: "https://freestyle.sh",
+  fields: [{ key: "apiKey", label: "API key", kind: "secret", required: true }],
+  features: {
+    sleep: "pause",
+    keepsDisk: true,
+    keepsMemory: true,
+  },
+  // The base snapshot fixes the machine. Freestyle can only grow a VM, never shrink it.
+  sizes: { small: "4 vCPU, 8 GB", medium: "4 vCPU, 8 GB", large: "4 vCPU, 8 GB" },
+  open(config) {
+    return sdkDriver({
+      id: "freestyle",
+      provider: freestyle({
+        apiKey: required(config, "apiKey", "Freestyle API key"),
+        // The SDK's 30 s default cut off a delete of a VM that had just run T3 and an agent. Freestyle finished it anyway.
+        requestTimeoutMs: 2 * 60_000,
+      }),
+      sleep: "pause",
+      // Freestyle pauses a VM after this long without network traffic, in case VM Bridge is down.
+      create: { idleTimeoutMs: minutes(60) },
+    });
+  },
+};
+
+const superserveProvider: ProviderDefinition = {
+  id: "superserve",
+  label: "Superserve",
+  website: "https://superserve.ai",
+  fields: [{ key: "apiKey", label: "API key", kind: "secret", required: true, placeholder: "ss_live_..." }],
+  features: {
+    sleep: "pause",
+    keepsDisk: true,
+    keepsMemory: true,
+  },
+  // Every Superserve template has the same machine.
+  sizes: { small: "2 vCPU, 4 GB", medium: "2 vCPU, 4 GB", large: "2 vCPU, 4 GB" },
+  open(config) {
+    return sdkDriver({
+      id: "superserve",
+      provider: superserve({
+        apiKey: required(config, "apiKey", "Superserve API key"),
+        // The SDK needs Python in the VM, which the default node-22 template lacks. VM Bridge installs Node itself.
+        template: "superserve/python-3.11",
+        // Superserve has no idle timer, only a cap on time awake. It pauses a VM awake this long, in case VM Bridge is down.
+        autoPauseMs: minutes(12 * 60),
+      }),
+      sleep: "pause",
+    });
+  },
+};
+
 export const providers: Record<ProviderId, ProviderDefinition> = {
   boat: boatProvider,
   boxd: boxdProvider,
   daytona: daytonaProvider,
+  e2b: e2bProvider,
+  freestyle: freestyleProvider,
   instabox: instaboxProvider,
   railway: railwayProvider,
+  superserve: superserveProvider,
 };

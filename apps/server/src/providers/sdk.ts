@@ -16,8 +16,8 @@ export type SleepStyle = "pause" | "checkpoint";
 export interface SdkDriverOptions {
   id: ProviderId;
   provider: Provider;
-  /** A provider instance for one size, when the size is fixed per instance (Railway). */
-  sized?: (size: VmSize) => Provider;
+  /** A provider instance for one size, when the size is fixed per instance (Railway) or per template (E2B). */
+  sized?: (size: VmSize) => Provider | Promise<Provider>;
   sleep: SleepStyle;
   /** Extra create options, such as a provider idle timeout used as a safety net. */
   create?: Partial<CreateOptions>;
@@ -36,13 +36,14 @@ export function sdkDriver(options: SdkDriverOptions): Driver {
   const connect = (sandboxId: string): Promise<Box> =>
     connectSandbox(provider, sandboxId, { recoverSecrets: false });
 
-  const create = (input: CreateVm, from?: string): Promise<Box> => {
-    const sized = options.sized?.(input.size);
+  const create = async (input: CreateVm, from?: string): Promise<Box> => {
+    const sized = await options.sized?.(input.size);
     return createSandbox(sized ?? provider, {
       ...options.create,
       // A checkpoint restore is a new sandbox, so it needs a new key.
       key: from ? `${input.key}-${Date.now().toString(36)}` : input.key,
-      size: sized ? undefined : input.size,
+      // Providers whose image fixes the machine (Freestyle, Superserve) refuse any size.
+      size: sized || !provider.capabilities.has("size") ? undefined : input.size,
       labels: input.labels,
       ports: input.ports,
       from,
