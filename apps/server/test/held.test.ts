@@ -58,3 +58,27 @@ describe("thread commands while the VM is away", () => {
     expect(sent.map((frame) => frame.exit?._tag)).toEqual(["Success", "Success"]);
   });
 });
+
+describe("shell from a VM", () => {
+  test("the project-only snapshot T3 sends after its first one keeps the VM's threads", async () => {
+    const { store, fleet, hub } = setup();
+    const thread = store.snapshot<Shell>("vm1", "shell")!.threads![0]!;
+    const project = { id: "p1", workspaceRoot: "/workspace/app", repositoryIdentity: null };
+    const backend = {
+      call: async () => ({ environment: { orchestrationProtocolVersion: 2 } }),
+      request: (tag: string, _payload: unknown, handler: (frame: unknown) => void) => {
+        if (tag === "orchestration.subscribeShell") {
+          const full = { kind: "snapshot", snapshot: { projects: [project], threads: [thread], archivedThreads: [] } };
+          const identity = { name: "acme/app" };
+          const enriched = { kind: "snapshot", snapshot: { projects: [{ ...project, repositoryIdentity: identity }], threads: [], archivedThreads: [] }, resolvedRepositoryIdentityRoots: ["/workspace/app"] };
+          handler({ _tag: "Chunk", values: [full, enriched] });
+        }
+        return () => {};
+      },
+    } as unknown as Backend;
+    await fleet.onConnect("vm1", backend);
+
+    expect(hub.shell().threads?.map((row) => row.id)).toEqual(["t1"]);
+    expect(store.snapshot<Shell>("vm1", "shell")?.projects?.[0]?.repositoryIdentity).toEqual({ name: "acme/app" });
+  });
+});

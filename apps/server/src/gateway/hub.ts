@@ -149,12 +149,20 @@ export class Hub extends EventEmitter<HubEvents> {
   }
 
   private applyShell(vmId: string, item: ShellItem) {
-    if (item.kind === "snapshot" && item.snapshot) this.shells.set(vmId, item.snapshot);
+    // T3 follows its snapshot with one that only fills in repositories: its threads are always empty.
+    const enrichment = item.kind === "snapshot" && Array.isArray(item.resolvedRepositoryIdentityRoots);
+    if (item.kind === "snapshot" && item.snapshot && !enrichment) this.shells.set(vmId, item.snapshot);
     else {
       const shell = this.shells.get(vmId);
       if (!shell) return;
       const without = (rows: Row[] | undefined, id: string | undefined) => (rows ?? []).filter((row) => row.id !== id);
-      if (item.kind === "project.updated" && item.project) shell.projects = [...without(shell.projects, item.project.id), item.project];
+      if (enrichment) {
+        const enriched = new Map((item.snapshot?.projects ?? []).map((project) => [project.id, project]));
+        shell.projects = (shell.projects ?? []).map((project) => {
+          const candidate = enriched.get(project.id);
+          return candidate && candidate.workspaceRoot === project.workspaceRoot ? { ...project, repositoryIdentity: candidate.repositoryIdentity } : project;
+        });
+      } else if (item.kind === "project.updated" && item.project) shell.projects = [...without(shell.projects, item.project.id), item.project];
       else if (item.kind === "project.removed") shell.projects = without(shell.projects, item.projectId);
       else if (item.kind === "thread.updated" && item.thread) {
         shell.threads = without(shell.threads, item.thread.id);
@@ -173,7 +181,7 @@ export class Hub extends EventEmitter<HubEvents> {
     for (const thread of threadsOf(shell)) this.store.setThreadVm(thread.id, vmId);
     this.store.saveSnapshot(vmId, "shell", shell);
     if (item.kind === "thread.updated" && item.thread) this.refreshProjectionSoon(vmId, item.thread.id);
-    if (item.kind === "snapshot") void this.cacheMissingProjections(vmId);
+    if (item.kind === "snapshot" && !enrichment) void this.cacheMissingProjections(vmId);
     const working = hasLiveWork(shell);
     if (working) this.fleet.touch(vmId);
     // Shown as soon as the VM reports it, rather than on the next idle sweep.
