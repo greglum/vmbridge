@@ -9,7 +9,7 @@ import { Fleet } from "../src/fleet.ts";
 import { Hub } from "../src/gateway/hub.ts";
 import type { Shell, Wire } from "../src/gateway/types.ts";
 import type { Box, Driver } from "../src/providers/index.ts";
-import { Secrets, Settings } from "../src/settings.ts";
+import { saveEnvVars, Secrets, Settings } from "../src/settings.ts";
 import { Skills } from "../src/skills.ts";
 import { Store } from "../src/store.ts";
 import type { Traffic } from "../src/traffic.ts";
@@ -509,6 +509,71 @@ describe("sign-in changes", () => {
     expect(files["/workspace/.vmbridge/git-credentials"]).toBeUndefined();
     expect(files[envPath]).not.toContain("GH_TOKEN=");
     expect(server.restarts).toBe(0);
+  });
+});
+
+describe("environment variables", () => {
+  const working: Shell = { threads: [{ id: "t1", status: "running" }] };
+  const idle: Shell = { threads: [{ id: "t1", status: "idle" }] };
+
+  test("a busy VM gets them once its work ends, an idle one at once, and removing one restarts T3 again", async () => {
+    const { fleet, hub, t3, store, secrets, files, server } = idleFleet();
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    t3.state.shell = working;
+
+    saveEnvVars(secrets, { API_URL: "https://example.test" });
+    await hub.credentialsChanged();
+    await hub.sweep();
+    expect(files[envPath]).toContain("export API_URL='https://example.test'");
+    expect(server.restarts).toBe(0);
+    expect(fleet.behind(store.vm(vm.id)!)).toBe(true);
+
+    t3.state.shell = idle;
+    await hub.sweep();
+    expect(server.restarts).toBe(1);
+    expect(server.env).toContain("export API_URL='https://example.test'");
+    expect(fleet.behind(store.vm(vm.id)!)).toBe(false);
+
+    // Saving the same value again changes nothing.
+    saveEnvVars(secrets, { API_URL: "https://example.test" });
+    await hub.credentialsChanged();
+    expect(server.restarts).toBe(1);
+
+    saveEnvVars(secrets, {});
+    await hub.credentialsChanged();
+    expect(server.restarts).toBe(2);
+    expect(server.env).not.toContain("API_URL");
+    expect(fleet.behind(store.vm(vm.id)!)).toBe(false);
+  });
+
+  test.each(["pause", "stop"])("a VM asleep (%s) through a change starts T3 with it on wake", async (style) => {
+    const { fleet, hub, driver, events, secrets, server } = idleFleet();
+    if (style === "stop") {
+      driver.sleep = async () => {
+        events.push("sleep");
+        server.running = false;
+        return {};
+      };
+    }
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    await fleet.sleep(vm.id);
+
+    saveEnvVars(secrets, { API_URL: "https://example.test" });
+    await hub.credentialsChanged();
+    expect(server.env).not.toContain("API_URL");
+    await fleet.ensure(vm.id);
+    expect(server.env).toContain("export API_URL='https://example.test'");
+    expect([server.starts, server.restarts]).toEqual(style === "pause" ? [1, 1] : [2, 0]);
+  });
+
+  test("a new VM starts T3 with them", async () => {
+    const { fleet, secrets, server } = setup();
+    saveEnvVars(secrets, { API_URL: "https://example.test" });
+    await fleet.ensure((await fleet.create()).id);
+    expect(server.env).toContain("export API_URL='https://example.test'");
+    expect([server.starts, server.restarts]).toEqual([1, 0]);
   });
 });
 
