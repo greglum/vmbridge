@@ -282,7 +282,8 @@ export class Fleet extends EventEmitter<FleetEvents> {
     return this.exclusive(vmId, async () => {
       const vm = this.store.vm(vmId);
       const backend = this.backends.get(vmId);
-      if (!vm?.sandboxId || vm.state === "sleeping" || vm.state === "gone") return;
+      // A checkpoint means the sandbox is already gone, such as after a failed wake put the VM back to sleep.
+      if (!vm?.sandboxId || vm.checkpoint || vm.state === "sleeping" || vm.state === "gone") return;
       const started = performance.now();
       const driver = this.driver(vm.provider);
       const box = this.boxes.get(vmId) ?? (await driver.connect(vm.sandboxId));
