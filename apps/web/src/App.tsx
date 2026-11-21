@@ -66,7 +66,7 @@ function Login({ onLoggedIn }: { onLoggedIn: () => void }) {
         </div>
         <FieldGroup>
           <Field data-invalid={Boolean(action.error)}>
-            <FieldLabel htmlFor="key">Dashboard key</FieldLabel>
+            <FieldLabel htmlFor="key">Password</FieldLabel>
             <Input id="key" type="password" className="h-10" autoFocus autoComplete="current-password" value={key} onChange={(event) => setKey(event.target.value)} />
             {action.error && <FieldError>{action.error}</FieldError>}
           </Field>

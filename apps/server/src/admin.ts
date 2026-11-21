@@ -100,7 +100,7 @@ export class Admin {
       return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": auth.logout(request) } });
     }
     if (path === "/key" && method === "POST") {
-      await auth.setKey(text((await body(request)).key, "The key"));
+      await auth.setKey(text((await body(request)).key, "The password"));
       return json({ ok: true });
     }
     if (path === "/overview" && method === "GET") return json(this.overview());

@@ -21,13 +21,13 @@ import { ProviderLogo } from "./brand.tsx";
 import { CopyButton } from "./CopyButton.tsx";
 import { Page, Section, type Tab } from "./Page.tsx";
 
-type SettingsTab = "vms" | "repos" | "addresses" | "key";
+type SettingsTab = "vms" | "repos" | "addresses" | "password";
 
 const tabs: Tab<SettingsTab>[] = [
   { id: "vms", label: "VMs", icon: ComputerIcon },
   { id: "repos", label: "Repositories", icon: GitBranchIcon },
   { id: "addresses", label: "Addresses", icon: GlobalIcon },
-  { id: "key", label: "Dashboard key", icon: Key01Icon },
+  { id: "password", label: "Password", icon: Key01Icon },
 ];
 
 export function Settings({ overview, onLoggedOut }: { overview: Overview; onLoggedOut: () => void }) {
@@ -37,7 +37,7 @@ export function Settings({ overview, onLoggedOut }: { overview: Overview; onLogg
       {tab === "vms" && <VmSettings overview={overview} />}
       {tab === "repos" && <RepoRules overview={overview} />}
       {tab === "addresses" && <Addresses />}
-      {tab === "key" && <DashboardKey onLoggedOut={onLoggedOut} />}
+      {tab === "password" && <Password onLoggedOut={onLoggedOut} />}
     </Page>
   );
 }
@@ -316,27 +316,27 @@ function Addresses() {
   );
 }
 
-function DashboardKey({ onLoggedOut }: { onLoggedOut: () => void }) {
-  const [key, setKey] = useState("");
+function Password({ onLoggedOut }: { onLoggedOut: () => void }) {
+  const [password, setPassword] = useState("");
   const action = useAction();
   return (
-    <Section title="Dashboard key">
+    <Section title="Password">
       <form
         className="flex flex-col gap-4"
         onSubmit={(event) => {
           event.preventDefault();
-          void action.run(() => api("/key", { body: { key } })).then((ok) => ok && onLoggedOut());
+          void action.run(() => api("/key", { body: { key: password } })).then((ok) => ok && onLoggedOut());
         }}
       >
         <Field data-invalid={Boolean(action.error)}>
-          <FieldLabel htmlFor="new-key">New key</FieldLabel>
-          <Input id="new-key" className="h-9" type="password" autoComplete="new-password" minLength={8} value={key} onChange={(event) => setKey(event.target.value)} />
+          <FieldLabel htmlFor="new-password">New password</FieldLabel>
+          <Input id="new-password" className="h-9" type="password" autoComplete="new-password" minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} />
           <FieldDescription>At least 8 characters. Changing it logs out every browser.</FieldDescription>
           {action.error && <FieldError>{action.error}</FieldError>}
         </Field>
         <div className="flex gap-2">
-          <Button type="submit" size="lg" className="px-4" disabled={action.busy || key.length < 8}>
-            Change key
+          <Button type="submit" size="lg" className="px-4" disabled={action.busy || password.length < 8}>
+            Change password
           </Button>
           <Button type="button" variant="outline" size="lg" className="px-4" onClick={() => void api("/logout", { body: {} }).finally(onLoggedOut)}>
             Log out

@@ -25,7 +25,7 @@ export const defaultHost = "0.0.0.0";
 export const dataDir = () => process.env.VMBRIDGE_HOME || join(homedir(), ".vmbridge");
 export const databasePath = (dir = dataDir()) => join(dir, "main.db");
 
-/** Dashboard key setup, for the CLI to run before the server starts. */
+/** Dashboard password setup, for the CLI to run before the server starts. */
 export function dashboardKey(dir = dataDir()) {
   const db = openDatabase(databasePath(dir));
   const auth = new DashboardAuth(db, new Settings(db));

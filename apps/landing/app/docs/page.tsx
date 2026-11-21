@@ -122,7 +122,7 @@ export default function Docs() {
                   "One project per VM. Projects never share a disk, a process list or a shell.",
                   "A VM sleeps after it has been idle for a set time, and wakes when you send a message.",
                   "One provider at a time: boxd, Instabox, Daytona, Boat or Railway.",
-                  "Everything is set up from a web dashboard behind one key: provider keys, GitHub, agent sign-ins and device pairing.",
+                  "Everything is set up from a web dashboard behind one password: provider keys, GitHub, agent sign-ins and device pairing.",
                   "T3 Code needs no changes. To the app, VM Bridge looks like a single T3 server.",
                 ]}
               />
@@ -135,7 +135,7 @@ export default function Docs() {
               </p>
               <Block>{install}</Block>
               <p>
-                Then run <Code>vmbridge</Code>. It asks for a dashboard key on first run. Run the same command again to update.
+                Then run <Code>vmbridge</Code>. It asks for a dashboard password on first run. Run the same command again to update.
               </p>
               <p>To build from source instead, with Bun 1.4.4 or newer:</p>
               <Block>{`git clone https://github.com/vkpdeveloper/vmbridge
@@ -156,8 +156,8 @@ bun run build          # dist/vmbridge
                 ])}
               />
               <p>
-                On first start, VM Bridge asks for a <strong>dashboard key</strong> of at least 8 characters. On a machine with no terminal, set{" "}
-                <Code>VMBRIDGE_DASHBOARD_KEY</Code> for the first start instead.
+                On first start, VM Bridge asks for a <strong>dashboard password</strong> of at least 8 characters. On a machine with no terminal, set{" "}
+                <Code>VMBRIDGE_PASSWORD</Code> for the first start instead.
               </p>
               <p>
                 Data lives in <Code>~/.vmbridge</Code>. Set <Code>VMBRIDGE_HOME</Code> to move it. The background service uses launchd on macOS and
@@ -168,7 +168,7 @@ bun run build          # dist/vmbridge
 
             <Section id="setup" title="Set up the dashboard">
               <p>
-                Open <Code>/dashboard</Code> on any address VM Bridge printed and log in with your key. Setup has three tabs.
+                Open <Code>/dashboard</Code> on any address VM Bridge printed and log in with your password. Setup has three tabs.
               </p>
               <List
                 items={[
@@ -355,7 +355,7 @@ bun run build          # dist/vmbridge
                   ["The pairing link does not work", "Links work once and expire after 15 minutes. Create a new one."],
                   ["The T3 server on a VM did not answer", "The VM may be busy or the provider slow. Check the VM on the dashboard canvas, then retry."],
                   ["Waking takes longer than usual", "Stopped VMs (Daytona, Boat) start T3 cold, which adds a few seconds over a paused VM."],
-                  ["The dashboard asks for a key you forgot", <>Run <Code key="k">vmbridge key</Code> on the machine to set a new one.</>],
+                  ["You forgot the dashboard password", <>Run <Code key="k">vmbridge password</Code> on the machine to set a new one.</>],
                 ]}
               />
             </Section>
