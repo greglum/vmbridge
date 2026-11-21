@@ -3,7 +3,6 @@ import {
   Background,
   BackgroundVariant,
   BaseEdge,
-  EdgeLabelRenderer,
   getBezierPath,
   Handle,
   Panel,
@@ -41,8 +40,6 @@ import { cn } from "@/lib/utils";
 import { ago, api, useTick } from "./api.ts";
 import { Logo, ProviderLogo } from "./brand.tsx";
 
-/** Requests in this window count toward the per-minute rate on each connection. */
-const rateWindowMs = 60_000;
 /** A connection animates while it carried a request this recently. */
 const flowWindowMs = 8_000;
 
@@ -57,8 +54,6 @@ export const vmStates: Record<VmState, { label: string; dot: string; text: strin
 };
 
 type Flow = {
-  /** Requests in the last minute. */
-  rate: number;
   /** Data is moving right now. */
   flowing: boolean;
   /** Both ends are up; drawn solid instead of dashed. */
@@ -66,7 +61,7 @@ type Flow = {
 };
 
 type DeviceNode = Node<{ client: ClientInfo }, "device">;
-type BridgeNode = Node<{ overview: Overview; rate: number }, "bridge">;
+type BridgeNode = Node<{ overview: Overview }, "bridge">;
 type VmNode = Node<{ vm: VmInfo; projects: ProjectInfo[]; selected: boolean }, "vm">;
 type EmptyNode = Node<{ label: string }, "empty">;
 type FlowEdge = Edge<Flow, "flow">;
@@ -122,7 +117,7 @@ function DeviceCard({ data }: NodeProps<DeviceNode>) {
 }
 
 function BridgeCard({ data }: NodeProps<BridgeNode>) {
-  const { overview, rate } = data;
+  const { overview } = data;
   const provider = overview.provider?.active ? overview.provider : null;
   const stacked = useContext(Stacked);
   return (
@@ -134,7 +129,6 @@ function BridgeCard({ data }: NodeProps<BridgeNode>) {
           <div className="font-semibold">VM Bridge</div>
           <div className="font-mono text-xs text-muted-foreground">v{overview.bridge.version}</div>
         </div>
-        <span className="font-mono text-xs text-muted-foreground">{rate > 0 ? `${rate}/min` : "idle"}</span>
       </div>
       <div className="flex items-center gap-2 border-t px-3.5 py-2.5 text-[13px] text-muted-foreground">
         {provider ? (
@@ -156,7 +150,7 @@ function VmCard({ data }: NodeProps<VmNode>) {
   const state = vmStates[vm.state];
   const settling = vm.state === "provisioning" || vm.state === "starting";
   const models = [...new Set(vm.sessions.map((session) => session.model).filter(Boolean))];
-  const working = vm.sessions.filter((session) => session.status === "running").length;
+  const working = vm.sessions.filter((session) => session.working).length;
   return (
     <div
       className={cn(
@@ -213,10 +207,9 @@ const reducedMotion = typeof matchMedia === "function" && matchMedia("(prefers-r
 
 /** A connection. While requests pass, dots travel along it in the direction the requests go. */
 function FlowEdgeView({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<FlowEdge>) {
-  const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
-  const { rate = 0, flowing = false, live = false } = data ?? {};
-  const stacked = useContext(Stacked);
-  const dots = flowing && !reducedMotion ? Math.min(3, 1 + Math.floor(rate / 30)) : 0;
+  const [path] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition });
+  const { flowing = false, live = false } = data ?? {};
+  const dots = flowing && !reducedMotion ? 2 : 0;
   const seconds = 1.6;
   return (
     <>
@@ -234,16 +227,6 @@ function FlowEdgeView({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
           <animateMotion dur={`${seconds}s`} begin={`${(index * seconds) / dots}s`} repeatCount="indefinite" path={path} />
         </circle>
       ))}
-      {rate > 0 && !stacked && (
-        <EdgeLabelRenderer>
-          <div
-            className="absolute rounded-md border bg-card px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
-            style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
-          >
-            {rate}/min
-          </div>
-        </EdgeLabelRenderer>
-      )}
     </>
   );
 }
@@ -297,18 +280,15 @@ function Controls({ fitKey }: { fitKey: string }) {
 }
 
 export function Canvas({ overview, traffic, onPair }: { overview: Overview; traffic: TrafficEvent[]; onPair: () => void }) {
-  const now = useTick(2_000);
+  const now = useTick(1_000);
   const [selected, setSelected] = useState<string | null>(null);
   const create = useAction();
   const vm = overview.vms.find((entry) => entry.id === selected) ?? null;
   const narrow = useNarrow();
 
   const { nodes, edges } = useMemo(() => {
-    const recent = traffic.filter((event) => now - event.at < rateWindowMs && event.kind !== "system");
-    const flow = (match: (event: TrafficEvent) => boolean) => {
-      const events = recent.filter(match);
-      return { rate: events.length, flowing: events.some((event) => now - event.at < flowWindowMs) };
-    };
+    const recent = traffic.filter((event) => now - event.at < flowWindowMs && event.kind !== "system");
+    const flow = (match: (event: TrafficEvent) => boolean) => ({ flowing: recent.some(match) });
     const nodes: Node[] = [];
     const edges: FlowEdge[] = [];
     const clients = overview.clients;
@@ -328,7 +308,7 @@ export function Canvas({ overview, traffic, onPair }: { overview: Overview; traf
         data: { ...flow((event) => event.clientId === client.id), live: client.connected },
       });
     });
-    nodes.push({ id: "bridge", type: "bridge", position: narrow ? { x: 0, y: bridgeTop } : { x: 380, y: -60 }, data: { overview, rate: recent.length } });
+    nodes.push({ id: "bridge", type: "bridge", position: narrow ? { x: 0, y: bridgeTop } : { x: 380, y: -60 }, data: { overview } });
     if (overview.vms.length === 0) {
       const position = vmPosition(0);
       nodes.push({ id: "empty-vms", type: "empty", position: narrow ? position : { ...position, y: position.y + 60 }, data: { label: "VMs appear when work starts" } });
@@ -458,7 +438,7 @@ function VmDetails({ vm, overview, now, onClose }: { vm: VmInfo; overview: Overv
                 <ItemContent>
                   <ItemTitle className="w-full justify-between">
                     <span className="truncate">{session.title}</span>
-                    <Badge variant={session.status === "running" ? "default" : "secondary"}>{session.status}</Badge>
+                    <Badge variant={session.working ? "default" : "secondary"}>{session.status}</Badge>
                   </ItemTitle>
                   <ItemDescription className="font-mono text-xs">{[session.provider, session.model].filter(Boolean).join(" · ") || "No model"}</ItemDescription>
                 </ItemContent>

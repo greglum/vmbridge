@@ -15,6 +15,7 @@ import type { Clients } from "./auth/clients.ts";
 import { message, providerValues, type Fleet } from "./fleet.ts";
 import type { Hub } from "./gateway/hub.ts";
 import type { T3Gateway } from "./gateway/http.ts";
+import { isWorking } from "./gateway/types.ts";
 import { disableTailscaleHttps, enableTailscaleHttps, networkInfo } from "./network.ts";
 import { providers } from "./providers/index.ts";
 import type { Secrets, Settings } from "./settings.ts";
@@ -351,6 +352,7 @@ export class Admin {
               model: typeof model?.model === "string" ? model.model : null,
               provider: typeof thread.providerInstanceId === "string" ? thread.providerInstanceId : null,
               status: String(thread.status ?? "idle"),
+              working: isWorking(thread),
               updatedAt: typeof thread.updatedAt === "string" ? thread.updatedAt : null,
             };
           }),

@@ -93,6 +93,8 @@ export interface VmSession {
   model: string | null;
   provider: string | null;
   status: string;
+  /** A turn is running, queued, or waiting on an approval. */
+  working: boolean;
   updatedAt: string | null;
 }
 

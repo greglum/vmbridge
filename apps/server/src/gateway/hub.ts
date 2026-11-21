@@ -167,7 +167,10 @@ export class Hub extends EventEmitter<HubEvents> {
     this.store.saveSnapshot(vmId, "shell", shell);
     if (item.kind === "thread.updated" && item.thread) this.refreshProjectionSoon(vmId, item.thread.id);
     if (item.kind === "snapshot") void this.cacheMissingProjections(vmId);
-    if (hasLiveWork(shell)) this.fleet.touch(vmId);
+    const working = hasLiveWork(shell);
+    if (working) this.fleet.touch(vmId);
+    // Shown as soon as the VM reports it, rather than on the next idle sweep.
+    this.setBusy(vmId, working);
     this.bump();
     this.emit("shell");
   }
