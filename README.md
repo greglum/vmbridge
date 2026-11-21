@@ -47,6 +47,11 @@ Codex: awake VMs right away, without restarting anything, and sleeping VMs befor
 anything when they wake. Edits to a local skill reach the VMs within a few seconds. Removing a
 skill takes it off every VM, and skills put on a VM some other way are left alone.
 
+Switch on **Sync all** to install every skill on this machine without picking them one by one. New
+skills in those folders follow within a few seconds, and a skill deleted here comes off the VMs. When
+two folders hold a skill with the same name, the first in the order above wins. Skills over 5 MB are
+skipped. Turning it off keeps what it installed until you remove it.
+
 The AGENTS.md section on the same page lists each agent's global file found on this machine,
 `~/.claude/CLAUDE.md` for Claude Code, `~/.codex/AGENTS.md` for Codex and
 `~/.config/opencode/AGENTS.md` for OpenCode (`$CLAUDE_CONFIG_DIR`, `$CODEX_HOME` and

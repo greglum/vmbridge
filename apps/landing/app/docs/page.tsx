@@ -348,6 +348,11 @@ bun run build          # dist/vmbridge
                   "Removing a skill takes it off every VM. Skills put on a VM some other way, and a skill with the same name already there, are left alone.",
                 ]}
               />
+              <p>
+                Switch on <strong>Sync all</strong> to install every skill in those folders. New skills there follow within a few seconds, and one
+                deleted here comes off the VMs. When two folders hold the same skill name, the first in the order above wins, and skills over 5 MB
+                are skipped. Turning it off keeps what it installed until you remove it. skills.sh skills are not affected.
+              </p>
               <Table
                 head={["Agent", "Reads skills from"]}
                 rows={[

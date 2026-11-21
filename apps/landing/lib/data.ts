@@ -178,7 +178,7 @@ export const faq = [
   {
     question: "Can agents on the VMs use skills?",
     answer:
-      "Yes. Install agent skills from skills.sh, or pick ones already on the machine that runs VM Bridge, and every VM gets them for Claude Code and Codex. Awake VMs get them right away without a restart, sleeping VMs get them when they wake, and edits to a local skill follow on their own.",
+      "Yes. Install agent skills from skills.sh, or pick ones already on the machine that runs VM Bridge, and every VM gets them for Claude Code and Codex. Awake VMs get them right away without a restart, sleeping VMs get them when they wake, and edits to a local skill follow on their own. Switch on Sync all and every skill on that machine goes, including new ones.",
   },
   {
     question: "Do my CLAUDE.md and AGENTS.md reach the VMs?",
