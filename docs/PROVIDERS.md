@@ -105,16 +105,16 @@ Still unverified:
 
 ### Instabox live results (2026-11-21, medium size)
 
-`scripts/live.ts instabox --agent`, one run. Everything listed under Status passed.
+`scripts/live.ts instabox --agent`, two runs. Everything listed under Status passed. The step times below are from the second run, made with the fixed live script. The first run's wake time was estimated from a gap in the log and was wrong. The latencies are from the first run.
 
 | Step | Time |
 |---|---|
-| First VM ready (create, install, start T3) | 21.1 s |
-| Clone and register project | 1.3 s |
-| First agent turn | 9.0 s |
-| Sleep (pause) | 0.7 s |
-| Wake on a new message (resume, prepare, until T3 took the message) | about 39.8 s |
-| Second agent turn | 8.6 s |
+| First VM ready (create, install, start T3) | 22.1 s |
+| Clone and register project | 1.4 s |
+| First agent turn | 7.8 s |
+| Sleep (pause) | 1.4 s |
+| Wake on a new message (resume, prepare, until T3 took the message) | 10.5 s |
+| Second agent turn | 1.7 s |
 
 | Latency (ms) | p50 | p95 |
 |---|---|---|
