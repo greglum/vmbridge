@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { SandboxError, type Preview } from "@opencoredev/sandbox-sdk";
 import type { ProviderId, VmSize, VmState } from "@vmbridge/contracts";
 import { providers, type Box, type Driver } from "./providers/index.ts";
-import type { Settings, Secrets } from "./settings.ts";
+import { envVars, type Settings, type Secrets } from "./settings.ts";
 import type { ProjectRow, Store, VmRow } from "./store.ts";
 import type { Traffic } from "./traffic.ts";
 import { Backend, TokenRejected } from "./vm/backend.ts";
@@ -58,7 +58,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
   private readonly drivers = new Map<ProviderId, { signature: string; driver: Driver }>();
   /** The first VM started to read T3's configuration, shared by everyone asking at once. */
   private bootstrapping?: Promise<string>;
-  /** Fingerprint of the sign-ins VM Bridge last gave out, once it has. */
+  /** Fingerprint of the sign-ins and variables VM Bridge last gave out, once it has. */
   private latest?: string;
   /** VMs whose T3 server could not be restarted for these sign-ins, so the idle sweep stops trying. */
   private readonly unrestartable = new Map<string, string>();
@@ -285,10 +285,15 @@ export class Fleet extends EventEmitter<FleetEvents> {
     return connected;
   }
 
-  /** True when an awake VM's T3 server runs with older sign-ins than VM Bridge now gives out. */
+  /** True when an awake VM's T3 server runs with older sign-ins or variables than VM Bridge now gives out. */
   stale(vmId: string) {
     const vm = this.store.vm(vmId);
     return Boolean(vm && this.latest && vm.t3Credentials !== this.latest && this.unrestartable.get(vmId) !== this.latest);
+  }
+
+  /** True when a VM, awake or asleep, has yet to start T3 with the current sign-ins and variables. */
+  behind(vm: VmRow) {
+    return Boolean(this.latest && vm.t3Credentials !== null && vm.t3Credentials !== this.latest);
   }
 
   /**
@@ -312,10 +317,10 @@ export class Fleet extends EventEmitter<FleetEvents> {
       await backend.close();
       try {
         await this.connect(vm, box, vm.t3Version ?? (await resolveT3Version(this.settings.get("t3Version"))), async () => true);
-        this.traffic.record({ kind: "system", operation: "restart T3 for new sign-ins", vmId, status: "ok", durationMs: Math.round(performance.now() - started) });
+        this.traffic.record({ kind: "system", operation: "restart T3 for new sign-ins or variables", vmId, status: "ok", durationMs: Math.round(performance.now() - started) });
       } catch (error) {
         this.setState(vmId, "error", message(error));
-        this.traffic.record({ kind: "system", operation: "restart T3 for new sign-ins", vmId, status: "error" });
+        this.traffic.record({ kind: "system", operation: "restart T3 for new sign-ins or variables", vmId, status: "error" });
         this.emit("offline", vmId);
         throw error;
       }
@@ -576,6 +581,8 @@ fi`,
 
   /** Reconnects VMs that were awake when VM Bridge stopped. */
   async resume() {
+    // So the dashboard can tell sleeping VMs behind on sign-ins or variables before any VM wakes.
+    void this.credentials().catch(() => {});
     for (const vm of this.store.vms()) {
       if (!["ready", "busy", "starting"].includes(vm.state)) continue;
       void this.ensure(vm.id).catch(() => {});
@@ -586,8 +593,13 @@ fi`,
     const token = this.secrets.get("github.token");
     const account = this.settings.get("github");
     const github = token && account ? { token, login: account.login, name: account.name ?? account.login, email: account.email } : undefined;
-    const credentials = { ...(await this.agents.vmSecrets()), github };
-    this.latest = credentialsFingerprint(credentials);
+    const env = envVars(this.secrets);
+    const credentials: VmCredentials = { ...(await this.agents.vmSecrets()), github, ...(Object.keys(env).length ? { env } : {}) };
+    const fingerprint = credentialsFingerprint(credentials);
+    if (fingerprint !== this.latest) {
+      this.latest = fingerprint;
+      this.emit("changed");
+    }
     return credentials;
   }
 

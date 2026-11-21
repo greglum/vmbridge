@@ -92,3 +92,8 @@ export class Secrets {
     }
   }
 }
+
+/** Environment variables every VM gets, set in the dashboard. Kept as one secret, since the values are secrets too. */
+export const envVars = (secrets: Secrets): Record<string, string> => JSON.parse(secrets.get("env") ?? "{}");
+
+export const saveEnvVars = (secrets: Secrets, vars: Record<string, string>) => secrets.set("env", Object.keys(vars).length ? JSON.stringify(vars) : null);
