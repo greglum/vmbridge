@@ -321,6 +321,12 @@ export class Admin {
 
     if (section === "skills") {
       if (id === "local" && !action && method === "GET") return json(skills.discover());
+      if (id === "local" && !action && method === "PUT") {
+        const input = await body(request);
+        if (typeof input.sync !== "boolean") throw new BadRequest("Say whether to sync every local skill.");
+        skills.setSyncAll(input.sync);
+        return json(skills.discover());
+      }
       if (id === "search" && !action && method === "GET") {
         const query = new URL(request.url).searchParams.get("q")?.trim() ?? "";
         return json(query ? await skills.search(query) : []);
@@ -478,6 +484,7 @@ export class Admin {
         createdAt: project.createdAt,
       })),
       skills: this.deps.skills.list(),
+      syncLocalSkills: this.deps.skills.syncAll,
       instructions: this.deps.skills.instructions.list(),
     };
   }

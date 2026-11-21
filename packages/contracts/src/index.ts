@@ -282,6 +282,8 @@ export interface Overview {
   vms: VmInfo[];
   projects: ProjectInfo[];
   skills: SkillInfo[];
+  /** Every skill on this machine is installed and kept in sync, not only the ones picked. */
+  syncLocalSkills: boolean;
   instructions: InstructionFile[];
 }
 

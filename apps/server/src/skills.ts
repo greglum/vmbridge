@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { EventEmitter } from "node:events";
-import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, relative, sep } from "node:path";
 import type { LocalSkill, SkillInfo, SkillSearchResult, SkillSource } from "@vmbridge/contracts";
@@ -96,16 +96,33 @@ export function readSkillFolder(dir: string): SkillFile[] {
 
 /**
  * The skills every VM gets, kept in VM Bridge's database with their files: from skills.sh, or copied from a folder
- * on this machine and re-read when that folder changes. The agents' global instructions files go to every VM with
- * them, in the same sync. Emits `changed` whenever the set or a skill's or instructions file's content changes.
+ * on this machine and re-read when that folder changes. With `syncAll`, every skill in this machine's skill folders
+ * is installed that way. The agents' global instructions files go to every VM with them, in the same sync. Emits
+ * `changed` whenever the set or a skill's or instructions file's content changes.
  */
 export class Skills extends EventEmitter<{ changed: [] }> {
+  private readonly settings: Settings;
+  readonly instructions: Instructions;
+
   constructor(
     private readonly db: Database,
-    readonly instructions = new Instructions(new Settings(db)),
+    /** The folders to find this machine's skills in. */
+    private readonly roots = localRoots,
   ) {
     super();
-    instructions.on("changed", () => this.emit("changed"));
+    this.settings = new Settings(db);
+    this.instructions = new Instructions(this.settings);
+    this.instructions.on("changed", () => this.emit("changed"));
+  }
+
+  get syncAll() {
+    return this.settings.get("syncLocalSkills");
+  }
+
+  /** Turning it off keeps the skills it installed until they are removed. */
+  setSyncAll(sync: boolean) {
+    this.settings.set("syncLocalSkills", sync);
+    this.refreshLocal();
   }
 
   private rows() {
@@ -219,10 +236,14 @@ export class Skills extends EventEmitter<{ changed: [] }> {
 
   /** Skills in this machine's Claude Code and Codex skill folders. */
   discover(): LocalSkill[] {
-    const rows = this.rows();
+    const names = new Set(this.rows().map((row) => row.name));
+    return this.scan().map(({ name, dir, description }) => ({ name, path: tildify(dir), description, installed: names.has(name) }));
+  }
+
+  private scan() {
     const seen = new Set<string>();
-    const found: LocalSkill[] = [];
-    for (const root of localRoots()) {
+    const found: { name: string; dir: string; description: string | null }[] = [];
+    for (const root of this.roots()) {
       let entries: string[];
       try {
         entries = readdirSync(root);
@@ -241,24 +262,41 @@ export class Skills extends EventEmitter<{ changed: [] }> {
         }
         if (seen.has(dir)) continue;
         seen.add(dir);
-        const name = basename(dir);
-        found.push({ name, path: tildify(dir), description: skillDescription(skillMd), installed: rows.some((row) => row.name === name) });
+        found.push({ name: basename(dir), dir, description: skillDescription(skillMd) });
       }
     }
     return found;
   }
 
-  /** Re-reads installed local skills, saving those whose files changed. A folder that is gone keeps its last copy. */
+  /**
+   * Re-reads installed local skills, saving those whose files changed. A folder that is gone keeps its last copy, or
+   * with `syncAll` is removed, and every skill new on this machine is installed. Two folders with the same skill name:
+   * the first in `localRoots` order wins. A skill too big to read is skipped, keeping any copy it had.
+   */
   refreshLocal() {
+    const all = this.syncAll;
     let changed = false;
     for (const row of this.rows().filter((entry) => entry.source === "local")) {
       let files: SkillFile[];
       try {
         files = readSkillFolder(row.ref);
       } catch {
+        if (all && !existsSync(join(row.ref, "SKILL.md"))) {
+          this.remove(row.name);
+          changed = true;
+        }
         continue;
       }
       if (this.save(row.name, "local", row.ref, files)) changed = true;
+    }
+    if (!all) return changed;
+    const names = new Set(this.rows().map((row) => row.name));
+    for (const { name, dir } of this.scan()) {
+      if (names.has(name) || !validName.test(name)) continue;
+      names.add(name);
+      try {
+        if (this.save(name, "local", dir, readSkillFolder(dir))) changed = true;
+      } catch {}
     }
     return changed;
   }
