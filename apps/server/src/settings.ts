@@ -31,6 +31,8 @@ interface SettingValues {
   agentProfiles: Partial<Record<AgentKind, string>>;
   /** Agents whose global instructions file on this machine every VM gets. */
   instructionSync: Partial<Record<AgentKind, boolean>>;
+  /** Every skill in this machine's skill folders is installed, and removed when its folder goes. */
+  syncLocalSkills: boolean;
 }
 
 const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
@@ -48,6 +50,7 @@ const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
   agentPreferences: () => ({}),
   agentProfiles: () => ({}),
   instructionSync: () => ({}),
+  syncLocalSkills: () => false,
 };
 
 export class Settings {
