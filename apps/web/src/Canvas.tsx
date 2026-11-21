@@ -206,7 +206,7 @@ function VmCard({ data }: NodeProps<VmNode>) {
           </span>
         ) : (
           vm.skillsPending && (
-            <span className="text-[13px] text-muted-foreground" title={vm.state === "sleeping" ? "It gets the latest skills and instructions when it wakes." : undefined}>
+            <span className="text-[13px] text-muted-foreground" title={vm.state === "sleeping" ? "It gets the latest skills and AGENTS.md when it wakes." : undefined}>
               Sync pending
             </span>
           )

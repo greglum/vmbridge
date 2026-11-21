@@ -29,7 +29,7 @@ const sections: DocsSection[] = [
   { id: "providers", title: "Providers" },
   { id: "sign-in", title: "Agent sign-ins and GitHub" },
   { id: "skills", title: "Skills" },
-  { id: "instructions", title: "Instructions" },
+  { id: "instructions", title: "AGENTS.md" },
   { id: "network", title: "Addresses and Tailscale" },
   { id: "security", title: "Data and security" },
   { id: "troubleshooting", title: "Troubleshooting" },
@@ -361,9 +361,9 @@ bun run build          # dist/vmbridge
               </p>
             </Section>
 
-            <Section id="instructions" title="Instructions">
+            <Section id="instructions" title="AGENTS.md">
               <p>
-                The Skills page also lists each agent&apos;s global instructions file found on this machine. Switch one on and every VM gets it, at
+                The AGENTS.md section of the Skills page lists each agent&apos;s global file found on this machine. Switch one on and every VM gets it, at
                 the path that agent reads, on the same terms as skills: awake VMs right away, sleeping VMs before they serve anything on wake, new
                 VMs at setup, and edits here within a few seconds.
               </p>
