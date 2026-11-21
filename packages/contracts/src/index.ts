@@ -154,13 +154,13 @@ export interface AgentProfile {
   error: string | null;
 }
 
-/** A Codex device sign-in in progress. */
 /** A Claude sign-in waiting for the code claude.ai shows after approval. */
 export interface ClaudeLogin {
   id: string;
   url: string;
 }
 
+/** A Codex device sign-in in progress. */
 export interface CodexLogin {
   id: string;
   userCode: string;
@@ -221,8 +221,6 @@ export interface PairingUrl {
   kind: AddressKind;
   label: string;
   url: string;
-  /** The `t3code://pair` link that T3 desktop opens and T3 mobile scans. */
-  appLink: string;
 }
 
 export interface CreatedPairing {

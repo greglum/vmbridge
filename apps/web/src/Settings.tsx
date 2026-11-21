@@ -12,7 +12,6 @@ import { Switch } from "@/components/ui/switch";
 import { useAction } from "@/hooks/use-action";
 import { api } from "./api.ts";
 import { CopyButton } from "./CopyButton.tsx";
-import { Private } from "./Private.tsx";
 import { Page, Section, type Tab } from "./Page.tsx";
 
 type SettingsTab = "vms" | "addresses" | "key";
@@ -107,7 +106,7 @@ function Addresses() {
               <ItemContent className="min-w-0">
                 <ItemTitle>{address.label}</ItemTitle>
                 <ItemDescription className="truncate font-mono text-xs">
-                  <Private>{address.url}</Private>
+                  {address.url}
                 </ItemDescription>
               </ItemContent>
               <ItemActions>
@@ -125,7 +124,7 @@ function Addresses() {
                 <ItemTitle>
                   <label htmlFor="tailscale-https">HTTPS address</label>
                 </ItemTitle>
-                <ItemDescription>{tailscale.httpsUrl ? <Private>{tailscale.httpsUrl}</Private> : "Serve VM Bridge over HTTPS on your tailnet."}</ItemDescription>
+                <ItemDescription>{tailscale.httpsUrl ?? "Serve VM Bridge over HTTPS on your tailnet."}</ItemDescription>
               </ItemContent>
               <ItemActions>
                 <Switch

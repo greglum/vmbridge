@@ -294,7 +294,7 @@ bun run build          # dist/vmbridge
                 head={["Sign-in", "Set on the VM as"]}
                 rows={[
                   ["Codex, signed in with ChatGPT", "auth.json in a private CODEX_HOME"],
-                  ["Claude account or subscription token", <Code key="c">CLAUDE_CODE_OAUTH_TOKEN</Code>],
+                  ["Claude account", <Code key="c">CLAUDE_CODE_OAUTH_TOKEN</Code>],
                   ["Claude auth token", <Code key="a">ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL</Code>],
                   ["OpenCode API key", <Code key="o">OPENCODE_API_KEY</Code>],
                   ["GitHub token", <Code key="g">GH_TOKEN, GITHUB_TOKEN</Code>],

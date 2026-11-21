@@ -198,17 +198,11 @@ function GitHub({ account }: { account: GitHubAccount | null }) {
         <>
           <Item variant="outline">
             <ItemMedia>
-              <Private className="rounded-full">
-                <img src={account.avatarUrl} alt="" className="size-10 rounded-full" />
-              </Private>
+              <img src={account.avatarUrl} alt="" className="size-10 rounded-full" />
             </ItemMedia>
             <ItemContent>
-              <ItemTitle>
-                <Private>{account.name ?? account.login}</Private>
-              </ItemTitle>
-              <ItemDescription>
-                <Private>@{account.login}</Private>
-              </ItemDescription>
+              <ItemTitle>{account.name ?? account.login}</ItemTitle>
+              <ItemDescription>@{account.login}</ItemDescription>
             </ItemContent>
             <ItemActions>
               <Button variant="outline" size="sm" disabled={action.busy} onClick={() => void action.run(() => api("/github/check", { body: {} }))}>
@@ -222,9 +216,7 @@ function GitHub({ account }: { account: GitHubAccount | null }) {
           <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-2 text-sm">
             <dt className="text-muted-foreground">Commits as</dt>
             <dd className="truncate font-mono text-xs leading-5">
-              <Private>
-                {account.name ?? account.login} &lt;{account.email}&gt;
-              </Private>
+              {account.name ?? account.login} &lt;<Private>{account.email}</Private>&gt;
             </dd>
             <dt className="text-muted-foreground">Token</dt>
             <dd>{account.scopes === null ? "Fine-grained" : `Classic${account.scopes.length ? `: ${account.scopes.join(", ")}` : ", no scopes"}`}</dd>
@@ -273,7 +265,7 @@ const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 const agentNames: Record<AgentKind, string> = { codex: "Codex", claude: "Claude", opencode: "OpenCode" };
 const methodNames: Record<AgentAuthMethod, string> = {
   chatgpt: "ChatGPT sign-in",
-  "setup-token": "Subscription token",
+  "setup-token": "Claude account",
   "auth-token": "Auth token",
   "api-key": "API key",
 };
@@ -310,7 +302,7 @@ function AgentSection({ agent, profiles }: { agent: AgentKind; profiles: AgentPr
                   {methodNames[profile.method]}
                   {profile.detail && (
                     <>
-                      , <Private>{profile.detail}</Private>
+                      , {profile.method === "auth-token" ? profile.detail : <Private>{profile.detail}</Private>}
                     </>
                   )}
                 </>
@@ -450,7 +442,7 @@ function CodexForm({ onDone, onCancel }: FormProps) {
 }
 
 function ClaudeForm({ onDone, onCancel }: FormProps) {
-  const [method, setMethod] = useState<"sign-in" | "setup-token" | "auth-token">("sign-in");
+  const [method, setMethod] = useState<"sign-in" | "auth-token">("sign-in");
   const [name, setName] = useState("");
   const [token, setToken] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -459,7 +451,6 @@ function ClaudeForm({ onDone, onCancel }: FormProps) {
   const action = useAction();
   const methods = [
     { id: "sign-in", title: "Claude account", description: "Sign in on claude.ai" },
-    { id: "setup-token", title: "Subscription token", description: "From claude setup-token" },
     { id: "auth-token", title: "Auth token", description: "For a proxy or an Anthropic-compatible API" },
   ] as const;
   const saved = (ok: boolean) => {
@@ -531,11 +522,11 @@ function ClaudeForm({ onDone, onCancel }: FormProps) {
           });
           return;
         }
-        const body = { agent: "claude", method, name: name.trim(), token, ...(method === "auth-token" ? { baseUrl: baseUrl.trim() || null } : {}) };
+        const body = { agent: "claude", method, name: name.trim(), token, baseUrl: baseUrl.trim() || null };
         void action.run(() => api("/agents", { body })).then(saved);
       }}
     >
-      <RadioGroup value={method} onValueChange={(value) => setMethod(value as typeof method)} className="grid gap-2 sm:grid-cols-3">
+      <RadioGroup value={method} onValueChange={(value) => setMethod(value as typeof method)} className="grid gap-2 sm:grid-cols-2">
         {methods.map((entry) => (
           <FieldLabel key={entry.id} htmlFor={`claude-${entry.id}`}>
             <Field orientation="horizontal">
@@ -550,31 +541,23 @@ function ClaudeForm({ onDone, onCancel }: FormProps) {
       </RadioGroup>
       <FieldGroup>
         <NameField id="claude-name" value={name} onChange={setName} />
-        {method !== "sign-in" && (
-          <Field data-invalid={Boolean(action.error)}>
-            <FieldLabel htmlFor="claude-token">{method === "setup-token" ? "Token" : "ANTHROPIC_AUTH_TOKEN"}</FieldLabel>
-            <Input
-              id="claude-token"
-              className="h-9"
-              type="password"
-              autoComplete="off"
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-              placeholder={method === "setup-token" ? "sk-ant-oat01-..." : undefined}
-            />
-          </Field>
-        )}
         {method === "auth-token" && (
-          <Field>
-            <FieldLabel htmlFor="claude-base-url">ANTHROPIC_BASE_URL</FieldLabel>
-            <Input id="claude-base-url" className="h-9" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.anthropic.com" autoComplete="off" />
-          </Field>
+          <>
+            <Field data-invalid={Boolean(action.error)}>
+              <FieldLabel htmlFor="claude-token">ANTHROPIC_AUTH_TOKEN</FieldLabel>
+              <Input id="claude-token" className="h-9" type="password" autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)} />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="claude-base-url">ANTHROPIC_BASE_URL</FieldLabel>
+              <Input id="claude-base-url" className="h-9" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.anthropic.com" autoComplete="off" />
+            </Field>
+          </>
         )}
       </FieldGroup>
       {action.error && <FieldError>{action.error}</FieldError>}
       <FormButtons
         busy={action.busy}
-        disabled={method !== "sign-in" && !token.trim()}
+        disabled={method === "auth-token" && !token.trim()}
         label={method === "sign-in" ? "Sign in with Claude" : "Check and save"}
         onCancel={onCancel}
       />

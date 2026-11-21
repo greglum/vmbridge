@@ -252,7 +252,7 @@ export class Admin {
         const network = await networkInfo(this.deps.host, this.deps.port);
         const urls = network.addresses.map((address) => {
           const url = `${address.url}/pair#token=${link.token}`;
-          return { kind: address.kind, label: address.label, url, appLink: `t3code://pair?${new URLSearchParams({ url })}` };
+          return { kind: address.kind, label: address.label, url };
         });
         return json({ link: link.link, urls });
       }
