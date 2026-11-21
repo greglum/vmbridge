@@ -45,7 +45,7 @@ export const providers: Provider[] = [
     sizes: ["2 vCPU, 4 GB", "4 vCPU, 8 GB", "8 vCPU, 16 GB"],
     reach: "Published port",
     safetyNet: "Suspends after 30 min idle",
-    measured: { ready: "21 s", wakeSeconds: [8, 8], browseMs: 229 },
+    measured: { ready: "22 s", wakeSeconds: [10.5, 10.5], browseMs: 229 },
   },
   {
     id: "daytona",
