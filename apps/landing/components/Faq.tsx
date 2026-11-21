@@ -1,4 +1,5 @@
 import { faq } from "@/lib/data";
+import { FaqItem } from "./FaqItem";
 
 /** Plain text with `backticks` shown as code. */
 function Text({ text }: { text: string }) {
@@ -15,16 +16,13 @@ function Text({ text }: { text: string }) {
 
 export function Faq() {
   return (
-    <section id="faq" className="mx-auto max-w-6xl scroll-mt-20 px-4 py-24 sm:px-6">
-      <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">Questions</h2>
-      <div className="mt-10">
-        {faq.map(({ question, answer }) => (
-          <div key={question} className="grid gap-2 border-t py-6 last:border-b md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] md:gap-12">
-            <h3 className="font-medium">{question}</h3>
-            <p className="leading-7 text-pretty text-muted-foreground [overflow-wrap:anywhere]">
-              <Text text={answer} />
-            </p>
-          </div>
+    <section id="faq" className="mx-auto grid max-w-6xl scroll-mt-20 gap-10 px-4 py-24 sm:px-6 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] md:gap-12">
+      <h2 className="self-start text-3xl font-semibold tracking-tight sm:text-4xl md:sticky md:top-24">Questions</h2>
+      <div>
+        {faq.map(({ question, answer }, i) => (
+          <FaqItem key={question} number={i + 1} question={question} defaultOpen={i === 0}>
+            <Text text={answer} />
+          </FaqItem>
         ))}
       </div>
     </section>
