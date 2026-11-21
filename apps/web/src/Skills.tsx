@@ -74,7 +74,19 @@ export function Skills({ overview }: { overview: Overview }) {
 
       <Search installed={installed} busy={action.busy} onInstall={(result) => install(result.name, { source: "skills.sh", repo: result.source, skill: result.skillId })} />
 
-      <Section title="On this machine">
+      <Section
+        title="On this machine"
+        actions={
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            Sync all
+            <Switch
+              checked={overview.syncLocalSkills}
+              disabled={action.busy}
+              onCheckedChange={(sync) => void action.run(async () => setLocal(await api<LocalSkill[]>("/skills/local", { method: "PUT", body: { sync } })))}
+            />
+          </label>
+        }
+      >
         {local?.length === 0 && <p className="text-sm text-muted-foreground">No skills in ~/.claude/skills, ~/.agents/skills or ~/.codex/skills.</p>}
         {local && local.length > 0 && (
           <ItemGroup className="gap-2">
