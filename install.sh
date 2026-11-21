@@ -32,10 +32,15 @@ trap 'rm -f "$tmp"' EXIT
 echo "Downloading VM Bridge for $os-$arch..."
 curl -fSL --progress-bar "$url" -o "$tmp"
 chmod 755 "$tmp"
+# Check the download runs before it replaces a working install.
+if ! version="$("$tmp" --version 2>/dev/null)"; then
+  echo "The downloaded VM Bridge does not run on this machine. Nothing was changed." >&2
+  exit 1
+fi
 mv "$tmp" "$dir/vmbridge"
 trap - EXIT
 
-echo "Installed VM Bridge $("$dir/vmbridge" --version 2>/dev/null) to $dir/vmbridge"
+echo "Installed VM Bridge $version to $dir/vmbridge"
 
 case ":$PATH:" in
   *":$dir:"*) ;;
