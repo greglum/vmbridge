@@ -63,6 +63,14 @@ const sha256 = (value: string) => new Bun.CryptoHasher("sha256").update(value).d
 /** How long a thread just placed on a VM counts toward its load before T3 lists it. */
 const launchGraceMs = 2 * 60_000;
 
+/** The local branch a launch starts its worktree from. One taken from origin is on every VM. */
+function launchBranch(strategy: unknown): string | undefined {
+  const value = (strategy ?? {}) as Wire;
+  if (value.type === "worktree" && !value.startFromOrigin) return str(value.baseRef);
+  if (value.type === "root") return str(value.branch);
+  return undefined;
+}
+
 /**
  * Everything T3 clients see: one merged shell, one config, and routing from each request to the
  * VM that owns it. Caches what every VM last reported so sleeping VMs keep their threads visible.
@@ -609,6 +617,7 @@ export class Hub extends EventEmitter<HubEvents> {
       try {
         if (threadId) {
           const placed = await this.fleet.placeThread(project.id, {
+            only: await this.branchHolders(project.id, launchBranch(payload.workspaceStrategy)),
             load: (vm) => this.load(vm),
             placed: (id) => this.launches.set(threadId!, { vmId: id, at: Date.now() }),
             progress: report,
@@ -654,6 +663,48 @@ export class Hub extends EventEmitter<HubEvents> {
     const created = str(payload.threadId);
     if (payload.type === "thread.create" && created) this.store.setThreadVm(created, vmId);
     return { vmId, payload: outgoing };
+  }
+
+  /**
+   * The local branches one of a project's VMs has: from its checkout while it is awake, else what VM Bridge last
+   * read there plus the branches of the threads it last reported.
+   */
+  async localBranches(projectId: string, vmId: string): Promise<Set<string>> {
+    const backend = this.fleet.backend(vmId);
+    const live = backend && (await this.readBranches(backend, projectId, vmId));
+    if (live) return live;
+    const threads = threadsOf(this.shells.get(vmId)).filter((thread) => thread.projectId === projectId);
+    const named = threads.flatMap((thread) => (typeof thread.branch === "string" ? [thread.branch] : []));
+    return new Set([...this.store.branches(projectId, vmId), ...named]);
+  }
+
+  /** Reads a project's local branches from an awake VM and keeps them for while it sleeps. Null when it cannot. */
+  private async readBranches(backend: Backend, projectId: string, vmId: string) {
+    const cwd = this.store.project(projectId)?.vms.find((entry) => entry.vmId === vmId)?.checkoutPath;
+    if (!cwd) return null;
+    const listed = await backend.call<{ refs?: Wire[] }>("vcs.listRefs", { cwd, refKind: "local", limit: 200 }, 10_000).catch(() => null);
+    if (!listed) return null;
+    const names = (listed.refs ?? []).flatMap((ref) => (!ref.isRemote && typeof ref.name === "string" ? [ref.name] : []));
+    this.store.setBranches(projectId, vmId, names);
+    return new Set(names);
+  }
+
+  /** Local branches only some of a project's VMs have: each name with the VMs that have it. */
+  async sparseBranches(projectId: string): Promise<Map<string, Set<string>>> {
+    const vms = this.store.project(projectId)?.vms.filter((entry) => this.store.vm(entry.vmId)?.state !== "gone") ?? [];
+    const holders = new Map<string, Set<string>>();
+    if (vms.length < 2) return holders;
+    const lists = await Promise.all(vms.map(({ vmId }) => this.localBranches(projectId, vmId)));
+    lists.forEach((names, index) => {
+      for (const name of names) holders.set(name, (holders.get(name) ?? new Set()).add(vms[index]!.vmId));
+    });
+    for (const [name, on] of holders) if (on.size === vms.length) holders.delete(name);
+    return holders;
+  }
+
+  /** The VMs a new thread starting from `branch` must go to, when only some of the project's VMs have it. */
+  private async branchHolders(projectId: string, branch: string | undefined) {
+    return branch ? (await this.sparseBranches(projectId)).get(branch) : undefined;
   }
 
   /** One of a project's VMs as placement sees it, from the cached shell and the latest resource reading. */
@@ -899,6 +950,10 @@ export class Hub extends EventEmitter<HubEvents> {
         for (const thread of threadsOf(shell)) {
           this.cacheProjection(thread.id, vmId, await live.call("orchestration.getThreadProjection", { threadId: thread.id }));
           this.store.setThreadVm(thread.id, vmId);
+        }
+        // Its branches too, so the project's branch list and placement still know them while it sleeps.
+        for (const project of this.store.projects()) {
+          if (project.vms.some((entry) => entry.vmId === vmId)) await this.readBranches(live, project.id, vmId);
         }
         // Caching took a while: work may have started on the VM meanwhile.
         const latest = await live.json<Shell>("/api/orchestration/shell");

@@ -522,9 +522,15 @@ export class Fleet extends EventEmitter<FleetEvents> {
    */
   placeThread(
     projectId: string,
-    options: { load: (vm: VmRow) => VmLoad; placed: (vmId: string) => void; progress: (detail: string) => void },
+    options: {
+      /** Only these VMs, as when the thread starts from a branch only they have, unless none of them can take it. */
+      only?: ReadonlySet<string>;
+      load: (vm: VmRow) => VmLoad;
+      placed: (vmId: string) => void;
+      progress: (detail: string) => void;
+    },
   ): Promise<ThreadPlacement> {
-    const { load, placed, progress } = options;
+    const { only, load, placed, progress } = options;
     return this.exclusive(`project:${projectId}`, async () => {
       const primary = await this.placePrimary(projectId, progress);
       // VMs that failed to wake or set up during this placement.
@@ -535,9 +541,11 @@ export class Fleet extends EventEmitter<FleetEvents> {
           const vm = this.store.vm(vmId);
           return vm && vm.state !== "gone" && !failed.has(vmId) ? [vm] : [];
         });
-        const loads = vms.map(load);
+        const holders = only ? vms.filter((vm) => only.has(vm.id)) : [];
+        const loads = (holders.length ? holders : vms).map(load);
         const retryAt = (this.overflowFailedAt.get(projectId) ?? -Infinity) + overflowRetryMs;
-        const choice = choose(loads, project.vms.length < maxVmsPerProject && Date.now() >= retryAt);
+        // A new VM would not have the branch either.
+        const choice = choose(loads, !holders.length && project.vms.length < maxVmsPerProject && Date.now() >= retryAt);
         if (!choice) throw new Error("None of this project's VMs could start, and VM Bridge could not add one.");
         if (choice.kind === "create") {
           const like = this.store.vm(primary);

@@ -134,6 +134,8 @@ const migrations = [
     SELECT id, vm_id, checkout_path, created_at FROM projects WHERE vm_id IS NOT NULL;
   UPDATE projects SET vm_id = NULL, checkout_path = NULL;
   `,
+  // The local branches each of a project's VMs had when last read, for while it sleeps.
+  `ALTER TABLE project_vms ADD COLUMN branches TEXT;`,
 ];
 
 export function openDatabase(path: string): Database {

@@ -280,8 +280,9 @@ describe("placing new threads", () => {
     const primary = await context.fleet.place("p1");
     const turns = new Map<string, number>();
     const claimed: string[] = [];
-    const placeThread = () =>
+    const placeThread = (only?: ReadonlySet<string>) =>
       context.fleet.placeThread("p1", {
+        only,
         load: (vm): VmLoad => ({ vmId: vm.id, awake: Boolean(context.fleet.backend(vm.id)), turns: turns.get(vm.id) ?? 0, vcpus: 2, memory: null, disk: null }),
         placed: (vmId) => claimed.push(vmId),
         progress: () => {},
@@ -318,6 +319,25 @@ describe("placing new threads", () => {
     events.length = 0;
     expect(await placeThread()).toEqual({ vmId: second, notice: null });
     expect(events).toEqual(["wake"]);
+  });
+
+  test("a thread starting from a branch only one VM has goes there, asleep or busy, and by the usual rules once that VM is gone", async () => {
+    const { primary, turns, fleet, store, events, placeThread } = await placed();
+    turns.set(primary, 4);
+    const second = (await placeThread()).vmId;
+    await fleet.sleep(second);
+    turns.set(primary, 0);
+    events.length = 0;
+    expect(await placeThread(new Set([second]))).toEqual({ vmId: second, notice: null });
+    expect(events).toEqual(["wake"]);
+
+    // Busy, it still takes the thread, as a new VM would not have the branch either.
+    turns.set(second, 4);
+    expect(await placeThread(new Set([second]))).toEqual({ vmId: second, notice: "This VM is running 4 threads on 2 vCPUs, so this one may be slow." });
+    expect(store.project("p1")?.vms).toHaveLength(2);
+
+    store.removeVmFromProjects(second);
+    expect((await placeThread(new Set([second]))).vmId).toBe(primary);
   });
 
   test("when the provider refuses another VM, the thread goes to the least loaded one with a notice, and later threads do not ask again", async () => {
@@ -375,6 +395,20 @@ describe("idle sleep", () => {
     await hub.sweep(later());
     expect(events).toEqual(["create", "wake"]);
     expect(fleet.backend(vm.id)).toBeDefined();
+  });
+
+  test("keeps each project's local branches, so they are still known while the VM sleeps", async () => {
+    const { fleet, hub, store, t3, events } = idleFleet();
+    const vm = await fleet.create();
+    store.insertProject({ id: "p1", url: "https://github.com/acme/app.git", branch: null, title: "app", createdAt: 0 });
+    store.addProjectVm("p1", vm.id);
+    store.setCheckout("p1", vm.id, "/workspace/app");
+    await fleet.ensure(vm.id);
+    t3.state.answer = (tag) => (tag === "vcs.listRefs" ? { refs: [{ name: "main" }, { name: "hand-made" }, { name: "origin/main", isRemote: true }] } : null);
+
+    await hub.sweep(later());
+    expect(events).toEqual(["create", "wake", "sleep"]);
+    expect(await hub.localBranches("p1", vm.id)).toEqual(new Set(["main", "hand-made"]));
   });
 
   test("a request arriving once the VM is going to sleep waits for it, then wakes the VM", async () => {

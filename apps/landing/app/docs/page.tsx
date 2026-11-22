@@ -242,8 +242,8 @@ bun run build          # dist/vmbridge
                   </>,
                   <>
                     <strong>Running threads stay put.</strong> A thread&apos;s worktree, branch and unpushed changes live on its VM, so it never moves.
-                    A branch made on one VM shows on the project&apos;s other VMs once pushed. Extra VMs sleep like any other and are never deleted
-                    on their own.
+                    Branch lists show branches from all of a project&apos;s VMs, and a new thread from a branch only one VM has starts on that VM.
+                    Extra VMs sleep like any other and are never deleted on their own.
                   </>,
                 ]}
               />
