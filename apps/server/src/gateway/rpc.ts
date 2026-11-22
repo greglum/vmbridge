@@ -468,9 +468,21 @@ export class Rpc {
   /** A thread stream: live from the VM when awake, the cached transcript while it sleeps. */
   private async subscribeThread(call: Call) {
     const threadId = String(call.payload.threadId);
-    const vmId = await this.hub.routeSoon(call.payload);
+    const requestId = String(call.id);
     let end: (() => void) | undefined;
     let closed = false;
+    // Routing can wait for a shell update, and a cancel or disconnect in that time must still stop the stream.
+    call.client.cancels.set(requestId, () => {
+      closed = true;
+    });
+    let vmId: string;
+    try {
+      vmId = await this.hub.routeSoon(call.payload);
+    } catch (error) {
+      call.client.cancels.delete(requestId);
+      throw error;
+    }
+    if (closed || !call.client.open()) return;
     const attach = () => {
       const backend = this.hub.fleet.backend(vmId);
       if (!backend || closed) return;

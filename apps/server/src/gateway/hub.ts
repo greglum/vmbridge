@@ -613,17 +613,15 @@ export class Hub extends EventEmitter<HubEvents> {
    * client can open the child before VM Bridge knows which VM it is on.
    */
   async routeSoon(payload: Wire): Promise<string> {
+    const threadId = str(payload.threadId);
     const deadline = Date.now() + unseenThreadWaitMs;
-    for (;;) {
-      try {
-        return this.route(payload);
-      } catch (error) {
-        const threadId = str(payload.threadId);
-        const remaining = deadline - Date.now();
-        if (!threadId || this.store.threadVm(threadId) || remaining <= 0) throw error;
-        await once(this, "shell", { signal: AbortSignal.timeout(remaining) }).catch(() => {});
-      }
+    // Until then a project path alone would pick the project's primary VM, which need not be the one running the child.
+    while (threadId && !this.store.threadVm(threadId) && !this.targets(payload).vms.size) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await once(this, "shell", { signal: AbortSignal.timeout(remaining) }).catch(() => {});
     }
+    return this.route(payload);
   }
 
   routeOrNull(payload: unknown) {
