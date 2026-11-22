@@ -26,6 +26,7 @@ import { envVars, saveEnvVars, type Secrets, type Settings } from "./settings.ts
 import { SkillError, type Skills } from "./skills.ts";
 import type { Store } from "./store.ts";
 import type { Traffic } from "./traffic.ts";
+import type { Usage } from "./usage.ts";
 import { envNameProblem, envValueProblem } from "./vm/runtime.ts";
 import type { Stats } from "./vm/stats.ts";
 
@@ -46,6 +47,7 @@ export interface AdminDeps {
   agents: AgentAuth;
   stats: Stats;
   skills: Skills;
+  usage: Usage;
 }
 
 class BadRequest extends Error {}
@@ -117,6 +119,14 @@ export class Admin {
     if (path === "/overview" && method === "GET") return json(this.overview());
     if (path === "/events" && method === "GET") return this.events(request);
     if (path === "/traffic" && method === "GET") return json(this.deps.traffic.recent);
+    if (path === "/usage" && method === "GET") {
+      // The dashboard sends its own range, such as the start of the month in its time zone.
+      const params = new URL(request.url).searchParams;
+      const from = Number(params.get("from"));
+      const to = Number(params.get("to") ?? Date.now());
+      if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) throw new BadRequest("Send a time range.");
+      return json(this.deps.usage.report(from, to));
+    }
 
     if (path === "/network" && method === "GET") return json(await networkInfo(this.deps.host, this.deps.port));
     if (path === "/network/https" && method === "POST") {

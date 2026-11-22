@@ -168,6 +168,34 @@ const migrations = [
     resolved INTEGER NOT NULL DEFAULT 0
   );
   `,
+  // Usage for cost estimates (see usage.ts). No foreign keys: the history outlives the VMs and snapshots.
+  `
+  CREATE TABLE vm_usage (
+    id INTEGER PRIMARY KEY,
+    vm_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    size TEXT NOT NULL,
+    state TEXT NOT NULL,
+    repos TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    ended_at INTEGER NOT NULL,
+    open INTEGER NOT NULL
+  );
+  CREATE INDEX vm_usage_time ON vm_usage (ended_at, started_at);
+  CREATE TABLE snapshot_usage (
+    id INTEGER PRIMARY KEY,
+    provider TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    snapshot TEXT NOT NULL,
+    size TEXT,
+    vm_id TEXT,
+    started_at INTEGER NOT NULL,
+    ended_at INTEGER NOT NULL,
+    open INTEGER NOT NULL
+  );
+  CREATE INDEX snapshot_usage_time ON snapshot_usage (ended_at, started_at);
+  `,
 ];
 
 export function openDatabase(path: string): Database {
