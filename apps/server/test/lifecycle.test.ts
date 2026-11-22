@@ -97,7 +97,8 @@ function setup(skillRoots?: string[]) {
   settings.set("t3Version", "1.0.0");
   const store = new Store(db);
   const secrets = new Secrets(db);
-  const traffic = { record: () => {} } as unknown as Traffic;
+  const recorded: Parameters<Traffic["record"]>[0][] = [];
+  const traffic = { record: (event: Parameters<Traffic["record"]>[0]) => void recorded.push(event) } as unknown as Traffic;
   const signIns: AgentSecrets = {};
   const agents = { vmSecrets: async () => ({ ...signIns }), adoptCodex: () => {}, codexDue: () => false } as unknown as AgentAuth;
   const skills = skillRoots ? new Skills(db, () => skillRoots) : new Skills(db);
@@ -204,7 +205,7 @@ function setup(skillRoots?: string[]) {
     return fleet;
   };
   const fleet = newFleet();
-  return { t3, store, settings, secrets, fleet, newFleet, driver, box, events, traffic, signIns, files, server, skills, synced, order, calls };
+  return { t3, store, settings, secrets, fleet, newFleet, driver, box, events, traffic, recorded, signIns, files, server, skills, synced, order, calls };
 }
 
 describe("creating and deleting VMs", () => {
@@ -295,6 +296,20 @@ describe("VMs VM Bridge lost track of", () => {
     await creating;
     expect(events).toEqual(["create"]);
     expect(store.vm(vm!.id)).toMatchObject({ sandboxId: "sb1" });
+  });
+
+  test("records whether it worked, so a failure from a refused key clears once the provider answers", async () => {
+    const { fleet, driver, recorded } = setup();
+    driver.list = async () => {
+      throw new Error("Boat GET /sandboxes failed (HTTP 401 unauthorized)");
+    };
+    await fleet.reconcile("boxd");
+    driver.list = async () => [];
+    await fleet.reconcile("boxd");
+    expect(recorded).toEqual([
+      { kind: "provider", operation: "look for untracked VMs", provider: "boxd", status: "error", reason: "Boat GET /sandboxes failed (HTTP 401 unauthorized)" },
+      { kind: "provider", operation: "look for untracked VMs", provider: "boxd", status: "ok" },
+    ]);
   });
 
   test("runs on start, before VMs reconnect", async () => {

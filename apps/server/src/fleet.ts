@@ -894,17 +894,26 @@ fi`,
    * Deletes VMs at the provider that carry this bridge's label but that VM Bridge has no record of, such as one whose
    * create returned after VM Bridge stopped, and drops VMs whose create never finished. Only a sandbox whose key is one
    * VM Bridge gives its VMs or build VMs is touched, and none that an operation running now may still record.
-   * Concurrent callers share one check.
+   * Concurrent callers share one check. It is also a cheap test of the provider's key, so a success clears an earlier
+   * failure from Setup.
    */
   reconcile(provider: ProviderId): Promise<void> {
     let flight = this.reconciling.get(provider);
     if (!flight) {
+      const operation = "look for untracked VMs";
       flight = this.findUntracked(provider)
         .then(
-          () => void this.reconciledAt.set(provider, Date.now()),
-          (error) => this.failed("look for untracked VMs", error, { provider }),
+          () => {
+            this.reconciledAt.set(provider, Date.now());
+            this.traffic.record({ kind: "provider", operation, provider, status: "ok" });
+          },
+          (error) => this.failed(operation, error, { provider }),
         )
-        .finally(() => this.reconciling.delete(provider));
+        .finally(() => {
+          this.reconciling.delete(provider);
+          // The provider's flag in Setup comes with the overview.
+          this.emit("changed");
+        });
       this.reconciling.set(provider, flight);
     }
     return flight;

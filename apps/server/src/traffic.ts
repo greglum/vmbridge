@@ -66,6 +66,8 @@ export class Traffic {
   /**
    * The latest failure of each VM and provider in the last `problemMs` that the same operation has not since worked
    * again for. Only provider calls flag anything: they are what can leave a machine running or a snapshot behind.
+   * A failed base snapshot build does not: Setup shows it on its own, in plainer words, and a build VM left behind is
+   * flagged by its own failed delete.
    */
   problems(now = Date.now()) {
     const vms = new Map<string, string>();
@@ -77,6 +79,7 @@ export class Traffic {
       )
       .all(now - problemMs);
     for (const row of rows) {
+      if (/^build \w+ base snapshot$/.test(row.operation)) continue;
       const text = `${row.operation[0]?.toUpperCase() ?? ""}${row.operation.slice(1)} failed${row.reason ? `: ${row.reason}` : ""}`;
       if (row.vmId) vms.set(row.vmId, text);
       else if (row.provider) providers.set(row.provider, text);
