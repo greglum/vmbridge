@@ -8,7 +8,7 @@ export const site = {
   name: "VM Bridge",
   title: "VM Bridge: run T3 Code agents on cloud VMs",
   description:
-    "VM Bridge runs T3 Code agents on cloud VMs. Each project gets its own VM, which sleeps when idle and wakes on your next message. Free and open source.",
+    "VM Bridge runs T3 Code agents on cloud VMs. Each project gets its own VM, and more when it is busy. VMs sleep when idle and wake on your next message. Free and open source.",
   version: pkg.version,
 };
 

@@ -132,7 +132,7 @@ export default function Docs() {
               </p>
               <List
                 items={[
-                  "One project per VM. Projects never share a disk, a process list or a shell.",
+                  "Each project has its own VMs. Projects never share a disk, a process list or a shell. A busy project gets more than one.",
                   "A VM sleeps after it has been idle for a set time, and wakes when you send a message.",
                   "Several providers at once: boxd, Instabox, Daytona, Boat, Railway, E2B, Freestyle and Superserve. Pick one per repository, or let new VMs use the default.",
                   "Everything is set up from a web dashboard behind one password: provider keys, GitHub, agent sign-ins and device pairing.",
@@ -197,8 +197,8 @@ bun run build          # dist/vmbridge
                 ]}
               />
               <p>
-                Under <strong>Settings</strong> you choose the VM size, how many idle minutes before a VM sleeps (5 by default), and the T3 version
-                to install on VMs. Under <strong>Repositories</strong> you can send a repository to a given provider and VM size.
+                Under <strong>Settings</strong> you choose the VM size (by default the closest each provider has to 2 vCPU and 8 GB), how many
+                idle minutes before a VM sleeps (5 by default), and the T3 version to install on VMs. Under <strong>Repositories</strong> you can send a repository to a given provider and VM size.
               </p>
             </Section>
 
@@ -227,12 +227,23 @@ bun run build          # dist/vmbridge
                     <strong>Answered by the bridge.</strong> Config, the project list and threads on sleeping VMs come from VM Bridge in about 1 ms.
                   </>,
                   <>
-                    <strong>Forwarded to a VM.</strong> Messages, file browsing and Git status go to the project&apos;s VM, about 150 to 230 ms away
+                    <strong>Forwarded to a VM.</strong> Messages, file browsing and Git status go to the thread&apos;s VM, about 150 to 230 ms away
                     depending on the provider.
                   </>,
                   <>
                     <strong>New projects.</strong> Opening a repository creates a VM, installs Node, T3 and the agent CLIs, starts T3 and clones the
                     repository. A fresh VM is ready in 16 to 24 seconds, or about a minute on Railway.
+                  </>,
+                  <>
+                    <strong>New threads.</strong> Each goes to one of its project&apos;s VMs with room: fewer than 2 running turns per vCPU, under 80%
+                    of memory used and 3 GB of disk free. An awake VM comes first, then a sleeping one. With no room anywhere, VM Bridge adds a VM
+                    like the project&apos;s first, up to 4. If the provider refuses, the thread runs on the least loaded VM and its setup says it may
+                    be slow.
+                  </>,
+                  <>
+                    <strong>Running threads stay put.</strong> A thread&apos;s worktree, branch and unpushed changes live on its VM, so it never moves.
+                    A branch made on one VM shows on the project&apos;s other VMs once pushed. Extra VMs sleep like any other and are never deleted
+                    on their own.
                   </>,
                 ]}
               />

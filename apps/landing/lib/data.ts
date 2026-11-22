@@ -158,7 +158,7 @@ export const faq = [
   {
     question: "What is VM Bridge?",
     answer:
-      "VM Bridge is a free, open source server that runs T3 Code agents on cloud VMs. You pair T3 Code with it once, and it gives each project its own VM, puts idle VMs to sleep and wakes them when you send a message.",
+      "VM Bridge is a free, open source server that runs T3 Code agents on cloud VMs. You pair T3 Code with it once, and it gives each project its own VM (and more when the project gets busy), puts idle VMs to sleep and wakes them when you send a message.",
   },
   {
     question: "Does VM Bridge work with T3 Code?",
@@ -199,6 +199,11 @@ export const faq = [
     question: "Does VM Bridge run on Windows?",
     answer:
       "No. VM Bridge runs on macOS and Linux. T3 Code on your other devices connects to it over your local network or Tailscale.",
+  },
+  {
+    question: "What happens when I run many threads in one project?",
+    answer:
+      "Each new thread goes to one of the project's VMs that has room: fewer than 2 running turns per vCPU, under 80% of its memory used and 3 GB of disk free. When none has room, VM Bridge adds another VM like the first, up to 4 per project, and puts the thread there. If the provider refuses, the thread runs on the least loaded VM and says it may be slow. Running threads never move, and extra VMs sleep when idle like any other.",
   },
   {
     question: "How do sleep and wake work?",
