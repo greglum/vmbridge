@@ -10,6 +10,9 @@ import { Store } from "../src/store.ts";
 import type { Traffic } from "../src/traffic.ts";
 import { T3Rejected, type Backend } from "../src/vm/backend.ts";
 
+/** No resource readings: placement goes by thread counts and size labels alone. */
+const unmeasured = { get: () => null, lastDisk: () => null };
+
 function setup() {
   const store = new Store(openDatabase(":memory:"));
   store.insertVm({ id: "vm1", provider: "boxd", name: "vm1", size: "medium", state: "sleeping", createdAt: 0 });
@@ -20,7 +23,7 @@ function setup() {
   const backends = new Map<string, Backend>();
   const fleet = Object.assign(new EventEmitter(), { backend: (id: string) => backends.get(id), touch: () => {} }) as unknown as Fleet;
   const traffic = { record: () => {} } as unknown as Traffic;
-  const hub = new Hub(store, new Settings(store.db), fleet, traffic);
+  const hub = new Hub(store, new Settings(store.db), fleet, traffic, unmeasured);
   const rpc = new Rpc(hub, {} as never, {} as never, traffic, () => false);
   const sent: { exit?: { _tag: string; value?: unknown } }[] = [];
   const client: RpcClient = { clientId: "c1", cancels: new Map(), send: (frame) => sent.push(frame as (typeof sent)[number]), open: () => true };
@@ -133,7 +136,7 @@ describe("agent updates", () => {
       sleep: async (id: string) => (slept.push(id), backends.delete(id)),
     }) as unknown as Fleet;
     const traffic = { record: () => {} } as unknown as Traffic;
-    const hub = new Hub(store, new Settings(store.db), fleet, traffic);
+    const hub = new Hub(store, new Settings(store.db), fleet, traffic, unmeasured);
 
     // Offered from the cached report, without waking the VM.
     expect(hub.agents().find((agent) => agent.instanceId === "claudeAgent")?.versionAdvisory).toMatchObject({ status: "behind_latest" });

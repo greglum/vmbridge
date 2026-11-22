@@ -61,7 +61,8 @@ export async function start(options: StartOptions = {}) {
     fleet.emit("changed");
     void fleet.shareSkills();
   });
-  const hub = new Hub(store, settings, fleet, traffic);
+  const stats = new Stats(fleet);
+  const hub = new Hub(store, settings, fleet, traffic, stats);
   agents.onChange = () => {
     fleet.emit("changed");
     void hub.credentialsChanged().catch(() => {});
@@ -72,7 +73,6 @@ export async function start(options: StartOptions = {}) {
   const rpc = new Rpc(hub, clones, branches, traffic, () => secrets.has("github.token"));
   const gateway = new T3Gateway(hub, rpc, clients);
   const auth = new DashboardAuth(db, settings);
-  const stats = new Stats(fleet);
   const admin = new Admin({ version, startedAt: Date.now(), host, port, settings, secrets, store, fleet, hub, traffic, clients, auth, gateway, agents, stats, skills });
 
   const server = Bun.serve<SocketData>({

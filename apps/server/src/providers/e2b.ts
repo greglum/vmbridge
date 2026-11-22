@@ -34,6 +34,8 @@ export const e2bProvider: ProviderDefinition = {
     keepsMemory: true,
   },
   sizes: { small: "2 vCPU, 2 GB", medium: "4 vCPU, 4 GB", large: "8 vCPU, 8 GB" },
+  // 2 GB, the only 2 vCPU size, runs out of memory with two turns installing and building.
+  defaultSize: "medium",
 
   open(config) {
     const options: E2BOptions = { apiKey: required(config, "apiKey", "E2B API key"), autoPause: true };

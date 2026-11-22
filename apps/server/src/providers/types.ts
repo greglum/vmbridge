@@ -52,6 +52,8 @@ export interface ProviderDefinition {
   fields: ProviderField[];
   features: ProviderFeatures;
   sizes: Record<VmSize, string>;
+  /** The size new VMs get unless a setting or repository rule picks one: the closest to 2 vCPU and 8 GB. */
+  defaultSize: VmSize;
   open(config: ProviderConfig): Driver;
 }
 

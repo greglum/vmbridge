@@ -182,6 +182,11 @@ function VmCard({ data }: NodeProps<VmNode>) {
           <span key={project.id} className="flex min-w-0 items-center gap-2">
             <HugeiconsIcon icon={Folder01Icon} className="size-4 shrink-0 text-faint" strokeWidth={1.75} />
             <span className="truncate">{project.title}</span>
+            {project.vmIds.length > 1 && (
+              <span className="ml-auto shrink-0 text-xs text-faint">
+                VM {project.vmIds.indexOf(vm.id) + 1} of {project.vmIds.length}
+              </span>
+            )}
           </span>
         ))}
         {projects.length > shown.length && <span className="pl-6 text-faint">+{projects.length - shown.length} more</span>}
@@ -337,7 +342,13 @@ export function Canvas({ overview, traffic, onPair }: { overview: Overview; traf
       const position = vmPosition(0);
       nodes.push({ id: "empty-vms", type: "empty", position: narrow ? position : { ...position, y: position.y + 60 }, data: { label: "VMs appear when work starts" } });
     }
-    overview.vms.forEach((entry, index) => {
+    // A repository's VMs sit together, in the order it got them.
+    const rank = (vm: VmInfo) => {
+      const index = overview.projects.findIndex((project) => project.vmIds.includes(vm.id));
+      return index < 0 ? [Infinity, 0] : [index, overview.projects[index]!.vmIds.indexOf(vm.id)];
+    };
+    const vms = overview.vms.map((vm) => ({ vm, rank: rank(vm) })).sort((a, b) => a.rank[0]! - b.rank[0]! || a.rank[1]! - b.rank[1]!);
+    vms.forEach(({ vm: entry }, index) => {
       const projects = overview.projects.filter((project) => entry.projects.includes(project.id));
       const live = entry.state === "ready" || entry.state === "busy";
       const traffic = flow((event) => event.vmId === entry.id);
@@ -508,8 +519,9 @@ function NewVm({ overview }: { overview: Overview }) {
   const create = useAction();
   const [picking, setPicking] = useState(false);
   const [provider, setProvider] = useState(overview.defaultProvider);
-  const [size, setSize] = useState(overview.settings.vmSize);
+  const [picked, setSize] = useState(overview.settings.vmSize);
   const chosen = overview.providers.find((entry) => entry.id === provider) ?? overview.providers[0];
+  const size = picked ?? chosen?.defaultSize;
   const make = (body: object) => void create.run(() => api("/vms", { body })).then((ok) => ok && setPicking(false));
   return (
     <>

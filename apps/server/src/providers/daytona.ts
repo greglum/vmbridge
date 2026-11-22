@@ -31,6 +31,7 @@ export const daytonaProvider: ProviderDefinition = {
     // Daytona secrets only swap API keys into outbound HTTPS headers. There are no agent sign-ins or GitHub link.
   },
   sizes: { small: "1 vCPU, 1 GB", medium: "2 vCPU, 4 GB", large: "4 vCPU, 8 GB" },
+  defaultSize: "medium",
 
   open(config) {
     const provider = daytona({ apiKey: required(config, "apiKey", "Daytona API key") });

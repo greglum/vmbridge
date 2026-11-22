@@ -17,7 +17,8 @@ interface SettingValues {
   repoRules: RepoRule[];
   /** Non-secret provider fields, such as a Boat environment name. Secrets live in the secrets table. */
   providerOptions: Partial<Record<ProviderId, Record<string, string>>>;
-  vmSize: VmSize;
+  /** Null: each provider's own default size (see `ProviderDefinition.defaultSize`). */
+  vmSize: VmSize | null;
   idleMinutes: number;
   /** Exact npm `t3` version for new VMs; null resolves the latest release when a VM is created. */
   t3Version: string | null;
@@ -42,7 +43,7 @@ const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
   defaultProvider: () => null,
   repoRules: () => [],
   providerOptions: () => ({}),
-  vmSize: () => "medium",
+  vmSize: () => null,
   idleMinutes: () => 5,
   t3Version: () => null,
   github: () => null,

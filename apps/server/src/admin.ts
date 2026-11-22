@@ -296,7 +296,7 @@ export class Admin {
     if (path === "/settings" && method === "PUT") {
       const input = await body(request);
       if (input.vmSize !== undefined) {
-        if (!isSize(input.vmSize)) throw new BadRequest("Pick small, medium or large.");
+        if (input.vmSize !== null && !isSize(input.vmSize)) throw new BadRequest("Pick default, small, medium or large.");
         settings.set("vmSize", input.vmSize);
       }
       if (input.idleMinutes !== undefined) {
@@ -421,6 +421,7 @@ export class Admin {
       fields: definition.fields,
       features: definition.features,
       sizes: definition.sizes,
+      defaultSize: definition.defaultSize,
       values,
       secretsSet,
       configured: definition.fields.every((field) => !field.required || Boolean(all[field.key])),
@@ -462,7 +463,7 @@ export class Admin {
           lastConnectedAt: vm.lastConnectedAt,
           lastSleptAt: vm.lastSleptAt,
           sleepsAt: idle ? (vm.lastActivityAt ?? vm.createdAt) + idleMs : null,
-          projects: projects.filter((project) => project.vmId === vm.id).map((project) => project.id),
+          projects: projects.filter((project) => project.vms.some((entry) => entry.vmId === vm.id)).map((project) => project.id),
           sessions: hub.vmThreads(vm.id).map((thread) => {
             const model = thread.modelSelection as { model?: unknown } | undefined;
             return {
@@ -504,7 +505,7 @@ export class Admin {
         title: project.title,
         url: project.url,
         branch: project.branch,
-        vmId: project.vmId,
+        vmIds: project.vms.map((entry) => entry.vmId),
         createdAt: project.createdAt,
       })),
       skills: this.deps.skills.list(),

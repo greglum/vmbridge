@@ -219,7 +219,7 @@ try {
     ),
   );
   const project = (await admin<{ projects: Json[] }>("GET", "/overview")).projects.find((entry) => entry.id === projectId)!;
-  vmId = project.vmId;
+  vmId = project.vmIds[0];
   const cwd = clone.cwd as string;
   log(`project ${projectId} on VM ${vmId} at ${cwd}`);
 

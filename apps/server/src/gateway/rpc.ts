@@ -1,5 +1,6 @@
 import type { Traffic } from "../traffic.ts";
 import { message, NoProvider } from "../fleet.ts";
+import { primaryVm } from "../store.ts";
 import type { Frame } from "../vm/backend.ts";
 import type { Clones } from "./clones.ts";
 import { heldCommandTypes } from "./held.ts";
@@ -301,11 +302,12 @@ export class Rpc {
     this.reply(call, { entries });
   }
 
-  /** The project a request's `cwd` points into, when its VM cannot answer right now. */
+  /** The project a request's `cwd` points into, when its primary VM cannot answer right now. */
   private unreachableProject(call: Call) {
     const cwd = str(call.payload.cwd);
     const project = cwd ? projectForPath(cwd, this.hub.projects()) : undefined;
-    if (!project || (project.vmId && project.checkoutPath && this.hub.fleet.backend(project.vmId))) return undefined;
+    const primary = project && primaryVm(project);
+    if (!project || (primary?.checkoutPath && this.hub.fleet.backend(primary.vmId))) return undefined;
     return { project, cwd: cwd! };
   }
 
@@ -326,7 +328,10 @@ export class Rpc {
     }
   }
 
-  /** VCS streams follow their VM: native while it is awake, VM Bridge's own answer while it sleeps. */
+  /**
+   * VCS streams follow their VM: native while it is awake, VM Bridge's own answer while it sleeps. A project
+   * root path follows the primary VM, so branches made on another of the project's VMs show once pushed.
+   */
   private async vcsSubscription(call: Call) {
     const cwd = str(call.payload.cwd);
     const project = cwd ? projectForPath(cwd, this.hub.projects()) : undefined;
@@ -339,8 +344,9 @@ export class Rpc {
       upstream?.();
       upstream = undefined;
       const current = project ? this.hub.store.project(project.id) : null;
-      const vmId = current?.vmId ?? routed;
-      const backend = vmId && (!current || current.checkoutPath) ? this.hub.fleet.backend(vmId) : undefined;
+      const primary = current ? primaryVm(current) : undefined;
+      const vmId = current ? primary?.vmId : routed;
+      const backend = vmId && (!current || primary?.checkoutPath) ? this.hub.fleet.backend(vmId) : undefined;
       if (backend && vmId) {
         upstream = backend.request(call.tag, this.hub.into(call.payload, vmId), (frame) => {
           if (closed || serial !== generation || frame._tag === "Exit") return;
@@ -354,7 +360,7 @@ export class Rpc {
     };
     const onLifecycle = (vmId: string) => {
       const current = project ? this.hub.store.project(project.id) : null;
-      if ((current?.vmId ?? routed) === vmId) void update().catch(() => {});
+      if ((current ? primaryVm(current)?.vmId : routed) === vmId) void update().catch(() => {});
     };
     this.hub.on("awake", onLifecycle);
     this.hub.on("offline", onLifecycle);
@@ -394,7 +400,7 @@ export class Rpc {
             if (!snapshot) continue;
             // Continue the sequence from VM Bridge's own snapshots.
             nativeBase ??= Number(this.hub.setupSnapshot(threadId)?.sequence ?? -1) + 1;
-            this.chunk(call, { ...(this.hub.out(snapshot, vmId) as Wire), sequence: nativeBase + Number(snapshot.sequence) });
+            this.chunk(call, { ...this.hub.withBusyNotice(threadId, this.hub.out(snapshot, vmId) as Wire), sequence: nativeBase + Number(snapshot.sequence) });
           }
         });
         attached = backend;

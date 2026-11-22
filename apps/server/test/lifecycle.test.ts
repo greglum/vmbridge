@@ -11,9 +11,13 @@ import type { Shell, Wire } from "../src/gateway/types.ts";
 import type { Box, Driver } from "../src/providers/index.ts";
 import { saveEnvVars, Secrets, Settings } from "../src/settings.ts";
 import { Skills } from "../src/skills.ts";
+import type { VmLoad } from "../src/placement.ts";
 import { Store } from "../src/store.ts";
 import type { Traffic } from "../src/traffic.ts";
 import { T3Rejected } from "../src/vm/backend.ts";
+
+/** No resource readings: placement goes by thread counts and size labels alone. */
+const unmeasured = { get: () => null, lastDisk: () => null };
 
 /** Returned by a fake T3 answer to leave the request open, as T3 does for streams. */
 const open = Symbol("open");
@@ -35,6 +39,8 @@ function fakeT3() {
       const path = new URL(request.url).pathname;
       if (path === "/api/auth/websocket-ticket/rpc") return Response.json({ ticket: "ticket" });
       if (path === "/api/orchestration/shell") return Response.json(state.shell);
+      if (path === "/api/projects") return Response.json({ projects: [] });
+      if (path === "/api/projects/mutate") return Response.json({});
       if (path === "/ws" && server.upgrade(request, { data: undefined })) return undefined;
       return new Response(null, { status: 404 });
     },
@@ -265,9 +271,74 @@ describe("checkpoints", () => {
   });
 });
 
+describe("placing new threads", () => {
+  /** A project already on its primary VM, and the live turns placement sees on each VM (2 vCPUs each). */
+  async function placed() {
+    const context = setup();
+    context.fleet.onConnect = async () => {};
+    context.store.insertProject({ id: "p1", url: "https://github.com/acme/app.git", branch: null, title: "app", createdAt: 0 });
+    const primary = await context.fleet.place("p1");
+    const turns = new Map<string, number>();
+    const claimed: string[] = [];
+    const placeThread = () =>
+      context.fleet.placeThread("p1", {
+        load: (vm): VmLoad => ({ vmId: vm.id, awake: Boolean(context.fleet.backend(vm.id)), turns: turns.get(vm.id) ?? 0, vcpus: 2, memory: null, disk: null }),
+        placed: (vmId) => claimed.push(vmId),
+        progress: () => {},
+      });
+    return { ...context, primary, turns, claimed, placeThread };
+  }
+
+  test("a VM with room takes the thread", async () => {
+    const { primary, turns, events, placeThread, claimed } = await placed();
+    turns.set(primary, 3);
+    expect(await placeThread()).toEqual({ vmId: primary, notice: null });
+    expect(claimed).toEqual([primary]);
+    expect(events).toEqual(["create", "wake"]);
+  });
+
+  test("a full VM gets a second one like it, which holds the same project under the same ID", async () => {
+    const { primary, turns, store, settings, placeThread } = await placed();
+    // A rule changed since the primary was made: the new VM still matches the primary.
+    settings.set("repoRules", [{ repo: "acme/app", provider: null, size: "large" }]);
+    turns.set(primary, 4);
+    const second = await placeThread();
+    expect(second.notice).toBeNull();
+    expect(second.vmId).not.toBe(primary);
+    expect(store.vm(second.vmId)).toMatchObject({ provider: "boxd", size: store.vm(primary)!.size });
+    expect(store.project("p1")?.vms.map((entry) => entry.vmId)).toEqual([primary, second.vmId]);
+    expect(store.project("p1")?.vms[1]?.checkoutPath).toBe("/workspace/app");
+  });
+
+  test("a sleeping VM with room is woken before a new one is made", async () => {
+    const { primary, turns, fleet, events, placeThread } = await placed();
+    turns.set(primary, 4);
+    const second = (await placeThread()).vmId;
+    await fleet.sleep(second);
+    events.length = 0;
+    expect(await placeThread()).toEqual({ vmId: second, notice: null });
+    expect(events).toEqual(["wake"]);
+  });
+
+  test("when the provider refuses another VM, the thread goes to the least loaded one with a notice, and later threads do not ask again", async () => {
+    const { primary, turns, store, driver, events, placeThread } = await placed();
+    turns.set(primary, 5);
+    driver.create = async () => {
+      events.push("create");
+      throw new Error("Quota exceeded.");
+    };
+    events.length = 0;
+    expect(await placeThread()).toEqual({ vmId: primary, notice: "This VM is running 5 threads on 2 vCPUs, so this one may be slow." });
+    // The refused VM leaves no row behind.
+    expect(store.vms().map((vm) => vm.id)).toEqual([primary]);
+    expect((await placeThread()).vmId).toBe(primary);
+    expect(events).toEqual(["create"]);
+  });
+});
+
 function idleFleet() {
   const context = setup();
-  const hub = new Hub(context.store, context.settings, context.fleet, context.traffic);
+  const hub = new Hub(context.store, context.settings, context.fleet, context.traffic, unmeasured);
   // Only the fleet's own lifecycle is under test here, not T3's streams.
   context.fleet.onConnect = async () => {};
   return { ...context, hub };
@@ -482,7 +553,7 @@ describe("sign-in changes", () => {
 
     signIns.opencodeApiKey = "oc-new";
     const restarted = newFleet();
-    const hub = new Hub(store, settings, restarted, traffic);
+    const hub = new Hub(store, settings, restarted, traffic, unmeasured);
     restarted.onConnect = async () => {};
     await restarted.ensure(vm.id);
     await hub.sweep();
