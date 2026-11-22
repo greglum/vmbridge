@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { parseAsString, parseAsStringLiteral, useQueryStates } from "nuqs";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { File01Icon, FlowConnectionIcon, LaptopIcon, Logout01Icon, MagicWand01Icon, Plug01Icon, Settings01Icon } from "@hugeicons/core-free-icons";
+import { Coins01Icon, File01Icon, FlowConnectionIcon, LaptopIcon, Logout01Icon, MagicWand01Icon, Plug01Icon, Settings01Icon } from "@hugeicons/core-free-icons";
 import { Button } from "@/components/ui/button";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { api, onLoggedOut, useLive } from "./api.ts";
 import { Logo } from "./brand.tsx";
 import { Canvas } from "./Canvas.tsx";
+import { Costs } from "./Costs.tsx";
 import { Devices } from "./Devices.tsx";
 import { Logs } from "./Logs.tsx";
 import { boxStyle, NavIndicator, useSlidingNav } from "./nav.tsx";
@@ -22,6 +23,7 @@ import { Skills } from "./Skills.tsx";
 const views = [
   { id: "canvas", label: "Canvas", icon: FlowConnectionIcon },
   { id: "logs", label: "Logs", icon: File01Icon },
+  { id: "costs", label: "Costs", icon: Coins01Icon },
   { id: "setup", label: "Setup", icon: Plug01Icon },
   { id: "skills", label: "Skills", icon: MagicWand01Icon },
   { id: "devices", label: "Devices", icon: LaptopIcon },
@@ -118,6 +120,7 @@ function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
         <main className="relative mx-2 min-h-0 flex-1 overflow-hidden rounded-xl border bg-background sm:mr-3 sm:mb-3 sm:ml-0">
           {overview && view === "canvas" && <Canvas overview={overview} traffic={traffic} onPair={() => go("devices")} />}
           {overview && view === "logs" && <Logs overview={overview} traffic={traffic} />}
+          {overview && view === "costs" && <Costs overview={overview} />}
           {overview && view === "setup" && <Setup overview={overview} />}
           {overview && view === "skills" && <Skills overview={overview} />}
           {overview && view === "devices" && <Devices overview={overview} />}

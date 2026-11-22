@@ -19,6 +19,7 @@ import { Secrets, Settings } from "./settings.ts";
 import { Skills } from "./skills.ts";
 import { Store } from "./store.ts";
 import { Traffic } from "./traffic.ts";
+import { Usage } from "./usage.ts";
 import { Stats } from "./vm/stats.ts";
 
 export { version };
@@ -62,6 +63,9 @@ export async function start(options: StartOptions = {}) {
     void fleet.shareSkills();
   });
   const stats = new Stats(fleet);
+  const usage = new Usage(store, () => fleet.connected());
+  for (const event of ["changed", "awake", "offline"] as const) fleet.on(event, () => usage.sync());
+  usage.start();
   const hub = new Hub(store, settings, fleet, traffic, stats);
   agents.onChange = () => {
     fleet.emit("changed");
@@ -73,7 +77,7 @@ export async function start(options: StartOptions = {}) {
   const rpc = new Rpc(hub, clones, branches, traffic, () => secrets.has("github.token"));
   const gateway = new T3Gateway(hub, rpc, clients);
   const auth = new DashboardAuth(db, settings);
-  const admin = new Admin({ version, startedAt: Date.now(), host, port, settings, secrets, store, fleet, hub, traffic, clients, auth, gateway, agents, stats, skills });
+  const admin = new Admin({ version, startedAt: Date.now(), host, port, settings, secrets, store, fleet, hub, traffic, clients, auth, gateway, agents, stats, skills, usage });
 
   const server = Bun.serve<SocketData>({
     hostname: host,
@@ -136,6 +140,7 @@ export async function start(options: StartOptions = {}) {
       await hub.sleepIdle(15_000);
       hub.close();
       fleet.close();
+      usage.close();
       db.close();
     },
   };

@@ -311,6 +311,88 @@ export interface Overview {
   instructions: InstructionFile[];
 }
 
+export type Currency = "USD" | "EUR";
+
+/** A provider's published prices for the machines VM Bridge creates. Null: the provider does not publish it. */
+export interface ProviderPricing {
+  provider: ProviderId;
+  label: string;
+  /** The machine each size gets. */
+  machines: Record<VmSize, string>;
+  currency: Currency;
+  /** The pricing page the numbers come from. */
+  source: string;
+  /** When they were read from it, YYYY-MM-DD. */
+  asOf: string;
+  /** Per hour while running, at full use. */
+  runningHourly: Record<VmSize, number>;
+  /** Per hour while asleep, before storage billed per GiB. */
+  asleepHourly: Record<VmSize, number | null>;
+  /** Disk or snapshot storage per GiB-month. Null when included or not published. */
+  storageGibMonth: number | null;
+  sleeping: string;
+  snapshots: string;
+  plans: string;
+  /** Why an estimate may be off, such as billing only busy CPU. */
+  caveat?: string;
+}
+
+/** An estimated cost in one currency. `partial` when part of the time has no published price. */
+export interface Estimate {
+  currency: Currency;
+  amount: number;
+  partial: boolean;
+}
+
+export interface VmUsage {
+  vmId: string;
+  name: string;
+  provider: ProviderId;
+  size: VmSize;
+  awakeMs: number;
+  asleepMs: number;
+  /** The VM was deleted since. */
+  deleted: boolean;
+  estimate: Estimate;
+}
+
+export interface ProviderUsage {
+  provider: ProviderId;
+  awakeMs: number;
+  asleepMs: number;
+  estimate: Estimate;
+}
+
+/** Awake time of the VMs holding a repository. A VM holding several counts for each. */
+export interface RepoUsage {
+  /** `owner/name` for GitHub, else the URL. */
+  repo: string;
+  awakeMs: number;
+  vms: number;
+}
+
+/** Base snapshots or sleep checkpoints kept on one provider. */
+export interface SnapshotUsage {
+  provider: ProviderId;
+  kind: "base" | "checkpoint";
+  count: number;
+  /** Total time they were kept. */
+  heldMs: number;
+}
+
+/** Usage and estimated costs between `from` and `to`. */
+export interface UsageReport {
+  from: number;
+  to: number;
+  prices: ProviderPricing[];
+  providers: ProviderUsage[];
+  vms: VmUsage[];
+  repos: RepoUsage[];
+  snapshots: SnapshotUsage[];
+  /** Per currency, since providers bill in different ones. */
+  totals: Estimate[];
+}
+
 export interface TrafficEvent {
   id: number;
   at: number;
