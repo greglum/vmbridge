@@ -51,6 +51,9 @@ export function App() {
   );
 }
 
+// Loopback traffic never leaves the machine, so plain HTTP is only a concern from other addresses.
+const unencrypted = location.protocol === "http:" && !/^(localhost|127(\.\d+){3}|\[::1\])$/.test(location.hostname);
+
 function Login({ onLoggedIn }: { onLoggedIn: () => void }) {
   const [key, setKey] = useState("");
   const action = useAction();
@@ -76,6 +79,7 @@ function Login({ onLoggedIn }: { onLoggedIn: () => void }) {
           <Button type="submit" size="lg" className="h-10" disabled={action.busy || !key}>
             Log in
           </Button>
+          {unencrypted && <p className="text-center text-sm text-muted-foreground">This connection is not encrypted. Turn on Tailscale HTTPS in Settings.</p>}
         </FieldGroup>
       </form>
     </main>
