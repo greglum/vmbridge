@@ -136,6 +136,24 @@ const migrations = [
   `,
   // The local branches each of a project's VMs had when last read, for while it sleeps.
   `ALTER TABLE project_vms ADD COLUMN branches TEXT;`,
+  // The snapshot new VMs of each provider and size start from (see vm/bases.ts), the VM building the next one, and
+  // replaced snapshots still to delete.
+  `
+  CREATE TABLE base_snapshots (
+    provider TEXT NOT NULL,
+    size TEXT NOT NULL,
+    snapshot TEXT,
+    stamp TEXT,
+    created_at INTEGER,
+    builder TEXT,
+    PRIMARY KEY (provider, size)
+  );
+  CREATE TABLE retired_snapshots (
+    provider TEXT NOT NULL,
+    snapshot TEXT NOT NULL,
+    PRIMARY KEY (provider, snapshot)
+  );
+  `,
 ];
 
 export function openDatabase(path: string): Database {
