@@ -1,6 +1,7 @@
 import type { Server } from "bun";
 import {
   agentKinds,
+  machineNameMaxLength,
   providerIds,
   vmSizes,
   type LiveMessage,
@@ -23,7 +24,7 @@ import { githubName } from "./gateway/repos.ts";
 import { isWorking } from "./gateway/types.ts";
 import { disableTailscaleHttps, enableTailscaleHttps, networkInfo } from "./network.ts";
 import { providers } from "./providers/index.ts";
-import { envVars, saveEnvVars, type Secrets, type Settings } from "./settings.ts";
+import { envVars, machineName, saveEnvVars, type Secrets, type Settings } from "./settings.ts";
 import { SkillError, type Skills } from "./skills.ts";
 import type { Store } from "./store.ts";
 import type { Traffic } from "./traffic.ts";
@@ -360,6 +361,13 @@ export class Admin {
         if (version && !/^\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(version)) throw new BadRequest("Use an exact version, such as 0.1.11.");
         settings.set("t3Version", version || null);
       }
+      if (input.machineName !== undefined) {
+        const name = machineName(text(input.machineName, "The machine name"));
+        if (!name) throw new BadRequest(`Keep the machine name to ${machineNameMaxLength} characters.`);
+        settings.set("machineName", name);
+        // Clients subscribed to T3's server config get the new name right away.
+        hub.emit("config");
+      }
       // A new default size needs its own base snapshot, and a new T3 version an updated one. Either may fix a failed build.
       if (input.vmSize !== undefined || input.t3Version !== undefined) fleet.prepareBases(true);
       fleet.emit("changed");
@@ -554,7 +562,12 @@ export class Admin {
       github: secrets.has("github.token") ? settings.get("github") : null,
       agents,
       env: Object.keys(envVars(secrets)),
-      settings: { vmSize: settings.get("vmSize"), idleMinutes: settings.get("idleMinutes"), t3Version: settings.get("t3Version") },
+      settings: {
+        machineName: settings.get("machineName"),
+        vmSize: settings.get("vmSize"),
+        idleMinutes: settings.get("idleMinutes"),
+        t3Version: settings.get("t3Version"),
+      },
       clients: clients.list(gateway.connected()),
       vms,
       projects: projects.map((project) => ({

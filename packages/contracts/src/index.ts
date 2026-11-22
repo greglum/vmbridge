@@ -6,6 +6,8 @@ export type ProviderId = (typeof providerIds)[number];
 export const vmSizes = ["small", "medium", "large"] as const;
 export type VmSize = (typeof vmSizes)[number];
 
+export const machineNameMaxLength = 40;
+
 export interface ProviderField {
   key: string;
   label: string;
@@ -284,6 +286,8 @@ export interface GitHubAccount {
 }
 
 export interface BridgeSettings {
+  /** The name T3 shows for this machine. */
+  machineName: string;
   /** Null: each provider's default size. */
   vmSize: VmSize | null;
   idleMinutes: number;

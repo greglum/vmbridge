@@ -3,7 +3,7 @@ import { parseAsStringLiteral, useQueryState } from "nuqs";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "sonner";
 import { Add01Icon, CommandLineIcon, ComputerIcon, Delete02Icon, GitBranchIcon, GithubIcon, GlobalIcon, Key01Icon, UnfoldMoreIcon } from "@hugeicons/core-free-icons";
-import { vmSizes, type BridgeSettings, type NetworkInfo, type Overview, type ProviderId, type RepoRule, type VmSize } from "@vmbridge/contracts";
+import { machineNameMaxLength, vmSizes, type BridgeSettings, type NetworkInfo, type Overview, type ProviderId, type RepoRule, type VmSize } from "@vmbridge/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -56,10 +56,21 @@ function VmSettings({ overview }: { overview: Overview }) {
         className="flex flex-col gap-6"
         onSubmit={(event) => {
           event.preventDefault();
-          void action.run(() => api("/settings", { method: "PUT", body: form })).then((ok) => ok && toast.success("Settings saved."));
+          void action.run(async () => setForm(await api<BridgeSettings>("/settings", { method: "PUT", body: form }))).then((ok) => ok && toast.success("Settings saved."));
         }}
       >
         <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="machine-name">Machine name</FieldLabel>
+            <Input
+              id="machine-name"
+              className="h-9"
+              maxLength={machineNameMaxLength}
+              placeholder="VM Bridge"
+              value={form.machineName}
+              onChange={(event) => setForm({ ...form, machineName: event.target.value })}
+            />
+          </Field>
           <Field>
             <FieldLabel htmlFor="vm-size">Size for new VMs</FieldLabel>
             <Select value={form.vmSize ?? fallback} onValueChange={(value) => setForm({ ...form, vmSize: value === fallback ? null : (value as VmSize) })}>
