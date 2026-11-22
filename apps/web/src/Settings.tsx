@@ -337,6 +337,7 @@ function Addresses() {
 }
 
 function Password({ onLoggedOut }: { onLoggedOut: () => void }) {
+  const [current, setCurrent] = useState("");
   const [password, setPassword] = useState("");
   const action = useAction();
   return (
@@ -345,9 +346,13 @@ function Password({ onLoggedOut }: { onLoggedOut: () => void }) {
         className="flex flex-col gap-4"
         onSubmit={(event) => {
           event.preventDefault();
-          void action.run(() => api("/key", { body: { key: password } })).then((ok) => ok && onLoggedOut());
+          void action.run(() => api("/key", { body: { current, key: password } })).then((ok) => ok && onLoggedOut());
         }}
       >
+        <Field>
+          <FieldLabel htmlFor="current-password">Current password</FieldLabel>
+          <Input id="current-password" className="h-9" type="password" autoComplete="current-password" value={current} onChange={(event) => setCurrent(event.target.value)} />
+        </Field>
         <Field data-invalid={Boolean(action.error)}>
           <FieldLabel htmlFor="new-password">New password</FieldLabel>
           <Input id="new-password" className="h-9" type="password" autoComplete="new-password" minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} />
@@ -355,7 +360,7 @@ function Password({ onLoggedOut }: { onLoggedOut: () => void }) {
           {action.error && <FieldError>{action.error}</FieldError>}
         </Field>
         <div className="flex gap-2">
-          <Button type="submit" size="lg" className="px-4" disabled={action.busy || password.length < 8}>
+          <Button type="submit" size="lg" className="px-4" disabled={action.busy || !current || password.length < 8}>
             Change password
           </Button>
           <Button type="button" variant="outline" size="lg" className="px-4" onClick={() => void api("/logout", { body: {} }).finally(onLoggedOut)}>
