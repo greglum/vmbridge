@@ -135,9 +135,16 @@ rmSync(incomingPath);
 /**
  * Brings the VM's skills and instructions to `state`, sending only skills whose content the VM does not have.
  * Agents see them on their next session, so nothing restarts. Returns whether anything changed on the VM.
+ * `manifestText` is the VM's `skills.json` when the caller already read it, null when it has none.
  */
-export async function syncSkills(box: Box, state: SkillsState, files: (name: string) => SkillFile[]) {
-  const manifest = await box.files.read(`${root}/skills.json`).then((text) => JSON.parse(text) as Manifest, () => null);
+export async function syncSkills(box: Box, state: SkillsState, files: (name: string) => SkillFile[], manifestText?: string | null) {
+  const text = manifestText === undefined ? await box.files.read(`${root}/skills.json`).catch(() => null) : manifestText;
+  let manifest: Manifest | null = null;
+  try {
+    if (text !== null) manifest = JSON.parse(text) as Manifest;
+  } catch {
+    // A damaged manifest counts as none: every skill is sent again.
+  }
   if (manifest?.fingerprint === state.fingerprint) return false;
   const skills = state.skills.map((skill) => (manifest?.skills[skill.name] === skill.hash ? skill : { ...skill, files: files(skill.name) }));
   await box.files.write(
