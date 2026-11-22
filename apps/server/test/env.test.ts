@@ -2,16 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Box } from "../src/providers/index.ts";
+import { recordingBox } from "./vm-program.ts";
 import { envNameProblem, envValueProblem, prepareVm, type VmCredentials } from "../src/vm/runtime.ts";
 
 /** The files prepareVm writes into the VM. */
 async function vmFiles(credentials: VmCredentials) {
-  const written: Record<string, string> = {};
-  const box = {
-    run: async () => ({ ok: true, exitCode: 0, stdout: "", output: "" }),
-    files: { write: async (files: Record<string, string>) => Object.assign(written, files) },
-  } as unknown as Box;
+  const { box, written } = recordingBox();
   await prepareVm(box, "1.0.0", credentials);
   return written;
 }

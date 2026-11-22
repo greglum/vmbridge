@@ -29,6 +29,25 @@ export class NoProvider extends Error {
   }
 }
 
+/**
+ * Logs how long each step of a VM operation took, one line per step, so slow wakes and connects show where the time
+ * went. Only step names and durations: never commands or their output.
+ */
+function stopwatch(operation: string, vmId: string) {
+  const started = performance.now();
+  let last = started;
+  return {
+    lap(step: string) {
+      const now = performance.now();
+      console.log(`[${operation} ${vmId}] ${step}: ${Math.round(now - last)} ms`);
+      last = now;
+    },
+    done() {
+      console.log(`[${operation} ${vmId}] total: ${Math.round(performance.now() - started)} ms`);
+    },
+  };
+}
+
 const shortId = () => crypto.randomUUID().replaceAll("-", "").slice(0, 12);
 
 /** Provider config: the non-secret options plus every secret field, read from the secrets table. */
@@ -165,9 +184,11 @@ export class Fleet extends EventEmitter<FleetEvents> {
     // Under the VM's lock, so deleting a VM that is still being created waits and then deletes it at the provider too.
     return this.exclusive(id, async () => {
       const started = performance.now();
+      const watch = stopwatch("create", id);
       let box: Box;
       try {
         box = await driver.create({ key: id, size, labels: this.labels(), ports: [t3Port] });
+        watch.lap("provider create");
       } catch (error) {
         this.traffic.record({ kind: "provider", operation: "create VM", vmId: id, status: "error" });
         // A refused create leaves nothing at the provider, so a caller with its own error report drops the row.
@@ -214,7 +235,11 @@ export class Fleet extends EventEmitter<FleetEvents> {
     const wasAsleep = (vm.lastSleptAt ?? 0) >= (vm.lastConnectedAt ?? 0);
     this.setState(vmId, "starting");
     const started = performance.now();
+    const watch = stopwatch("wake", vmId);
     let box: Box | undefined;
+    // Looked up while the VM wakes. Awaited below; until then, a failed lookup must not count as unhandled.
+    const version = resolveT3Version(this.settings.get("t3Version"));
+    version.catch(() => {});
     try {
       const driver = this.driver(vm.provider);
       box = await driver.wake({
@@ -225,6 +250,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
         sandboxId: vm.sandboxId,
         checkpoint: vm.checkpoint,
       });
+      watch.lap("provider wake");
       // Restoring a checkpoint makes a new sandbox. It holds the files now, so the checkpoint can go.
       if (box.id !== vm.sandboxId) {
         this.store.updateVm(vmId, { sandboxId: box.id, checkpoint: null });
@@ -233,13 +259,13 @@ export class Fleet extends EventEmitter<FleetEvents> {
         }
       }
       this.boxes.set(vmId, box);
-      const version = await resolveT3Version(this.settings.get("t3Version"));
       // A T3 server still running from before VM Bridge restarted may be in the middle of a turn: then the idle sweep restarts it later.
-      const backend = await this.connect(vm, box, version, async (preview) => {
+      const backend = await this.connect(vm, box, await version, async (preview) => {
         if (wasAsleep || !vm.t3Token) return true;
         const shell = await new Backend(vmId, preview, vm.t3Token).json<Shell>("/api/orchestration/shell").catch(() => null);
         return Boolean(shell && !hasLiveWork(shell));
-      });
+      }, watch);
+      watch.done();
       this.touch(vmId);
       this.traffic.record({ kind: "provider", operation: "wake VM", vmId, status: "ok", durationMs: Math.round(performance.now() - started) });
       return backend;
@@ -259,18 +285,36 @@ export class Fleet extends EventEmitter<FleetEvents> {
    * Installs what the VM needs, gives it the current sign-ins, and connects to its T3 server. A server
    * running from before with older sign-ins is restarted first when `idle` says nothing runs on it.
    */
-  private async connect(vm: VmRow, box: Box, version: string, idle: (preview: Preview) => Promise<boolean>): Promise<Backend> {
-    // Codex on this VM may have refreshed its own tokens while VM Bridge could not reach it.
-    const codexAuth = await readCodexAuth(box);
-    if (codexAuth) this.agents.adoptCodex(codexAuth);
+  private async connect(
+    vm: VmRow,
+    box: Box,
+    version: string,
+    idle: (preview: Preview) => Promise<boolean>,
+    watch = stopwatch("connect", vm.id),
+  ): Promise<Backend> {
+    // Codex on this VM may have refreshed its own tokens while VM Bridge could not reach it. Refreshing here with the
+    // refresh token that retired would fail, so take the VM's first. Otherwise `prepareVm` keeps the newer file.
+    if (this.agents.codexDue()) {
+      const codexAuth = await readCodexAuth(box);
+      if (codexAuth) this.agents.adoptCodex(codexAuth);
+      watch.lap("read Codex sign-in");
+    }
     const credentials = await this.credentials();
     const fingerprint = credentialsFingerprint(credentials);
-    await prepareVm(box, version, credentials);
+    const [prepared, preview] = await Promise.all([prepareVm(box, version, credentials), box.preview(t3Port)]);
+    watch.lap("prepare VM, preview URL");
+    if (prepared.codexAuth) {
+      this.agents.adoptCodex(prepared.codexAuth);
+      // A file VM Bridge did not adopt, such as another account's, is replaced after all.
+      const ours = (await this.credentials()).codexAuthJson;
+      if (ours && ours !== prepared.codexAuth) await writeCodexAuth(box, ours);
+      watch.lap("adopt Codex sign-in");
+    }
     // Before T3 starts or VM Bridge sends it anything, so no agent on a woken VM runs with old skills.
-    await this.syncSkills(vm.id, box);
-    const preview = await box.preview(t3Port);
+    if (await this.syncSkills(vm.id, box, prepared.skillsManifest)) watch.lap("sync skills");
     const restart = vm.t3Credentials !== fingerprint && (await idle(preview));
-    let server = await startT3(box, vm.t3Token, restart);
+    let server = await startT3(box, vm.t3Token, restart, prepared.t3);
+    watch.lap("start T3, session");
     if (server.descriptor.orchestrationProtocolVersion !== 2) {
       throw new Error(`T3 ${version} speaks orchestration protocol ${server.descriptor.orchestrationProtocolVersion}. VM Bridge supports 2.`);
     }
@@ -285,8 +329,10 @@ export class Fleet extends EventEmitter<FleetEvents> {
         backend = new Backend(vm.id, preview, server.token);
         await backend.connect();
       }
+      watch.lap("open T3 socket");
       this.store.updateVm(vm.id, { t3Token: server.token, t3Version: version, t3Credentials: server.credentials, lastConnectedAt: Date.now() });
       await this.onConnect(vm.id, backend);
+      watch.lap("read T3 config");
     } catch (error) {
       await backend.close();
       throw error;
@@ -362,20 +408,24 @@ export class Fleet extends EventEmitter<FleetEvents> {
     );
   }
 
-  /** Brings a VM's skills and instructions up to date. A VM that never had any, and still should not, is left alone. */
-  private async syncSkills(vmId: string, box: Box) {
+  /**
+   * Brings a VM's skills and instructions up to date. A VM that never had any, and still should not, is left alone.
+   * `manifest` is the VM's skills manifest when the caller read it already. Returns whether anything changed on the VM.
+   */
+  private async syncSkills(vmId: string, box: Box, manifest?: string | null) {
     const state = this.skills.state();
-    if (!state.skills.length && !state.instructions.length && !this.store.vm(vmId)?.skills) return;
+    if (!state.skills.length && !state.instructions.length && !this.store.vm(vmId)?.skills) return false;
     const started = performance.now();
+    let changed: boolean;
     try {
-      if (await syncSkills(box, state, (name) => this.skills.files(name))) {
-        this.traffic.record({ kind: "provider", operation: "sync skills", vmId, status: "ok", durationMs: Math.round(performance.now() - started) });
-      }
+      changed = await syncSkills(box, state, (name) => this.skills.files(name), manifest);
+      if (changed) this.traffic.record({ kind: "provider", operation: "sync skills", vmId, status: "ok", durationMs: Math.round(performance.now() - started) });
     } catch (error) {
       this.traffic.record({ kind: "provider", operation: "sync skills", vmId, status: "error" });
       throw error;
     }
     this.store.updateVm(vmId, { skills: state.fingerprint });
+    return changed;
   }
 
   /**

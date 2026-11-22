@@ -15,6 +15,7 @@ import type { VmLoad } from "../src/placement.ts";
 import { Store } from "../src/store.ts";
 import type { Traffic } from "../src/traffic.ts";
 import { T3Rejected } from "../src/vm/backend.ts";
+import { programFiles } from "./vm-program.ts";
 
 /** No resource readings: placement goes by thread counts and size labels alone. */
 const unmeasured = { get: () => null, lastDisk: () => null };
@@ -96,7 +97,7 @@ function setup(skillRoots?: string[]) {
   const secrets = new Secrets(db);
   const traffic = { record: () => {} } as unknown as Traffic;
   const signIns: AgentSecrets = {};
-  const agents = { vmSecrets: async () => ({ ...signIns }), adoptCodex: () => {} } as unknown as AgentAuth;
+  const agents = { vmSecrets: async () => ({ ...signIns }), adoptCodex: () => {}, codexDue: () => false } as unknown as AgentAuth;
   const skills = skillRoots ? new Skills(db, () => skillRoots) : new Skills(db);
 
   /** The VM's files, and its T3 server: whether it runs and the env file it started with, as agents inherit it. */
@@ -105,15 +106,37 @@ function setup(skillRoots?: string[]) {
   /** What each skills sync sent, and the order skill syncs and T3 starts happened in. */
   const synced: { skills: { name: string; files?: unknown[] }[]; instructions: { agent: string; text: string }[] }[] = [];
   const order: string[] = [];
+  /** Every call that reaches the VM: commands, file reads and writes, starts and preview URLs. */
+  const calls: string[] = [];
+  const startedPath = "/workspace/.vmbridge/t3/credentials";
   const startServer = () => {
     server.running = true;
     server.env = files[envPath] ?? "";
     // As start-t3.sh does.
-    files["/workspace/.vmbridge/t3/credentials"] = /^VMBRIDGE_CREDENTIALS=(.*)$/m.exec(server.env)?.[1] ?? "";
+    files[startedPath] = /^VMBRIDGE_CREDENTIALS=(.*)$/m.exec(server.env)?.[1] ?? "";
+  };
+  /** Does what a program `prepareVm` or `writeCredentials` sends does to the files, and reports as `prepareVm` reads it. */
+  const runProgram = (program: string) => {
+    Object.assign(files, programFiles(program));
+    for (const [, paths] of program.matchAll(/^rm -f (.+)$/gm)) for (const path of paths!.split(" ")) delete files[path];
+    const incoming = "/workspace/.vmbridge/codex/auth.json.incoming";
+    if (files[incoming] !== undefined) {
+      files["/workspace/.vmbridge/codex/auth.json"] = files[incoming];
+      delete files[incoming];
+    }
+    if (!program.includes("setup.sh")) return ok();
+    const report = [
+      files["/workspace/.vmbridge/skills.json"] !== undefined && `skills ${btoa(files["/workspace/.vmbridge/skills.json"])}`,
+      server.running && `t3 ${btoa(JSON.stringify({ orchestrationProtocolVersion: 2 }))}`,
+      files[startedPath] !== undefined && `started ${files[startedPath]}`,
+    ];
+    return ok(report.filter(Boolean).join("\n"));
   };
   const box = {
     id: "sb1",
-    run: async (command: string) => {
+    run: async (command: string, options: { stdin?: string } = {}) => {
+      calls.push(command);
+      if (command === "bash -s") return runProgram(options.stdin!);
       if (command.includes("auth session issue")) return ok("token");
       if (command.includes("well-known")) return server.running ? ok(JSON.stringify({ orchestrationProtocolVersion: 2 })) : failed;
       if (command.startsWith("rm -f ")) for (const path of command.slice(6).split(" ")) delete files[path];
@@ -133,12 +156,17 @@ function setup(skillRoots?: string[]) {
     },
     files: {
       read: async (path: string) => {
+        calls.push(`read ${path}`);
         if (files[path] === undefined) throw new Error("No such file.");
         return files[path];
       },
-      write: async (written: Record<string, string>) => void Object.assign(files, written),
+      write: async (written: Record<string, string>) => {
+        calls.push(`write ${Object.keys(written).join(" ")}`);
+        Object.assign(files, written);
+      },
     },
     start: async () => {
+      calls.push("start");
       server.starts++;
       order.push("start");
       startServer();
@@ -152,7 +180,7 @@ function setup(skillRoots?: string[]) {
         if (server.failRestart) throw new Error("T3 did not answer in time.");
       },
     }),
-    preview: async () => ({ url: t3.url, headers: {} }),
+    preview: async () => (calls.push("preview"), { url: t3.url, headers: {} }),
   } as unknown as Box;
   const events: string[] = [];
   // Pauses by default, like boxd and Instabox: T3 keeps running through sleep.
@@ -173,7 +201,7 @@ function setup(skillRoots?: string[]) {
     return fleet;
   };
   const fleet = newFleet();
-  return { t3, store, settings, secrets, fleet, newFleet, driver, box, events, traffic, signIns, files, server, skills, synced, order };
+  return { t3, store, settings, secrets, fleet, newFleet, driver, box, events, traffic, signIns, files, server, skills, synced, order, calls };
 }
 
 describe("creating and deleting VMs", () => {
@@ -217,6 +245,19 @@ describe("waking", () => {
     expect(store.vm(vm.id)).toMatchObject({ state: "error", error: "T3 sent something unexpected." });
     expect(fleet.backend(vm.id)).toBeUndefined();
     await until(() => t3.sockets.size === 0);
+  });
+
+  test("waking a paused VM takes one command in it, and using a connected VM takes none", async () => {
+    const { fleet, calls } = setup();
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    await fleet.sleep(vm.id);
+    calls.length = 0;
+    await fleet.ensure(vm.id);
+    expect(calls).toEqual(["bash -s", "preview"]);
+    calls.length = 0;
+    await fleet.ensure(vm.id);
+    expect(calls).toEqual([]);
   });
 
   test("T3 refusing a request is told apart from the socket dropping", async () => {
