@@ -463,12 +463,13 @@ function CanvasMenu({
               <HugeiconsIcon icon={InformationCircleIcon} strokeWidth={1.75} />
               Details
             </ContextMenuItem>
-            {awake ? (
+            {(awake || target.state === "error") && (
               <ContextMenuItem onSelect={() => attempt(api(`/vms/${target.id}/sleep`, { body: {} }))}>
                 <HugeiconsIcon icon={Moon02Icon} strokeWidth={1.75} />
                 Sleep
               </ContextMenuItem>
-            ) : (
+            )}
+            {!awake && (
               <ContextMenuItem disabled={settling} onSelect={() => attempt(api(`/vms/${target.id}/wake`, { body: {} }))}>
                 <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} />
                 Wake
@@ -724,12 +725,13 @@ function VmDetails({ vm, overview, now, onClose }: { vm: VmInfo; overview: Overv
       <Separator />
       <footer className="flex flex-col gap-2 p-4">
         <div className="flex gap-2">
-          {awake ? (
+          {(awake || vm.state === "error") && (
             <Button variant="outline" size="lg" className="flex-1" disabled={action.busy} onClick={() => void action.run(() => api(`/vms/${vm.id}/sleep`, { body: {} }))}>
               <HugeiconsIcon icon={Moon02Icon} data-icon="inline-start" strokeWidth={1.75} />
               Sleep
             </Button>
-          ) : (
+          )}
+          {!awake && (
             <Button variant="outline" size="lg" className="flex-1" disabled={action.busy || settling} onClick={() => void action.run(() => api(`/vms/${vm.id}/wake`, { body: {} }))}>
               <HugeiconsIcon icon={PowerIcon} data-icon="inline-start" strokeWidth={1.75} />
               Wake

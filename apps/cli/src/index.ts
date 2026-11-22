@@ -132,7 +132,8 @@ async function stop() {
   const pid = runningPid();
   if (pid) {
     process.kill(pid, "SIGTERM");
-    for (let i = 0; i < 50 && runningPid(); i++) await Bun.sleep(100);
+    // Stopping puts idle VMs to sleep first, which takes up to 15 seconds.
+    for (let i = 0; i < 200 && runningPid(); i++) await Bun.sleep(100);
   }
   if (!pid && !stoppedService) return console.log("VM Bridge is not running.");
   console.log("VM Bridge stopped.");

@@ -56,7 +56,10 @@ function stopwatch(operation: string, vmId: string) {
   };
 }
 
-const shortId = () => crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+/** Whether a VM may be running at its provider: it connected since it last went to sleep. */
+export const mayBeAwake = (vm: VmRow) => Boolean(vm.sandboxId) && (vm.lastConnectedAt ?? 0) > (vm.lastSleptAt ?? 0);
+
+const shortId = () =>crypto.randomUUID().replaceAll("-", "").slice(0, 12);
 
 /** Provider config: the non-secret options plus every secret field, read from the secrets table. */
 export function providerValues(settings: Settings, secrets: Secrets, id: ProviderId) {
@@ -101,6 +104,9 @@ export class Fleet extends EventEmitter<FleetEvents> {
   private readonly overflowFailedAt = new Map<string, number>();
   private closed = false;
   readonly bases: Bases;
+
+  /** Pauses before each try to reconnect a VM whose T3 connection dropped. After the last, it is put to sleep. */
+  reconnectPausesMs = [1_000, 5_000, 15_000];
 
   /** Runs once a VM's backend is connected, before anyone else can use it. */
   onConnect: (vmId: string, backend: Backend) => Promise<void> = async () => {};
@@ -336,8 +342,12 @@ export class Fleet extends EventEmitter<FleetEvents> {
     const started = performance.now();
     const watch = stopwatch("wake", vmId);
     let box: Box | undefined;
-    // Looked up while the VM wakes. Awaited below; until then, a failed lookup must not count as unhandled.
-    const version = resolveT3Version(this.settings.get("t3Version"));
+    // Looked up while the VM wakes. Awaited below; until then, a failed lookup must not count as unhandled. A VM that ran
+    // T3 before keeps that version when the npm registry cannot be reached, rather than failing to wake.
+    const version = resolveT3Version(this.settings.get("t3Version")).catch((error: unknown) => {
+      if (vm.t3Version) return vm.t3Version;
+      throw error;
+    });
     version.catch(() => {});
     try {
       const driver = this.driver(vm.provider);
@@ -550,12 +560,38 @@ export class Fleet extends EventEmitter<FleetEvents> {
     this.store.updateVm(vmId, { checkpoint: checkpoint ?? null, lastSleptAt: Date.now() });
   }
 
+  /** The T3 connection to an awake VM dropped on its own: reconnect, as nothing else would. */
   private disconnected(vmId: string, backend: Backend) {
     if (this.backends.get(vmId) !== backend) return;
     this.backends.delete(vmId);
-    if (this.store.vm(vmId)?.state === "ready") this.setState(vmId, "error", "The T3 connection dropped. The next request reconnects.");
     this.traffic.record({ kind: "system", operation: "VM disconnected", vmId, status: "error" });
+    const state = this.store.vm(vmId)?.state;
+    // Before the socket's streams end, so they wait for the VM to come back rather than end.
+    if (state === "ready" || state === "busy") this.setState(vmId, "starting");
     this.emit("offline", vmId);
+    if (state === "ready" || state === "busy") void this.reconnect(vmId);
+  }
+
+  /**
+   * Reconnects to a VM whose T3 connection dropped, with short pauses between tries. When every try fails the VM is put
+   * to sleep, so it does not keep running, and billing, while nothing can see or use it.
+   */
+  private async reconnect(vmId: string) {
+    for (const pause of this.reconnectPausesMs) {
+      await Bun.sleep(pause);
+      const state = this.store.vm(vmId)?.state;
+      // Stopping, removed, put to sleep, or reconnected by a request meanwhile.
+      if (this.closed || !state || state === "sleeping" || state === "gone" || this.backend(vmId)) return;
+      try {
+        await this.ensure(vmId);
+        return;
+      } catch {
+        // `open` marked the VM as failed with the reason. Try again.
+      }
+    }
+    if (this.closed || this.backend(vmId)) return;
+    this.traffic.record({ kind: "system", operation: "Could not reconnect, sleeping VM", vmId, status: "error" });
+    await this.sleep(vmId).catch(() => {});
   }
 
   private markGone(vmId: string) {
@@ -837,8 +873,9 @@ fi`,
     this.prepareBases();
     void this.bases.reap().catch(() => {});
     for (const vm of this.store.vms()) {
-      if (!["ready", "busy", "starting"].includes(vm.state)) continue;
-      void this.ensure(vm.id).catch(() => {});
+      // A VM that failed while awake may still run. Connected, the idle sweep can put it to sleep.
+      const awake = ["ready", "busy", "starting"].includes(vm.state) || (vm.state === "error" && mayBeAwake(vm));
+      if (awake) void this.ensure(vm.id).catch(() => {});
     }
   }
 

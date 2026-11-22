@@ -132,6 +132,8 @@ export async function start(options: StartOptions = {}) {
       clearInterval(skillWatch);
       gateway.close();
       await server.stop(true);
+      // Some providers have no idle timeout of their own: a VM left awake here would run until VM Bridge starts again.
+      await hub.sleepIdle(15_000);
       hub.close();
       fleet.close();
       db.close();
