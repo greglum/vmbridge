@@ -39,7 +39,7 @@ export function Setup({ overview }: { overview: Overview }) {
   );
 }
 
-function ProviderStatus({ provider }: { provider: ProviderInfo }) {
+export function ProviderStatus({ provider }: { provider: ProviderInfo }) {
   const { setup } = provider;
   if (provider.added && setup.state === "building") return <SettingUp startedAt={setup.startedAt} />;
   if (provider.added && setup.state === "failed") return "Setup failed";
@@ -92,7 +92,8 @@ function ProviderSetup({ provider, busy, onRetry }: { provider: ProviderInfo; bu
   );
 }
 
-function Providers({ overview }: { overview: Overview }) {
+/** Every provider, and the chosen one's settings. `bare` leaves out the list's heading, for onboarding's own. */
+export function Providers({ overview, bare }: { overview: Overview; bare?: boolean }) {
   const [list, setList] = useState<ProviderInfo[]>([]);
   const [chosen, setChosen] = useState<ProviderId | null>(overview.defaultProvider);
   const load = useAction();
@@ -113,27 +114,31 @@ function Providers({ overview }: { overview: Overview }) {
   const provider = live.find((entry) => entry.id === chosen);
   const replace = (next: ProviderInfo) => setList((current) => current.map((entry) => (entry.id === next.id ? next : entry)));
 
+  const picker = (
+    <>
+      <RadioGroup value={chosen ?? ""} onValueChange={(value) => setChosen(value as ProviderId)} className="grid gap-2 sm:grid-cols-2">
+        {live.map((entry) => (
+          <FieldLabel key={entry.id} htmlFor={`provider-${entry.id}`}>
+            <Field orientation="horizontal" className="items-center">
+              <ProviderLogo id={entry.id} className="size-9 rounded-lg" />
+              <FieldContent>
+                <FieldTitle>{entry.label}</FieldTitle>
+                <FieldDescription>
+                  <ProviderStatus provider={entry} />
+                </FieldDescription>
+              </FieldContent>
+              <RadioGroupItem value={entry.id} id={`provider-${entry.id}`} />
+            </Field>
+          </FieldLabel>
+        ))}
+      </RadioGroup>
+      {load.error && <FieldError>{load.error}</FieldError>}
+    </>
+  );
+
   return (
     <>
-      <Section title="Providers">
-        <RadioGroup value={chosen ?? ""} onValueChange={(value) => setChosen(value as ProviderId)} className="grid gap-2 sm:grid-cols-2">
-          {live.map((entry) => (
-            <FieldLabel key={entry.id} htmlFor={`provider-${entry.id}`}>
-              <Field orientation="horizontal" className="items-center">
-                <ProviderLogo id={entry.id} className="size-9 rounded-lg" />
-                <FieldContent>
-                  <FieldTitle>{entry.label}</FieldTitle>
-                  <FieldDescription>
-                    <ProviderStatus provider={entry} />
-                  </FieldDescription>
-                </FieldContent>
-                <RadioGroupItem value={entry.id} id={`provider-${entry.id}`} />
-              </Field>
-            </FieldLabel>
-          ))}
-        </RadioGroup>
-        {load.error && <FieldError>{load.error}</FieldError>}
-      </Section>
+      {bare ? <div className="flex flex-col gap-5">{picker}</div> : <Section title="Providers">{picker}</Section>}
       {provider && <ProviderForm key={provider.id} provider={provider} onSaved={replace} />}
     </>
   );
@@ -366,7 +371,7 @@ function Agents({ profiles }: { profiles: AgentProfile[] }) {
   return agentKinds.map((agent) => <AgentSection key={agent} agent={agent} profiles={profiles.filter((profile) => profile.agent === agent)} />);
 }
 
-function AgentSection({ agent, profiles }: { agent: AgentKind; profiles: AgentProfile[] }) {
+export function AgentSection({ agent, profiles }: { agent: AgentKind; profiles: AgentProfile[] }) {
   const [adding, setAdding] = useState(false);
   const action = useAction();
   const open = adding || profiles.length === 0;

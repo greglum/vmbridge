@@ -14,7 +14,7 @@ import {
 } from "@vmbridge/contracts";
 import { analyticsReport } from "./analytics.ts";
 import { InvalidSignIn, type AgentAuth, type TokenInput } from "./agent-auth/profiles.ts";
-import { TooManyAttempts, type DashboardAuth } from "./auth/dashboard.ts";
+import { InvalidPassword, TooManyAttempts, type DashboardAuth } from "./auth/dashboard.ts";
 import { fetchGitHubAccount, fetchGitHubRepos, GitHubRejected } from "./github.ts";
 import type { Clients } from "./auth/clients.ts";
 import { message, providerValues, type Fleet } from "./fleet.ts";
@@ -55,6 +55,7 @@ export interface AdminDeps {
 class BadRequest extends Error {}
 
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
+const loggedIn = (cookie: string) => new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": cookie } });
 const isProvider = (id: unknown): id is ProviderId => (providerIds as readonly unknown[]).includes(id);
 const isSize = (size: unknown): size is VmSize => (vmSizes as readonly unknown[]).includes(size);
 
@@ -79,7 +80,7 @@ function timeRange(request: Request) {
 }
 
 /**
- * The dashboard's API under /admin/api. Every route except login needs the dashboard cookie.
+ * The dashboard's API under /admin/api. Every route except login and first password setup needs the dashboard cookie.
  * Secret values go in and never come out: responses only say whether each one is set.
  */
 export class Admin {
@@ -93,19 +94,29 @@ export class Admin {
       return json({ error: "Send JSON." }, 415);
     }
     try {
-      if (path === "/auth" && request.method === "GET") return json({ authenticated: auth.authenticated(request) });
+      if (path === "/auth" && request.method === "GET") {
+        return json({ authenticated: auth.authenticated(request), hasPassword: auth.hasKey(), onboarded: this.deps.settings.get("onboarded") });
+      }
+      const secure = new URL(request.url).protocol === "https:" || request.headers.get("x-forwarded-proto") === "https";
+      const address = server.requestIP(request)?.address ?? "unknown";
       if (path === "/login" && request.method === "POST") {
         const { key } = await body(request);
-        const secure = new URL(request.url).protocol === "https:" || request.headers.get("x-forwarded-proto") === "https";
-        const cookie = await auth.login(typeof key === "string" ? key : "", server.requestIP(request)?.address ?? "unknown", secure);
+        const cookie = await auth.login(typeof key === "string" ? key : "", address, secure);
         if (!cookie) return json({ error: "That key is not right." }, 401);
-        return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": cookie } });
+        return loggedIn(cookie);
+      }
+      // The first password, set in onboarding with the code only the terminal that started VM Bridge printed.
+      if (path === "/setup" && request.method === "POST") {
+        const { code, key } = await body(request);
+        const cookie = await auth.claim(typeof code === "string" ? code : "", typeof key === "string" ? key : "", address, secure);
+        if (!cookie) return json({ error: "This setup link does not work. Open the link printed in the terminal where VM Bridge is running." }, 401);
+        return loggedIn(cookie);
       }
       if (!auth.authenticated(request)) return json({ error: "Log in first." }, 401);
       return await this.route(request, path, server);
     } catch (error) {
       if (error instanceof TooManyAttempts) return json({ error: error.message }, 429);
-      if (error instanceof BadRequest || error instanceof InvalidSignIn || error instanceof GitHubRejected || error instanceof SkillError) return json({ error: error.message }, 400);
+      if (error instanceof BadRequest || error instanceof InvalidPassword || error instanceof InvalidSignIn || error instanceof GitHubRejected || error instanceof SkillError) return json({ error: error.message }, 400);
       return json({ error: message(error) }, 500);
     }
   }
@@ -125,6 +136,17 @@ export class Admin {
       // Not 401: the session is still fine, and the dashboard treats 401 as logged out.
       const address = server.requestIP(request)?.address ?? "unknown";
       if (!(await auth.changeKey(current, next, address))) return json({ error: "The current password is not right." }, 403);
+      return json({ ok: true });
+    }
+    if (path === "/onboarding" && method === "POST") {
+      const { sync } = await body(request);
+      if (typeof sync !== "boolean") throw new BadRequest("Say whether to bring your skills and instructions.");
+      // One choice for everything this machine has: every local skill and every agent's global instructions file.
+      if (sync) {
+        skills.setSyncAll(true);
+        for (const agent of agentKinds) skills.instructions.setSync(agent, true);
+      }
+      settings.set("onboarded", true);
       return json({ ok: true });
     }
     if (path === "/overview" && method === "GET") return json(this.overview());
