@@ -37,10 +37,10 @@ describe("where a new VM goes", () => {
   test("without a size setting, each provider's default applies, the closest it has to 2 vCPU and 8 GB", () => {
     const { settings, fleet } = setup();
     settings.set("vmSize", null);
-    settings.set("providers", ["boxd", "instabox"]);
+    settings.set("providers", ["boxd", "boat"]);
     expect(fleet.placement("https://github.com/acme/api.git")).toEqual({ provider: "boxd", size: "medium" });
-    settings.set("defaultProvider", "instabox");
-    expect(fleet.placement("https://github.com/acme/api.git")).toEqual({ provider: "instabox", size: "small" });
+    settings.set("defaultProvider", "boat");
+    expect(fleet.placement("https://github.com/acme/api.git")).toEqual({ provider: "boat", size: "small" });
   });
 
   test("a VM can only be created on an added provider", async () => {

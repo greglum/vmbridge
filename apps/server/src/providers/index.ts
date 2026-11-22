@@ -74,7 +74,8 @@ const instaboxProvider: ProviderDefinition = {
     keepsMemory: true,
   },
   sizes: { small: "2 vCPU, 4 GB", medium: "4 vCPU, 8 GB", large: "8 vCPU, 16 GB" },
-  defaultSize: "small",
+  // The free plan allows only 4 vCPU, 8 GB and refuses any other size.
+  defaultSize: "medium",
   open(config) {
     return sdkDriver({
       id: "instabox",
