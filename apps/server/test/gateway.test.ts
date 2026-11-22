@@ -393,9 +393,11 @@ describe("child threads a VM starts itself", () => {
       store.setCheckout("p1", id, "/workspace/app");
     }
     let shell: (values: unknown[]) => void = () => {};
+    const requested: string[] = [];
     const vm2 = {
       call: async () => ({ environment: { orchestrationProtocolVersion: 2, environmentId: "env-vm2" } }),
       request: (tag: string, _payload: unknown, handler: (frame: unknown) => void) => {
+        requested.push(tag);
         if (tag === "orchestration.subscribeShell") shell = (values) => handler({ _tag: "Chunk", values });
         return () => {};
       },
@@ -407,7 +409,7 @@ describe("child threads a VM starts itself", () => {
     const hub = new Hub(store, new Settings(store.db), fleet, { record: () => {} } as unknown as Traffic, unmeasured);
     await fleet.onConnect("vm2", vm2);
     shell([{ kind: "snapshot", snapshot: { projects: [], threads: [parent], archivedThreads: [] } }]);
-    return { hub, report: (thread: Wire) => shell([{ kind: "thread.updated", thread, location: "active", sequence: 2 }]) };
+    return { hub, requested, report: (thread: Wire) => shell([{ kind: "thread.updated", thread, location: "active", sequence: 2 }]) };
   }
 
   test("a child opened before its VM's shell lists it routes to the parent's VM once the shell does", async () => {
@@ -420,6 +422,29 @@ describe("child threads a VM starts itself", () => {
     expect((await messaged).vmId).toBe("vm2");
     // From then on it routes at once, and stays on vm2 although the project's primary VM is vm1.
     expect(hub.route({ threadId: child.id, cwd: "/projects/p1/app" })).toBe("vm2");
+    hub.close();
+  });
+
+  test("a child opened with its project's path waits for the shell instead of taking the project's primary VM", async () => {
+    const { hub, report } = await setup();
+    const opened = hub.routeSoon({ threadId: child.id, cwd: "/projects/p1/app" });
+    report(child);
+    expect(await opened).toBe("vm2");
+    // A request naming only the project still goes to its primary VM at once.
+    expect(await hub.routeSoon({ cwd: "/projects/p1/app" })).toBe("vm1");
+    hub.close();
+  });
+
+  test("a child's stream cancelled while it waits for routing never opens on the VM", async () => {
+    const { hub, report, requested } = await setup();
+    const rpc = new Rpc(hub, {} as never, {} as never, { record: () => {} } as unknown as Traffic, () => false);
+    const client: RpcClient = { clientId: "c1", cancels: new Map(), send: () => {}, open: () => true };
+    const subscribing = rpc.handle(client, { _tag: "Request", id: 1, tag: "orchestration.subscribeThread", payload: { threadId: child.id } });
+    await rpc.handle(client, { _tag: "Interrupt", requestId: "1" });
+    report(child);
+    await subscribing;
+    expect(requested).not.toContain("orchestration.subscribeThread");
+    expect(client.cancels.size).toBe(0);
     hub.close();
   });
 
