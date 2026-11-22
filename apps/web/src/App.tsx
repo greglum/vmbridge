@@ -17,6 +17,7 @@ import { Costs } from "./Costs.tsx";
 import { Devices } from "./Devices.tsx";
 import { Logs } from "./Logs.tsx";
 import { boxStyle, NavIndicator, useSlidingNav } from "./nav.tsx";
+import { Onboarding } from "./Onboarding.tsx";
 import { Settings } from "./Settings.tsx";
 import { Setup } from "./Setup.tsx";
 import { Skills } from "./Skills.tsx";
@@ -40,16 +41,35 @@ function useView() {
   return [view, (next: View) => void setUrl({ view: next, tab: null })] as const;
 }
 
+interface AuthState {
+  authenticated: boolean;
+  hasPassword: boolean;
+  onboarded: boolean;
+}
+
+const onboardingPath = "/dashboard/onboarding";
+
 export function App() {
-  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [auth, setAuth] = useState<AuthState | null>(null);
+  const refresh = () => void api<AuthState>("/auth").then(setAuth);
   useEffect(() => {
-    void api<{ authenticated: boolean }>("/auth").then((auth) => setAuthenticated(auth.authenticated));
-    return onLoggedOut(() => setAuthenticated(false));
+    refresh();
+    return onLoggedOut(refresh);
   }, []);
+
+  // A fresh bridge, or a logged in one that never finished onboarding, goes there. Once finished, onboarding goes to the dashboard.
+  const screen = !auth ? null : !auth.hasPassword || (auth.authenticated && !auth.onboarded) ? "onboarding" : auth.authenticated ? "dashboard" : "login";
+  useEffect(() => {
+    // The setup code rides in the fragment, so moving to onboarding keeps it.
+    if (screen === "onboarding" && location.pathname !== onboardingPath) history.replaceState(null, "", `${onboardingPath}${location.hash}`);
+    if (screen === "dashboard" && location.pathname === onboardingPath) history.replaceState(null, "", "/dashboard");
+  }, [screen]);
+
   return (
     <TooltipProvider delayDuration={300}>
-      {authenticated === true && <Dashboard onLoggedOut={() => setAuthenticated(false)} />}
-      {authenticated === false && <Login onLoggedIn={() => setAuthenticated(true)} />}
+      {auth && screen === "onboarding" && <Onboarding hasPassword={auth.hasPassword} onChanged={refresh} />}
+      {screen === "dashboard" && <Dashboard onLoggedOut={refresh} />}
+      {screen === "login" && <Login onLoggedIn={refresh} />}
       <Toaster position="bottom-right" />
     </TooltipProvider>
   );

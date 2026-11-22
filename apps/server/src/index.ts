@@ -87,7 +87,11 @@ export async function start(options: StartOptions = {}) {
     idleTimeout: 60,
     development: process.env.VMBRIDGE_DEV === "1",
     // The dashboard lives under /dashboard, a path T3 clients never request.
-    routes: { "/dashboard": dashboard, "/": new Response(null, { status: 302, headers: { location: "/dashboard" } }) },
+    routes: {
+      "/dashboard": dashboard,
+      "/dashboard/onboarding": dashboard,
+      "/": new Response(null, { status: 302, headers: { location: "/dashboard" } }),
+    },
     fetch(request, server) {
       const path = new URL(request.url).pathname;
       if (path.startsWith("/admin/api/")) return admin.fetch(request, server);
@@ -128,6 +132,8 @@ export async function start(options: StartOptions = {}) {
   return {
     port: server.port ?? port,
     host,
+    /** Opens first password setup in the dashboard. Null when a password exists. Show it only to whoever started VM Bridge. */
+    setupCode: auth.createSetupCode(),
     network: () => networkInfo(host, server.port ?? port),
     async stop() {
       clearInterval(sweep);

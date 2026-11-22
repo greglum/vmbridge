@@ -93,6 +93,75 @@ describe("dashboard key", () => {
   });
 });
 
+describe("first password setup", () => {
+  const fresh = () => {
+    const db = openDatabase(":memory:");
+    const auth = new DashboardAuth(db, new Settings(db));
+    return { db, auth, code: auth.createSetupCode()! };
+  };
+
+  test("sets the password and logs in only with the setup code", async () => {
+    const { auth, code } = fresh();
+    expect(await auth.claim("", "correct horse", "a", false)).toBeNull();
+    expect(await auth.claim(`${code}x`, "correct horse", "a", false)).toBeNull();
+    expect(auth.hasKey()).toBe(false);
+    const cookie = await auth.claim(code, "correct horse", "a", false);
+    expect(auth.authenticated(request(cookie!.split(";")[0]!))).toBe(true);
+    expect(await auth.login("correct horse", "b", false)).not.toBeNull();
+  });
+
+  test("the code works once, even for two requests at the same time", async () => {
+    const { auth, code } = fresh();
+    const [first, second] = await Promise.all([auth.claim(code, "correct horse", "a", false), auth.claim(code, "another one", "b", false)]);
+    expect(first).not.toBeNull();
+    expect(second).toBeNull();
+    expect(await auth.claim(code, "another one", "c", false)).toBeNull();
+    expect(await auth.login("correct horse", "c", false)).not.toBeNull();
+  });
+
+  test("the code stops working once a password exists, such as one set from the terminal", async () => {
+    const { db, auth, code } = fresh();
+    // `vmbridge password` runs in another process, against the same database.
+    await new DashboardAuth(db, new Settings(db)).setKey("from the terminal");
+    expect(await auth.claim(code, "correct horse", "a", false)).toBeNull();
+    expect(await auth.login("from the terminal", "a", false)).not.toBeNull();
+    expect(auth.createSetupCode()).toBeNull();
+  });
+
+  test("a short password leaves the code usable", async () => {
+    const { auth, code } = fresh();
+    expect(auth.claim(code, "short", "a", false)).rejects.toThrow("at least 8");
+    expect(await auth.claim(code, "correct horse", "a", false)).not.toBeNull();
+  });
+
+  test("wrong codes are throttled per address like logging in", async () => {
+    const { auth, code } = fresh();
+    for (let i = 0; i < 5; i++) await auth.claim("guess", "correct horse", "a", false);
+    expect(auth.claim(code, "correct horse", "a", false)).rejects.toBeInstanceOf(TooManyAttempts);
+    expect(auth.hasKey()).toBe(false);
+    expect(await auth.claim(code, "correct horse", "b", false)).not.toBeNull();
+  });
+});
+
+describe("onboarding", () => {
+  test("existing installs with a password and a provider count as onboarded", async () => {
+    const db = openDatabase(":memory:");
+    db.query("INSERT INTO settings (key, value) VALUES ('dashboardKeyHash', ?), ('providers', ?)").run(JSON.stringify(await Bun.password.hash("old key!")), JSON.stringify(["boxd"]));
+    expect(new Settings(db).get("onboarded")).toBe(true);
+  });
+
+  test("a new install, or one with only a password, is not, and adding a provider later does not change that", () => {
+    const db = openDatabase(":memory:");
+    expect(new Settings(db).get("onboarded")).toBe(false);
+    const withKey = openDatabase(":memory:");
+    withKey.query("INSERT INTO settings (key, value) VALUES ('dashboardKeyHash', '\"hash\"')").run();
+    const settings = new Settings(withKey);
+    expect(settings.get("onboarded")).toBe(false);
+    settings.set("providers", ["boxd"]);
+    expect(new Settings(withKey).get("onboarded")).toBe(false);
+  });
+});
+
 describe("T3 pairing", () => {
   test("a pairing link works once and names the device", () => {
     const clients = new Clients(openDatabase(":memory:"));

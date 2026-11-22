@@ -11,6 +11,8 @@ interface SettingValues {
   /** Stable T3 environment identity. Never changes once created. */
   bridgeId: string;
   dashboardKeyHash: string | null;
+  /** Whether first-run onboarding was finished. Until then the dashboard sends you there. */
+  onboarded: boolean;
   /** The name T3 shows for this machine. */
   machineName: string;
   /** Providers added in Setup, in order. VMs on a removed provider keep running but get no new VMs beside them. */
@@ -52,6 +54,7 @@ export function machineName(input: string): string | null {
 const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
   bridgeId: () => crypto.randomUUID(),
   dashboardKeyHash: () => null,
+  onboarded: () => false,
   machineName: () => defaultMachineName,
   providers: () => [],
   defaultProvider: () => null,
@@ -73,6 +76,10 @@ export class Settings {
   constructor(private readonly db: Database) {
     // Persist the identity on first start so pairings survive restarts.
     if (!this.db.query("SELECT 1 FROM settings WHERE key = 'bridgeId'").get()) this.set("bridgeId", defaults.bridgeId());
+    // Installs from before onboarding existed that already have a password and a provider never need it.
+    if (!this.db.query("SELECT 1 FROM settings WHERE key = 'onboarded'").get()) {
+      this.set("onboarded", this.get("dashboardKeyHash") !== null && this.get("providers").length > 0);
+    }
   }
 
   get<K extends keyof SettingValues>(key: K): SettingValues[K] {
