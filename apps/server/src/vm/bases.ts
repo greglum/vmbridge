@@ -74,10 +74,32 @@ export class Bases {
     const driver = this.driver(provider);
     for (const { size, snapshot, builder } of this.store.bases(provider)) {
       if (snapshot) this.store.retireSnapshot(provider, snapshot);
-      if (builder) await driver.destroy(builder).catch(() => this.record(provider, "delete base snapshot VM", "error"));
-      this.store.deleteBase(provider, size);
+      try {
+        if (builder) await driver.destroy(builder);
+        this.store.deleteBase(provider, size);
+      } catch {
+        // The build VM stays on record so `reap` deletes it on the next start.
+        this.store.saveBase(provider, size, { snapshot: null, stamp: null, createdAt: null });
+        this.record(provider, "delete base snapshot VM", "error");
+      }
     }
     await this.sweep(provider);
+  }
+
+  /**
+   * Deletes build VMs on record with no build running: left by a restart mid build or a failed delete. One can hold
+   * the last VM a provider allows, so this runs before a VM is created there, and on start for every provider.
+   */
+  async reap(provider?: ProviderId) {
+    for (const base of this.store.builders(provider)) {
+      if (this.building.has(`${base.provider}:${base.size}`)) continue;
+      try {
+        await this.driver(base.provider).destroy(base.builder);
+        this.store.saveBase(base.provider, base.size, { builder: null });
+      } catch {
+        this.record(base.provider, "delete base snapshot VM", "error");
+      }
+    }
   }
 
   /** Starts building a new snapshot in the background, unless one is building or the last attempt failed recently. */

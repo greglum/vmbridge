@@ -223,6 +223,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
    */
   private async createBox(provider: ProviderId, driver: Driver, input: CreateVm): Promise<{ box: Box; based: boolean }> {
     // Without the t3 version there is no telling which snapshot is current. Opening the VM will report the failure.
+    await this.bases.reap(provider);
     const version = await resolveT3Version(this.settings.get("t3Version")).catch(() => null);
     if (!version) return { box: await driver.create(input), based: false };
     const choice = this.bases.choose(provider, input.size, version);
@@ -246,6 +247,8 @@ export class Fleet extends EventEmitter<FleetEvents> {
   async prepareBase(provider: ProviderId) {
     const size = this.settings.get("vmSize") ?? providers[provider].defaultSize;
     const version = await resolveT3Version(this.settings.get("t3Version"));
+    // Removed while the version resolved. Checked with no await before `rebuild`, so a later `drop` waits for the build.
+    if (!this.settings.get("providers").includes(provider)) return;
     if (this.bases.choose(provider, size, version).rebuild) this.bases.rebuild(provider, size, version);
   }
 
@@ -771,6 +774,7 @@ fi`,
   async resume() {
     // So the dashboard can tell sleeping VMs behind on sign-ins or variables before any VM wakes.
     void this.credentials().catch(() => {});
+    void this.bases.reap().catch(() => {});
     for (const vm of this.store.vms()) {
       if (!["ready", "busy", "starting"].includes(vm.state)) continue;
       void this.ensure(vm.id).catch(() => {});

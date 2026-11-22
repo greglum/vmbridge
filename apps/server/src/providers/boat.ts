@@ -144,8 +144,9 @@ export const boatProvider: ProviderDefinition = {
       // The SDK has no Boat snapshots. Boat keeps named snapshots until deleted, at most 10 per account.
       async snapshot(box) {
         const name = `vmbridge-base-${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
-        await api.request("POST", "/named-snapshots", { body: { sandboxId: box.id, name }, timeoutMs: 90_000 });
         try {
+          // Inside the try: Boat may save the snapshot even when this request times out.
+          await api.request("POST", "/named-snapshots", { body: { sandboxId: box.id, name }, timeoutMs: 90_000 });
           const deadline = Date.now() + 10 * 60_000;
           while (Date.now() < deadline) {
             const { snapshot } = await api.request<{ snapshot: BoatNamedSnapshot }>("GET", "/named-snapshots/{name}", { params: { name } });
