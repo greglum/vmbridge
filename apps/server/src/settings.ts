@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { AgentKind, GitHubAccount, ProviderId, RepoRule, VmSize } from "@vmbridge/contracts";
+import { machineNameMaxLength, type AgentKind, type GitHubAccount, type ProviderId, type RepoRule, type VmSize } from "@vmbridge/contracts";
 import type { ServerConfig } from "./gateway/types.ts";
 
 export interface ProviderPreference {
@@ -11,6 +11,8 @@ interface SettingValues {
   /** Stable T3 environment identity. Never changes once created. */
   bridgeId: string;
   dashboardKeyHash: string | null;
+  /** The name T3 shows for this machine. */
+  machineName: string;
   /** Providers added in Setup, in order. VMs on a removed provider keep running but get no new VMs beside them. */
   providers: ProviderId[];
   /** One of `providers`. New VMs go here unless a repository rule picks another. */
@@ -39,9 +41,18 @@ interface SettingValues {
   fallbackConfig: { vmId: string; config: ServerConfig } | null;
 }
 
+const defaultMachineName = "VM Bridge";
+
+/** Trimmed, with blank meaning the default. Null when it is too long. */
+export function machineName(input: string): string | null {
+  const name = input.trim() || defaultMachineName;
+  return name.length <= machineNameMaxLength ? name : null;
+}
+
 const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
   bridgeId: () => crypto.randomUUID(),
   dashboardKeyHash: () => null,
+  machineName: () => defaultMachineName,
   providers: () => [],
   defaultProvider: () => null,
   repoRules: () => [],

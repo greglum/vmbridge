@@ -362,7 +362,7 @@ export class Hub extends EventEmitter<HubEvents> {
     const native = [...this.configs.values()][0]?.environment;
     return {
       environmentId: this.settings.get("bridgeId"),
-      label: "VM Bridge",
+      label: this.settings.get("machineName"),
       serverVersion: native?.serverVersion ?? "0.1.0",
       platform: { os: "linux", arch: "x64", machine: "cloud" },
       orchestrationProtocolVersion: 2,
