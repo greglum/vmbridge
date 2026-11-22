@@ -12,14 +12,14 @@ import { api, useTick } from "./api.ts";
 import { ProviderLogo } from "./brand.tsx";
 import { Page, Section } from "./Page.tsx";
 
-const ranges = [
+export const ranges = [
   { id: "month", label: "This month" },
   { id: "30d", label: "Last 30 days" },
 ] as const;
 
-type Range = (typeof ranges)[number]["id"];
+export type Range = (typeof ranges)[number]["id"];
 
-const rangeStart = (range: Range, now: number) => {
+export const rangeStart = (range: Range, now: number) => {
   if (range === "30d") return now - 30 * 86_400_000;
   const today = new Date(now);
   return new Date(today.getFullYear(), today.getMonth(), 1).getTime();
@@ -185,7 +185,7 @@ function Report({ report, added }: { report: UsageReport; added: string[] }) {
   );
 }
 
-function Tile({ label, className, children }: { label: string; className?: string; children: React.ReactNode }) {
+export function Tile({ label, className, children }: { label: string; className?: string; children: React.ReactNode }) {
   return (
     <div className={cn("flex flex-col gap-1 rounded-xl border p-4", className)}>
       <span className="text-xs text-muted-foreground">{label}</span>
@@ -195,11 +195,12 @@ function Tile({ label, className, children }: { label: string; className?: strin
 }
 
 /** A small table: the first column takes the room, the rest are right-aligned figures. */
-function Rows({ head, rows }: { head: string[]; rows: { key: string; cells: React.ReactNode[] }[] }) {
-  const grid = "grid grid-cols-[minmax(0,1fr)_repeat(3,minmax(0,auto))] items-center gap-x-4 sm:gap-x-8";
+export function Rows({ head, rows }: { head: string[]; rows: { key: string; cells: React.ReactNode[] }[] }) {
+  const grid = "grid items-center gap-x-4 sm:gap-x-8";
+  const columns = { gridTemplateColumns: `minmax(0,1fr) repeat(${head.length - 1}, minmax(0,auto))` };
   return (
     <div className="flex flex-col rounded-xl border text-sm">
-      <div className={cn(grid, "border-b px-4 py-2 text-xs text-muted-foreground")}>
+      <div className={cn(grid, "border-b px-4 py-2 text-xs text-muted-foreground")} style={columns}>
         {head.map((cell, index) => (
           <span key={cell} className={cn(index > 0 && "text-right")}>
             {cell}
@@ -207,7 +208,7 @@ function Rows({ head, rows }: { head: string[]; rows: { key: string; cells: Reac
         ))}
       </div>
       {rows.map((row) => (
-        <div key={row.key} className={cn(grid, "border-b px-4 py-2.5 last:border-b-0")}>
+        <div key={row.key} className={cn(grid, "border-b px-4 py-2.5 last:border-b-0")} style={columns}>
           {row.cells.map((cell, index) => (
             <span key={index} className={cn(index > 0 && "text-right tabular-nums", index === 0 && "min-w-0")}>
               {cell}
@@ -220,7 +221,7 @@ function Rows({ head, rows }: { head: string[]; rows: { key: string; cells: Reac
 }
 
 /** Rows with a bar for each one's share of the largest. */
-function Bars({ rows }: { rows: { key: string; title: React.ReactNode; detail: string; value: number; figure: string; extra?: React.ReactNode }[] }) {
+export function Bars({ rows }: { rows: { key: string; title: React.ReactNode; detail: string; value: number; figure: string; extra?: React.ReactNode }[] }) {
   const max = Math.max(1, ...rows.map((row) => row.value));
   return (
     <div className="flex flex-col gap-4">
@@ -291,19 +292,19 @@ function PriceCard({ price }: { price: ProviderPricing }) {
   );
 }
 
-function hours(ms: number) {
+export function hours(ms: number) {
   const minutes = ms / 60_000;
   if (minutes < 60) return `${Math.round(minutes)} min`;
   const value = minutes / 60;
   return `${value < 100 ? value.toFixed(1) : Math.round(value)} h`;
 }
 
-function days(ms: number) {
+export function days(ms: number) {
   const value = ms / 86_400_000;
   return value < 1 ? hours(ms) : `${value.toFixed(1)} d`;
 }
 
-function money({ currency, amount, partial }: Estimate) {
+export function money({ currency, amount, partial }: Estimate) {
   const format = new Intl.NumberFormat(undefined, { style: "currency", currency, minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const text = amount > 0 && amount < 0.01 ? `<${format.format(0.01)}` : format.format(amount);
   return partial ? `${text} +` : text;

@@ -266,7 +266,9 @@ export class Fleet extends EventEmitter<FleetEvents> {
       }
       this.boxes.set(id, box);
       const operation = based ? "create VM from base snapshot" : "create VM";
-      this.traffic.record({ kind: "provider", operation, vmId: id, status: "ok", durationMs: Math.round(performance.now() - started) });
+      const durationMs = Math.round(performance.now() - started);
+      this.traffic.record({ kind: "provider", operation, vmId: id, status: "ok", durationMs });
+      this.store.recordVmEvent(vm, "create", durationMs);
       return vm;
     });
   }
@@ -393,7 +395,10 @@ export class Fleet extends EventEmitter<FleetEvents> {
       }, watch);
       watch.done();
       this.touch(vmId);
-      this.traffic.record({ kind: "provider", operation: "wake VM", vmId, status: "ok", durationMs: Math.round(performance.now() - started) });
+      const durationMs = Math.round(performance.now() - started);
+      this.traffic.record({ kind: "provider", operation: "wake VM", vmId, status: "ok", durationMs });
+      // A reconnect to a VM that kept running is not a start.
+      if (wasAsleep) this.store.recordVmEvent(vm, vm.lastConnectedAt === null ? "start" : "wake", durationMs);
       return backend;
     } catch (error) {
       this.failed("wake VM", error, { vmId, provider: vm.provider });
@@ -643,7 +648,9 @@ export class Fleet extends EventEmitter<FleetEvents> {
       try {
         await this.sleepBox(vmId, driver, box);
         this.emit("changed");
-        this.traffic.record({ kind: "provider", operation: "sleep VM", vmId, provider: vm.provider, status: "ok", durationMs: Math.round(performance.now() - started) });
+        const durationMs = Math.round(performance.now() - started);
+        this.traffic.record({ kind: "provider", operation: "sleep VM", vmId, provider: vm.provider, status: "ok", durationMs });
+        this.store.recordVmEvent(vm, "sleep", durationMs);
       } catch (error) {
         this.setState(vmId, "error", message(error));
         this.failed("sleep VM", error, { vmId, provider: vm.provider });
@@ -671,6 +678,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
       // A VM asleep as a checkpoint has no sandbox left, only the checkpoint.
       if (vm.checkpoint) await this.driver(vm.provider).deleteCheckpoint(vm.checkpoint);
       this.store.deleteVm(vmId);
+      this.store.recordVmEvent(vm, "delete");
       this.traffic.record({ kind: "provider", operation: "delete VM", vmId, status: "ok" });
       // A replaced base snapshot this VM was made from may only now be deletable.
       void this.bases.sweep(vm.provider).catch(() => {});

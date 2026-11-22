@@ -234,6 +234,25 @@ describe("creating and deleting VMs", () => {
     expect(store.vms()).toHaveLength(1);
     expect(events).toEqual(["create", "wake"]);
   });
+
+  test("records create, first start, sleep, wake and delete for analytics, but not a reconnect", async () => {
+    const { fleet, store, newFleet } = setup();
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    await fleet.sleep(vm.id);
+    // A wake connects after the sleep, never in the same millisecond as here.
+    await Bun.sleep(2);
+    await fleet.ensure(vm.id);
+    // VM Bridge restarts while the VM runs: connecting again is not a start.
+    fleet.close();
+    const after = newFleet();
+    await after.ensure(vm.id);
+    await after.destroy(vm.id);
+    const recorded = store.vmEvents(0, Date.now() + 1);
+    expect(recorded.map((event) => event.kind)).toEqual(["create", "start", "sleep", "wake", "delete"]);
+    expect(recorded.every((event) => event.vmId === vm.id && event.provider === "boxd")).toBe(true);
+    expect(recorded.find((event) => event.kind === "wake")?.durationMs).toBeNumber();
+  });
 });
 
 describe("VMs VM Bridge lost track of", () => {

@@ -393,6 +393,85 @@ export interface UsageReport {
   totals: Estimate[];
 }
 
+/** One provider's time and estimated cost on one day. */
+export interface ProviderDay {
+  provider: ProviderId;
+  awakeMs: number;
+  asleepMs: number;
+  estimate: Estimate;
+}
+
+/** One calendar day in the dashboard's time zone. */
+export interface AnalyticsDay {
+  /** The midnight it starts at. */
+  start: number;
+  providers: ProviderDay[];
+  created: number;
+  deleted: number;
+  wakes: number;
+  sleeps: number;
+  /** Threads with a turn that day. */
+  threads: number;
+  turns: number;
+  /** Provider null: the error names no provider or VM. */
+  errors: { provider: ProviderId | null; count: number }[];
+}
+
+/** VMs created, woken and put to sleep on one provider. Times are medians, null when none was timed. */
+export interface ProviderActivity {
+  provider: ProviderId;
+  created: number;
+  deleted: number;
+  wakes: number;
+  sleeps: number;
+  /** The provider making the VM. */
+  createMs: number | null;
+  /** A new VM's first start: installing and connecting. */
+  startMs: number | null;
+  /** Waking from sleep until connected. */
+  wakeMs: number | null;
+}
+
+export interface SizeActivity {
+  provider: ProviderId;
+  size: VmSize;
+  vms: number;
+  awakeMs: number;
+}
+
+export interface RepoActivity {
+  /** `owner/name` for GitHub, else the URL. */
+  repo: string;
+  awakeMs: number;
+  threads: number;
+  turns: number;
+}
+
+/** Turns one agent and model ran. */
+export interface AgentActivity {
+  /** Display name, such as Codex. */
+  agent: string;
+  model: string | null;
+  threads: number;
+  turns: number;
+}
+
+/** Everything VM Bridge recorded between `from` and `to`, by day where it helps. */
+export interface AnalyticsReport {
+  from: number;
+  to: number;
+  days: AnalyticsDay[];
+  providers: ProviderActivity[];
+  sizes: SizeActivity[];
+  repos: RepoActivity[];
+  agents: AgentActivity[];
+  snapshots: SnapshotUsage[];
+  /** Threads with a turn in the range. */
+  threads: number;
+  /** Estimated spend per currency. */
+  totals: Estimate[];
+}
+
 export interface TrafficEvent {
   id: number;
   at: number;

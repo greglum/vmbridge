@@ -196,6 +196,32 @@ const migrations = [
   );
   CREATE INDEX snapshot_usage_time ON snapshot_usage (ended_at, started_at);
   `,
+  // VM lifecycle and agent turns for analytics (see analytics.ts). No foreign keys, like usage. Turns hold no
+  // message content: only which thread, run, repository, agent and model.
+  `
+  CREATE TABLE vm_events (
+    id INTEGER PRIMARY KEY,
+    at INTEGER NOT NULL,
+    vm_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    size TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    duration_ms INTEGER
+  );
+  CREATE INDEX vm_events_at ON vm_events (at);
+  CREATE TABLE turns (
+    thread_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    vm_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    repo TEXT,
+    agent TEXT,
+    model TEXT,
+    PRIMARY KEY (thread_id, run_id)
+  );
+  CREATE INDEX turns_at ON turns (at);
+  `,
 ];
 
 export function openDatabase(path: string): Database {
