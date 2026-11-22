@@ -50,8 +50,9 @@ export function Page<T extends string>({
 
 function Tabs<T extends string>({ tabs, tab, onTab }: { tabs: Tab<T>[]; tab?: T; onTab?: (tab: T) => void }) {
   const { hover, current, navProps, itemProps } = useSlidingNav(tab);
+  // On phones the tabs wrap instead of scrolling sideways: a scrolling row has no visible scrollbar there, so the last tabs looked cut off.
   return (
-    <nav {...navProps} className="relative -mx-1 flex shrink-0 gap-1 overflow-x-auto md:mx-0 md:w-48 md:flex-col">
+    <nav {...navProps} className="relative -mx-1 flex shrink-0 flex-wrap gap-1 md:mx-0 md:w-48 md:flex-col md:flex-nowrap">
       {hover && <NavIndicator box={hover.box} shown={hover.shown} slide={hover.slide} className="rounded-lg bg-muted/50" />}
       {current && <NavIndicator box={current.box} slide={current.slide} className="rounded-lg bg-accent" />}
       {tabs.map((entry) => (
