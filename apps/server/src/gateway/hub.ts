@@ -1,4 +1,4 @@
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { providers } from "../providers/index.ts";
 import { message, type Fleet } from "../fleet.ts";
 import { labelVcpus, type VmLoad } from "../placement.ts";
@@ -9,7 +9,7 @@ import { T3Rejected, type Backend, type Frame } from "../vm/backend.ts";
 import type { Stats } from "../vm/stats.ts";
 import { defaultAgents, pendingAgent, presentAgent, type AgentReport } from "./agents.ts";
 import { applyHeldCommand } from "./held.ts";
-import { isPathKey, projectForPath, projectRoot, translate, vmForPath } from "./paths.ts";
+import { isPathKey, projectForPath, projectRoot, translate, vmForPath, type Environments } from "./paths.ts";
 import { repositoryIdentity } from "./repos.ts";
 import {
   hasLiveWork,
@@ -62,6 +62,9 @@ const sha256 = (value: string) => new Bun.CryptoHasher("sha256").update(value).d
 
 /** How long a thread just placed on a VM counts toward its load before T3 lists it. */
 const launchGraceMs = 2 * 60_000;
+
+/** How long a request naming a thread no VM has reported yet waits for one to report it. */
+const unseenThreadWaitMs = 5_000;
 
 /** The local branch a launch starts its worktree from. One taken from origin is on every VM. */
 function launchBranch(strategy: unknown): string | undefined {
@@ -124,11 +127,17 @@ export class Hub extends EventEmitter<HubEvents> {
   }
 
   out(value: unknown, vmId: string) {
-    return translate(value, vmId, "out", this.projects());
+    return translate(value, vmId, "out", this.projects(), this.environments(vmId));
   }
 
   into<T>(value: T, vmId: string): T {
-    return translate(value, vmId, "in", this.projects()) as T;
+    return translate(value, vmId, "in", this.projects(), this.environments(vmId)) as T;
+  }
+
+  /** The VM's own environment ID, from its last config, and VM Bridge's, which clients know. */
+  private environments(vmId: string): Environments | undefined {
+    const vm = str(this.configs.get(vmId)?.environment?.environmentId);
+    return vm ? { vm, client: this.settings.get("bridgeId") } : undefined;
   }
 
   private bump() {
@@ -598,6 +607,25 @@ export class Hub extends EventEmitter<HubEvents> {
     );
   }
 
+  /**
+   * Routes a request, waiting briefly when it names a thread no VM has reported yet. A child thread a VM starts
+   * itself (T3's delegate_task) reaches its parent's stream a moment before that VM's shell lists it, so a
+   * client can open the child before VM Bridge knows which VM it is on.
+   */
+  async routeSoon(payload: Wire): Promise<string> {
+    const deadline = Date.now() + unseenThreadWaitMs;
+    for (;;) {
+      try {
+        return this.route(payload);
+      } catch (error) {
+        const threadId = str(payload.threadId);
+        const remaining = deadline - Date.now();
+        if (!threadId || this.store.threadVm(threadId) || remaining <= 0) throw error;
+        await once(this, "shell", { signal: AbortSignal.timeout(remaining) }).catch(() => {});
+      }
+    }
+  }
+
   routeOrNull(payload: unknown) {
     try {
       return this.route(payload);
@@ -641,7 +669,7 @@ export class Hub extends EventEmitter<HubEvents> {
       } finally {
         this.off("placement", listener);
       }
-    } else vmId = this.route(payload);
+    } else vmId = await this.routeSoon(payload);
 
     if (commandId && !previous) {
       // Claimed in one insert: a retry racing this one through placement adopts whatever VM and thread won,
