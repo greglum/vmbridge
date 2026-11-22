@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { SandboxError } from "@opencoredev/sandbox-sdk";
 import type { AgentAuth } from "../src/agent-auth/profiles.ts";
 import { openDatabase } from "../src/db.ts";
@@ -325,6 +325,34 @@ describe("setting up a provider", () => {
     await fleet.bases.settled();
     expect(fleet.setup("boxd")).toEqual({ state: "ready" });
     expect(store.base("boxd", "medium")?.snapshot).toBe("snap1");
+  });
+
+  test("every build logs its start, and its end with the time taken or the reason it failed", async () => {
+    const { fleet, driver } = setup();
+    const refused = new SandboxError("Boat POST /sandboxes failed (HTTP 401 unauthorized): unauthorized.", { code: "auth" });
+    const logs: string[] = [];
+    const log = spyOn(console, "log").mockImplementation((line: string) => void logs.push(line));
+    const error = spyOn(console, "error").mockImplementation((line: string) => void logs.push(line));
+    try {
+      const create = driver.create;
+      driver.create = async () => Promise.reject(refused);
+      fleet.prepareBase("boxd");
+      await fleet.bases.settled();
+      // A rotated or revoked key: the reason says what to do, not the HTTP error.
+      expect(fleet.setup("boxd")).toEqual({ state: "failed", reason: "boxd refused the API key. Enter a new one in Setup." });
+      driver.create = create;
+      fleet.prepareBase("boxd", true);
+      await fleet.bases.settled();
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+    expect(logs).toEqual([
+      "[base boxd:medium] build started",
+      expect.stringMatching(/^\[base boxd:medium\] build failed after \d+ s: boxd refused the API key\. Enter a new one in Setup\.$/),
+      "[base boxd:medium] build started",
+      expect.stringMatching(/^\[base boxd:medium\] ready in \d+ s$/),
+    ]);
   });
 
   test("a build that hangs stops holding its provider back after the limit", async () => {

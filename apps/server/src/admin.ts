@@ -141,6 +141,8 @@ export class Admin {
           else delete options[field.key];
         }
         settings.set("providerOptions", { ...settings.get("providerOptions"), [id]: options });
+        // New values, such as a key replacing one the provider refused, try a failed setup again.
+        if (settings.get("providers").includes(id)) fleet.prepareBase(id, true);
         fleet.emit("changed");
         return json(this.providerInfo(id));
       }

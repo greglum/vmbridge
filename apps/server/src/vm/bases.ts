@@ -1,5 +1,6 @@
+import { SandboxError } from "@opencoredev/sandbox-sdk";
 import type { ProviderId, ProviderSetup, VmSize } from "@vmbridge/contracts";
-import type { Driver } from "../providers/index.ts";
+import { providers, type Driver } from "../providers/index.ts";
 import type { BaseSnapshot, Store } from "../store.ts";
 import type { Traffic } from "../traffic.ts";
 import { prepareBase, setupStamp, t3Port } from "./runtime.ts";
@@ -140,18 +141,33 @@ export class Bases {
     if (this.building.has(key)) return;
     const failure = this.failures.get(key);
     if (failure && !retry && (!this.store.base(provider, size)?.snapshot || Date.now() - failure.at < baseRetryMs)) return;
-    const limit = setTimeout(this.changed, baseSetupLimitMs);
+    // Logged so a failing provider shows on the console too, not only in the dashboard. Reasons are an error's first
+    // line, and a build VM holds none of anyone's sign-ins.
+    const startedAt = Date.now();
+    const took = () => `${Math.round((Date.now() - startedAt) / 1000)} s`;
+    console.log(`[base ${key}] build started`);
+    const limit = setTimeout(() => {
+      console.error(`[base ${key}] still building after ${baseSetupLimitMs / 60_000} minutes`);
+      this.changed();
+    }, baseSetupLimitMs);
     const done = this.build(provider, size, t3Version)
       .then(
-        () => void this.failures.delete(key),
-        (error) => void this.failures.set(key, { at: Date.now(), reason: shortReason(error) }),
+        (built) => {
+          this.failures.delete(key);
+          console.log(built ? `[base ${key}] ready in ${took()}` : `[base ${key}] build skipped: provider removed`);
+        },
+        (error) => {
+          const reason = failureReason(provider, error);
+          this.failures.set(key, { at: Date.now(), reason });
+          console.error(`[base ${key}] build failed after ${took()}: ${reason}`);
+        },
       )
       .finally(() => {
         clearTimeout(limit);
         this.building.delete(key);
         this.changed();
       });
-    this.building.set(key, { startedAt: Date.now(), done });
+    this.building.set(key, { startedAt, done });
     this.changed();
   }
 
@@ -160,13 +176,14 @@ export class Bases {
     await Promise.all([...this.building.values()].map((build) => build.done));
   }
 
+  /** False when the provider was removed before the build began. */
   private async build(provider: ProviderId, size: VmSize, pending: string | Promise<string>) {
     const driver = this.driver(provider);
     const started = performance.now();
     try {
       const t3Version = await pending;
       // Removed while the version resolved.
-      if (!this.added(provider)) return;
+      if (!this.added(provider)) return false;
       const leftover = this.store.base(provider, size)?.builder;
       if (leftover) {
         await driver.destroy(leftover);
@@ -192,6 +209,7 @@ export class Bases {
       if (replaced && replaced !== snapshot) this.store.retireSnapshot(provider, replaced);
       await this.sweep(provider);
       this.record(provider, `build ${size} base snapshot`, "ok", Math.round(performance.now() - started));
+      return true;
     } catch (error) {
       this.record(provider, `build ${size} base snapshot: ${error instanceof Error ? error.message : String(error)}`, "error");
       throw error;
@@ -203,8 +221,10 @@ export class Bases {
   }
 }
 
-/** The first line of an error, short enough to show next to a provider. */
-function shortReason(error: unknown) {
+/** Why a build failed, short enough to show next to a provider. */
+function failureReason(provider: ProviderId, error: unknown) {
+  // A key that was rotated or revoked fails every build, and the provider's HTTP error does not say what to do.
+  if (error instanceof SandboxError && error.code === "auth") return `${providers[provider].label} refused the API key. Enter a new one in Setup.`;
   const line = (error instanceof Error ? error.message : String(error)).trim().split("\n")[0] ?? "";
   if (!line) return "The build failed.";
   return line.length > 200 ? `${line.slice(0, 197)}...` : line;
