@@ -8,7 +8,7 @@ import { Sandbox } from "railway";
 import { boatProvider } from "./boat.ts";
 import { daytonaProvider } from "./daytona.ts";
 import { e2bProvider } from "./e2b.ts";
-import { sdkDriver } from "./sdk.ts";
+import { retryNotFound, sdkDriver } from "./sdk.ts";
 import { required, type ProviderDefinition } from "./types.ts";
 
 export type { Box, Driver, ProviderDefinition, ProviderState } from "./types.ts";
@@ -29,7 +29,7 @@ const boxdProvider: ProviderDefinition = {
   defaultSize: "medium",
   open(config) {
     const provider = boxd({ apiKey: required(config, "apiKey", "boxd API key") });
-    return sdkDriver({
+    const driver = sdkDriver({
       id: "boxd",
       provider,
       sleep: "pause",
@@ -38,6 +38,7 @@ const boxdProvider: ProviderDefinition = {
       // Listing would otherwise skip sleeping machines, and reading their labels wakes them.
       listSleeping: async () => (await provider.listSleeping()).map(({ id, state }) => ({ id, state })),
     });
+    return { ...driver, create: (input) => retryNotFound(() => driver.create(input)) };
   },
 };
 
