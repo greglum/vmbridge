@@ -29,6 +29,22 @@ export interface SdkDriverOptions {
 
 export const notFound = (error: unknown) => error instanceof SandboxError && error.code === "not_found";
 
+/**
+ * Runs a new VM's create again when the provider answered that the machine does not exist. boxd sometimes says so
+ * to the SDK's first command on a machine it has only just created; the SDK then deletes that machine and fails,
+ * so another attempt under the same key starts clean. Any other failure is final.
+ */
+export async function retryNotFound<T>(create: () => Promise<T>, tries = 3, delayMs = 2_000): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await create();
+    } catch (error) {
+      if (attempt >= tries || !notFound(error)) throw error;
+      await Bun.sleep(delayMs * attempt);
+    }
+  }
+}
+
 /** A driver built only from the portable SDK API. */
 export function sdkDriver(options: SdkDriverOptions): Driver {
   const { provider } = options;
