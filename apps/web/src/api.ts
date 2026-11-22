@@ -46,8 +46,14 @@ export function useLive() {
     source.onopen = () => setOnline(true);
     source.onerror = () => {
       setOnline(false);
-      // A closed stream after a failed reconnect usually means the session ended.
-      if (source.readyState === EventSource.CLOSED) void api("/auth").catch(() => {});
+      // A closed stream after a failed reconnect usually means the session ended, such as after a password change elsewhere.
+      if (source.readyState !== EventSource.CLOSED) return;
+      void api<{ authenticated: boolean }>("/auth").then(
+        (auth) => {
+          if (!auth.authenticated) for (const listener of loggedOut) listener();
+        },
+        () => {},
+      );
     };
     source.onmessage = (event) => {
       const live = JSON.parse(event.data as string) as LiveMessage;

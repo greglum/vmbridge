@@ -89,7 +89,7 @@ export class Admin {
         return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": cookie } });
       }
       if (!auth.authenticated(request)) return json({ error: "Log in first." }, 401);
-      return await this.route(request, path);
+      return await this.route(request, path, server);
     } catch (error) {
       if (error instanceof TooManyAttempts) return json({ error: error.message }, 429);
       if (error instanceof BadRequest || error instanceof InvalidSignIn || error instanceof GitHubRejected || error instanceof SkillError) return json({ error: error.message }, 400);
@@ -97,7 +97,7 @@ export class Admin {
     }
   }
 
-  private async route(request: Request, path: string): Promise<Response> {
+  private async route(request: Request, path: string, server: Server<unknown>): Promise<Response> {
     const { settings, secrets, store, fleet, hub, clients, auth, gateway, agents, skills } = this.deps;
     const method = request.method;
     const [, section, id, action] = path.split("/");
@@ -106,7 +106,12 @@ export class Admin {
       return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": auth.logout(request) } });
     }
     if (path === "/key" && method === "POST") {
-      await auth.setKey(text((await body(request)).key, "The password"));
+      const input = await body(request);
+      const current = typeof input.current === "string" ? input.current : "";
+      const next = text(input.key, "The password");
+      // Not 401: the session is still fine, and the dashboard treats 401 as logged out.
+      const address = server.requestIP(request)?.address ?? "unknown";
+      if (!(await auth.changeKey(current, next, address))) return json({ error: "The current password is not right." }, 403);
       return json({ ok: true });
     }
     if (path === "/overview" && method === "GET") return json(this.overview());
@@ -531,11 +536,18 @@ export class Admin {
 
   /** Server-sent events: every traffic event, and a fresh overview whenever the fleet changes. */
   private events(request: Request) {
-    const { traffic, fleet, hub } = this.deps;
+    const { traffic, fleet, hub, auth } = this.deps;
     const encoder = new TextEncoder();
     let cleanup = () => {};
+    let closed = false;
     const stream = new ReadableStream<Uint8Array>({
       start: (controller) => {
+        const close = () => {
+          if (closed) return;
+          closed = true;
+          cleanup();
+          controller.close();
+        };
         const send = (live: LiveMessage) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(live)}\n\n`));
         let timer: ReturnType<typeof setTimeout> | undefined;
         const changed = () => {
@@ -548,20 +560,23 @@ export class Admin {
         const heartbeat = setInterval(() => controller.enqueue(encoder.encode(": ping\n\n")), 25_000);
         fleet.on("changed", changed);
         hub.on("shell", changed);
+        // The cookie was checked when the stream opened. Stop sending once that session ends.
+        const unwatch = auth.watch(request, close);
         send({ type: "overview", overview: this.overview() });
         cleanup = () => {
           clearTimeout(timer);
           clearInterval(heartbeat);
           unsubscribe();
+          unwatch();
           fleet.off("changed", changed);
           hub.off("shell", changed);
         };
-        request.signal.addEventListener("abort", () => {
-          cleanup();
-          controller.close();
-        });
+        request.signal.addEventListener("abort", close);
       },
-      cancel: () => cleanup(),
+      cancel: () => {
+        closed = true;
+        cleanup();
+      },
     });
     return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" } });
   }
