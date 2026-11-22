@@ -315,10 +315,14 @@ try {
 } finally {
   client?.close();
   if (vmId && !values.keep) {
-    await admin("DELETE", `/vms/${vmId}`).then(
-      () => log(`deleted VM ${vmId}`),
-      (error) => log(`could not delete VM ${vmId}: ${error}`),
-    );
+    // Every VM the project ended up on, in case a new thread went to an extra VM.
+    const project = (await admin<{ projects: Json[] }>("GET", "/overview")).projects.find((entry) => (entry.vmIds as string[]).includes(vmId!));
+    for (const id of new Set([vmId, ...((project?.vmIds as string[] | undefined) ?? [])])) {
+      await admin("DELETE", `/vms/${id}`).then(
+        () => log(`deleted VM ${id}`),
+        (error) => log(`could not delete VM ${id}: ${error}`),
+      );
+    }
   }
   // Unpair this run's device so test devices don't pile up in the dashboard.
   const { clients } = await admin<{ clients: { id: string; name: string }[] }>("GET", "/overview");
