@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { AgentKind, GitHubAccount, ProviderId, RepoRule, VmSize } from "@vmbridge/contracts";
+import type { ServerConfig } from "./gateway/types.ts";
 
 export interface ProviderPreference {
   enabled?: boolean;
@@ -34,6 +35,8 @@ interface SettingValues {
   instructionSync: Partial<Record<AgentKind, boolean>>;
   /** Every skill in this machine's skill folders is installed, and removed when its folder goes. */
   syncLocalSkills: boolean;
+  /** T3's config from the last VM removed, kept while no VM has one (see `Hub.forget`). */
+  fallbackConfig: { vmId: string; config: ServerConfig } | null;
 }
 
 const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
@@ -52,6 +55,7 @@ const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
   agentProfiles: () => ({}),
   instructionSync: () => ({}),
   syncLocalSkills: () => false,
+  fallbackConfig: () => null,
 };
 
 export class Settings {

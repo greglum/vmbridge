@@ -103,6 +103,8 @@ export class Hub extends EventEmitter<HubEvents> {
     this.setMaxListeners(0);
     this.shells = store.snapshots<Shell>("shell");
     this.configs = store.snapshots<ServerConfig>("config");
+    const fallback = settings.get("fallbackConfig");
+    if (fallback && !this.configs.size) this.configs.set(fallback.vmId, fallback.config);
     this.schedules = store.snapshots<ScheduledTasks>("scheduled_tasks");
     this.sequence = settings.get("shellSequence");
     fleet.onConnect = (vmId, backend) => this.attach(vmId, backend);
@@ -138,6 +140,11 @@ export class Hub extends EventEmitter<HubEvents> {
   private async attach(vmId: string, backend: Backend) {
     const config = await backend.call<ServerConfig>("server.getConfig", {});
     if (config.environment?.orchestrationProtocolVersion !== 2) throw new Error("The VM's T3 server changed protocol.");
+    const fallback = this.settings.get("fallbackConfig");
+    if (fallback) {
+      this.configs.delete(fallback.vmId);
+      this.settings.set("fallbackConfig", null);
+    }
     this.configs.set(vmId, config);
     this.store.saveSnapshot(vmId, "config", config);
 
@@ -216,10 +223,15 @@ export class Hub extends EventEmitter<HubEvents> {
     this.emit("shell");
   }
 
-  /** A removed VM's rows are gone from the store; drop what is still cached in memory too. */
+  /**
+   * A removed VM's rows are gone from the store; drop what is still cached in memory too. The last VM's config
+   * stays until another VM connects: T3 clients need one, and without it VM Bridge would start a VM to read one.
+   */
   private forget(vmId: string) {
     this.shells.delete(vmId);
-    this.configs.delete(vmId);
+    const config = this.configs.get(vmId);
+    if (config && this.configs.size === 1) this.settings.set("fallbackConfig", { vmId, config });
+    else this.configs.delete(vmId);
     this.schedules.delete(vmId);
     this.bump();
     this.emit("shell");
@@ -386,7 +398,8 @@ export class Hub extends EventEmitter<HubEvents> {
   /** VMs whose last report, from when they were awake, says this agent can update. */
   private outdated(instanceId: string) {
     return [...this.configs].flatMap(([vmId, config]) => {
-      if (this.store.vm(vmId)?.state === "gone") return [];
+      const vm = this.store.vm(vmId);
+      if (!vm || vm.state === "gone") return [];
       const entry = config.providers?.find((provider) => provider.instanceId === instanceId);
       const advisory = entry?.versionAdvisory as Wire | undefined;
       return entry && advisory?.status === "behind_latest" && advisory.canUpdate === true && advisory.updateCommand ? [{ vmId, entry }] : [];
