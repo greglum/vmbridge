@@ -129,7 +129,7 @@ export class Rpc {
       },
       "filesystem.browse": (call) => this.browse(call),
       "filesystem.getMetadata": (call) => this.metadata(call),
-      "vcs.listRefs": (call) => this.vcsFallback(call),
+      "vcs.listRefs": (call) => this.listRefs(call),
       "vcs.refreshStatus": (call) => this.vcsFallback(call),
       "vcs.refreshBranch": (call) => this.vcsFallback(call),
       subscribeVcsBranch: (call) => this.vcsSubscription(call),
@@ -311,6 +311,41 @@ export class Rpc {
     return { project, cwd: cwd! };
   }
 
+  /**
+   * A project's branches come from its primary VM, followed by the local branches only its other VMs have, so a
+   * branch made on any of them can start a new thread, which placement then puts on a VM that has it.
+   */
+  private async listRefs(call: Call) {
+    const cwd = str(call.payload.cwd);
+    const project = cwd ? projectForPath(cwd, this.hub.projects()) : undefined;
+    const primary = project && primaryVm(project);
+    const backend = primary?.checkoutPath ? this.hub.fleet.backend(primary.vmId) : undefined;
+    if (!project || !primary || !backend || project.vms.length < 2 || call.payload.refKind === "remote") return this.vcsFallback(call);
+    const query = (str(call.payload.query) ?? "").toLowerCase();
+    const elsewhere = [...(await this.hub.sparseBranches(project.id))]
+      .filter(([name, vms]) => !vms.has(primary.vmId) && name.toLowerCase().includes(query))
+      .map(([name]) => name)
+      .sort();
+    if (!elsewhere.length) return this.forward(call);
+    const vmId = primary.vmId;
+    const exit = await new Promise<Frame>((resolve, reject) => {
+      try {
+        backend.request(call.tag, this.hub.into(call.payload, vmId), (frame) => frame._tag === "Exit" && resolve(frame));
+      } catch (error) {
+        reject(error);
+      }
+    });
+    if ((exit.exit as Wire | undefined)?._tag !== "Success") return call.client.send({ ...(this.hub.out(exit, vmId) as Wire), requestId: call.id });
+    const listed = this.hub.out((exit.exit as Wire).value, vmId) as Wire;
+    const extra = elsewhere.map((name) => ({ name, current: false, isDefault: false, worktreePath: null }));
+    // They follow the primary's last page, so earlier pages and cursors stay as the primary gave them.
+    this.reply(call, {
+      ...listed,
+      refs: listed.nextCursor == null ? [...((listed.refs as Wire[] | undefined) ?? []), ...extra] : listed.refs,
+      totalCount: Number(listed.totalCount ?? 0) + extra.length,
+    });
+  }
+
   private async vcsFallback(call: Call) {
     const target = this.unreachableProject(call);
     if (!target) return this.forward(call);
@@ -330,7 +365,7 @@ export class Rpc {
 
   /**
    * VCS streams follow their VM: native while it is awake, VM Bridge's own answer while it sleeps. A project
-   * root path follows the primary VM, so branches made on another of the project's VMs show once pushed.
+   * root path follows the primary VM.
    */
   private async vcsSubscription(call: Call) {
     const cwd = str(call.payload.cwd);

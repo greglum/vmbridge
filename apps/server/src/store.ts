@@ -160,6 +160,18 @@ export class Store {
     this.projectCache = null;
   }
 
+  /** The local branches a project's checkout on a VM had when VM Bridge last read them. */
+  branches(projectId: string, vmId: string): string[] {
+    const row = this.db
+      .query<{ branches: string | null }, [string, string]>("SELECT branches FROM project_vms WHERE project_id = ? AND vm_id = ?")
+      .get(projectId, vmId);
+    return row?.branches ? (JSON.parse(row.branches) as string[]) : [];
+  }
+
+  setBranches(projectId: string, vmId: string, branches: readonly string[]) {
+    this.db.query("UPDATE project_vms SET branches = ? WHERE project_id = ? AND vm_id = ?").run(JSON.stringify(branches), projectId, vmId);
+  }
+
   /** Takes a VM away from every project it held, such as when the provider lost it. */
   removeVmFromProjects(vmId: string) {
     this.db.query("DELETE FROM project_vms WHERE vm_id = ?").run(vmId);

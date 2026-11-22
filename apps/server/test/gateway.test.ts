@@ -223,6 +223,53 @@ describe("rpc", () => {
     expect(b.payload.threadId).toBe(a.payload.threadId);
   });
 
+  test("a project's branch list adds the branches only its other VMs have, and a launch from one goes to a VM that has it", async () => {
+    const traffic = { record: () => {} } as unknown as Traffic;
+    const store = new Store(openDatabase(":memory:"));
+    for (const id of ["vm1", "vm2"]) store.insertVm({ id, provider: "boxd", name: id, size: "medium", state: "ready", createdAt: 0 });
+    store.updateVm("vm2", { state: "sleeping" });
+    store.insertProject({ id: "p1", url: "https://github.com/acme/app.git", branch: null, title: "app", createdAt: 0 });
+    store.addProjectVm("p1", "vm1");
+    store.setCheckout("p1", "vm1", "/workspace/app");
+    store.addProjectVm("p1", "vm2");
+    store.setCheckout("p1", "vm2", "/workspace/app");
+    // vm2 is asleep: its branches come from what was read there before it slept, and from the threads it last reported.
+    store.saveSnapshot("vm2", "shell", { threads: [{ id: "t2", projectId: "p1", branch: "t3code/fix-login" }, { id: "t3", projectId: "p1", branch: "main" }] });
+    store.setBranches("p1", "vm2", ["main", "hand-made"]);
+    const main = { name: "main", current: true, isDefault: true, worktreePath: null };
+    const primary = {
+      call: async () => ({ refs: [main] }),
+      request: (_tag: string, _payload: unknown, handler: (frame: Wire) => void) => {
+        queueMicrotask(() =>
+          handler({ _tag: "Exit", exit: { _tag: "Success", value: { refs: [main], isRepo: true, hasPrimaryRemote: true, nextCursor: null, totalCount: 1 } } }),
+        );
+        return () => {};
+      },
+    };
+    const only: (ReadonlySet<string> | undefined)[] = [];
+    const placeThread = async (_projectId: string, options: { only?: ReadonlySet<string>; placed: (vmId: string) => void }) => {
+      only.push(options.only);
+      options.placed("vm1");
+      return { vmId: "vm1", notice: null };
+    };
+    const fleet = Object.assign(new EventEmitter(), { backend: (vmId: string) => (vmId === "vm1" ? primary : undefined), placeThread }) as unknown as Fleet;
+    const hub = new Hub(store, new Settings(store.db), fleet, traffic, unmeasured);
+    const rpc = new Rpc(hub, {} as never, {} as never, traffic, () => false);
+    const sent: Wire[] = [];
+    const client: RpcClient = { clientId: "c1", cancels: new Map(), send: (frame) => sent.push(frame as Wire), open: () => true };
+    await rpc.handle(client, { _tag: "Request", id: 1, tag: "vcs.listRefs", payload: { cwd: "/projects/p1/app" } });
+    expect((sent.at(-1)?.exit as Wire).value).toMatchObject({
+      refs: [main, ...["hand-made", "t3code/fix-login"].map((name) => ({ name, current: false, isDefault: false, worktreePath: null }))],
+      totalCount: 3,
+    });
+
+    const launch = (baseRef: string) => ({ commandId: crypto.randomUUID(), projectId: "p1", workspaceStrategy: { type: "worktree", baseRef } });
+    await hub.prepare("orchestration.launchThread", launch("t3code/fix-login"), true);
+    await hub.prepare("orchestration.launchThread", launch("hand-made"), true);
+    await hub.prepare("orchestration.launchThread", launch("main"), true);
+    expect(only).toEqual([new Set(["vm2"]), new Set(["vm2"]), undefined]);
+  });
+
   // With or without a thread ID from the client: without one, each retry mints its own.
   for (const threadId of [undefined, "t-explicit"]) {
     test(`a retry that placement sent to another VM follows the VM and thread that won, and gives back its own reservation (${threadId ? "client" : "minted"} thread ID)`, async () => {

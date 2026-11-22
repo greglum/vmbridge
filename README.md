@@ -58,8 +58,9 @@ one turn alone, 3 per vCPU took 2x, and 4 per vCPU took over 3x, with tests star
   Subagents an agent starts run on its VM too.
 - Extra VMs sleep when idle like any other, and are never deleted on their own, since they may hold
   unpushed work. Delete one from the dashboard when you no longer need it.
-- A branch made on one of a project's VMs shows on the others once it is pushed. Branch lists for the
-  project itself come from its first VM.
+- The project's branch list shows branches from all its VMs, without pushing. A new thread started
+  from a branch only some VMs have goes to one of those, even a busy one, since a new VM would not have
+  it. If those VMs are gone, the usual rules apply.
 
 ## Environment variables
 
