@@ -153,7 +153,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
   }
 
   /** Creates a VM, on the default provider and size unless told otherwise. It is not started or connected yet. */
-  async create(choice: { provider?: ProviderId; size?: VmSize } = {}): Promise<VmRow> {
+  async create(choice: { provider?: ProviderId; size?: VmSize; discardOnError?: boolean } = {}): Promise<VmRow> {
     const provider = choice.provider ?? this.settings.get("defaultProvider");
     if (!provider) throw new NoProvider();
     if (!this.settings.get("providers").includes(provider)) throw new Error(`Add ${providers[provider].label} in Setup first.`);
@@ -170,7 +170,11 @@ export class Fleet extends EventEmitter<FleetEvents> {
         box = await driver.create({ key: id, size, labels: this.labels(), ports: [t3Port] });
       } catch (error) {
         this.traffic.record({ kind: "provider", operation: "create VM", vmId: id, status: "error" });
-        this.setState(id, "error", message(error));
+        // A refused create leaves nothing at the provider, so a caller with its own error report drops the row.
+        if (choice.discardOnError) {
+          this.store.deleteVm(id);
+          this.emit("changed");
+        } else this.setState(id, "error", message(error));
         throw error;
       }
       this.store.updateVm(id, { sandboxId: box.id });
@@ -537,10 +541,10 @@ export class Fleet extends EventEmitter<FleetEvents> {
         if (!choice) throw new Error("None of this project's VMs could start, and VM Bridge could not add one.");
         if (choice.kind === "create") {
           const like = this.store.vm(primary);
-          const existing = new Set(this.store.vms().map((vm) => vm.id));
+          const target = like ? { provider: like.provider, size: like.size } : this.placement(project.url);
           let vmId: string | undefined;
           try {
-            vmId = await this.addVm(project, progress, like ? { provider: like.provider, size: like.size } : this.placement(project.url));
+            vmId = await this.addVm(project, progress, { ...target, discardOnError: true });
             await this.setUp(vmId, projectId, progress);
             this.overflowFailedAt.delete(projectId);
             placed(vmId);
@@ -548,9 +552,6 @@ export class Fleet extends EventEmitter<FleetEvents> {
           } catch (error) {
             this.overflowFailedAt.set(projectId, Date.now());
             if (vmId) failed.add(vmId);
-            // A create the provider refused leaves nothing there, so its row goes too rather than piling up.
-            for (const vm of this.store.vms()) if (!existing.has(vm.id) && vm.state === "error" && !vm.sandboxId) this.store.deleteVm(vm.id);
-            this.emit("changed");
             this.traffic.record({ kind: "system", operation: `add a VM for ${project.title}: ${message(error)}`, vmId, status: "error" });
             continue;
           }
@@ -588,7 +589,11 @@ export class Fleet extends EventEmitter<FleetEvents> {
   }
 
   /** Gives a project another VM: an idle one holding no project if one matches, else a new one. */
-  private async addVm(project: ProjectRow, progress: (detail: string) => void, target: { provider: ProviderId; size: VmSize }): Promise<string> {
+  private async addVm(
+    project: ProjectRow,
+    progress: (detail: string) => void,
+    target: { provider: ProviderId; size: VmSize; discardOnError?: boolean },
+  ): Promise<string> {
     const taken = new Set(this.store.projects().flatMap((p) => p.vms.map((entry) => entry.vmId)));
     const free = this.store
       .vms()
