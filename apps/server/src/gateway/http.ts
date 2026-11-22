@@ -161,7 +161,7 @@ export class T3Gateway {
 
   /** Thread reads: from the VM when it is awake, from the cached transcript while it sleeps. */
   private async thread(threadId: string, view: string | undefined, url: URL) {
-    const vmId = this.hub.route({ threadId });
+    const vmId = await this.hub.routeSoon({ threadId });
     const backend = this.hub.fleet.backend(vmId);
     if (!backend) {
       const cached = this.hub.sleepingProjection(threadId);

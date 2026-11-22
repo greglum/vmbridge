@@ -466,9 +466,9 @@ export class Rpc {
   }
 
   /** A thread stream: live from the VM when awake, the cached transcript while it sleeps. */
-  private subscribeThread(call: Call) {
+  private async subscribeThread(call: Call) {
     const threadId = String(call.payload.threadId);
-    const vmId = this.hub.route(call.payload);
+    const vmId = await this.hub.routeSoon(call.payload);
     let end: (() => void) | undefined;
     let closed = false;
     const attach = () => {

@@ -11,6 +11,7 @@ import { Settings } from "../src/settings.ts";
 import type { Wire } from "../src/gateway/types.ts";
 import type { VmLoad } from "../src/placement.ts";
 import { Store, type ProjectRow, type VmRow } from "../src/store.ts";
+import type { Backend } from "../src/vm/backend.ts";
 
 /** No resource readings: placement goes by thread counts and size labels alone. */
 const unmeasured = { get: () => null, lastDisk: () => null };
@@ -367,4 +368,79 @@ describe("rpc", () => {
       expect(turnsSeen).toEqual([1, 0]);
     });
   }
+});
+
+describe("child threads a VM starts itself", () => {
+  const parent = { id: "parent", projectId: "p1", title: "Fix login", status: "running", worktreePath: "/workspace/.t3/wt/1" };
+  // As T3's delegate_task names it: the ID holds the MCP command, not the parent.
+  const child = {
+    id: "thread:delegated-task:command%3Amcp%3Ac1%3Adelegate-task%3Ad1",
+    projectId: "p1",
+    title: "Run the tests",
+    status: "running",
+    creationSource: "mcp",
+    worktreePath: "/workspace/.t3/wt/1",
+    lineage: { parentThreadId: "parent", relationshipToParent: "subagent", rootThreadId: "parent" },
+  };
+
+  /** A project on two VMs, primary vm1, with the parent thread running on vm2 as vm2's shell reports it. */
+  async function setup() {
+    const store = new Store(openDatabase(":memory:"));
+    for (const id of ["vm1", "vm2"]) store.insertVm({ id, provider: "boxd", name: id, size: "medium", state: "ready", createdAt: 0 });
+    store.insertProject({ id: "p1", url: "https://github.com/acme/app.git", branch: null, title: "app", createdAt: 0 });
+    for (const id of ["vm1", "vm2"]) {
+      store.addProjectVm("p1", id);
+      store.setCheckout("p1", id, "/workspace/app");
+    }
+    let shell: (values: unknown[]) => void = () => {};
+    const vm2 = {
+      call: async () => ({ environment: { orchestrationProtocolVersion: 2, environmentId: "env-vm2" } }),
+      request: (tag: string, _payload: unknown, handler: (frame: unknown) => void) => {
+        if (tag === "orchestration.subscribeShell") shell = (values) => handler({ _tag: "Chunk", values });
+        return () => {};
+      },
+    } as unknown as Backend;
+    const placeThread = async () => {
+      throw new Error("A child thread is never placed.");
+    };
+    const fleet = Object.assign(new EventEmitter(), { backend: (id: string) => (id === "vm2" ? vm2 : undefined), touch: () => {}, placeThread }) as unknown as Fleet;
+    const hub = new Hub(store, new Settings(store.db), fleet, { record: () => {} } as unknown as Traffic, unmeasured);
+    await fleet.onConnect("vm2", vm2);
+    shell([{ kind: "snapshot", snapshot: { projects: [], threads: [parent], archivedThreads: [] } }]);
+    return { hub, report: (thread: Wire) => shell([{ kind: "thread.updated", thread, location: "active", sequence: 2 }]) };
+  }
+
+  test("a child opened before its VM's shell lists it routes to the parent's VM once the shell does", async () => {
+    const { hub, report } = await setup();
+    expect(() => hub.route({ threadId: child.id })).toThrow("cannot tell which VM");
+    const opened = hub.routeSoon({ threadId: child.id });
+    const messaged = hub.prepare("orchestration.dispatchCommand", { type: "message.dispatch", commandId: "m1", threadId: child.id, text: "Go on" }, true);
+    report(child);
+    expect(await opened).toBe("vm2");
+    expect((await messaged).vmId).toBe("vm2");
+    // From then on it routes at once, and stays on vm2 although the project's primary VM is vm1.
+    expect(hub.route({ threadId: child.id, cwd: "/projects/p1/app" })).toBe("vm2");
+    hub.close();
+  });
+
+  test("the merged shell keeps the child's lineage and IDs, and maps its shared worktree to its VM", async () => {
+    const { hub, report } = await setup();
+    report(child);
+    const rows = hub.shell().threads ?? [];
+    expect(rows.find((row) => row.id === child.id)).toEqual({ ...child, worktreePath: "/vms/vm2/workspace/.t3/wt/1" });
+    expect(rows.find((row) => row.id === "parent")?.worktreePath).toBe("/vms/vm2/workspace/.t3/wt/1");
+    hub.close();
+  });
+
+  test("the parent's link to its child names VM Bridge's environment, so T3 opens it, and the VM's going back", async () => {
+    const { hub } = await setup();
+    const bridge = hub.settings.get("bridgeId");
+    const reply = (environment: string) => ({
+      type: "assistant_message",
+      text: `Child done ([thread](t3-thread://v2/${environment}/${child.id})), also https://app.t3.codes/threads/${environment}/parent`,
+    });
+    expect(hub.out(reply("env-vm2"), "vm2")).toEqual(reply(bridge));
+    expect(hub.into(reply(bridge), "vm2")).toEqual(reply("env-vm2"));
+    hub.close();
+  });
 });
