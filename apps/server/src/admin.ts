@@ -155,7 +155,11 @@ export class Admin {
       if (action === "add" && method === "POST") {
         await fleet.driver(id).verify();
         const added = settings.get("providers");
-        if (!added.includes(id)) settings.set("providers", [...added, id]);
+        if (!added.includes(id)) {
+          settings.set("providers", [...added, id]);
+          // So the first VM there can already start from a base snapshot.
+          void fleet.prepareBase(id).catch(() => {});
+        }
         // The first provider added becomes the default.
         if (!settings.get("defaultProvider")) settings.set("defaultProvider", id);
         this.providersChanged();
@@ -171,6 +175,7 @@ export class Admin {
       if (!action && method === "DELETE") {
         const remaining = settings.get("providers").filter((entry) => entry !== id);
         settings.set("providers", remaining);
+        void fleet.bases.drop(id).catch(() => {});
         if (settings.get("defaultProvider") === id) settings.set("defaultProvider", remaining[0] ?? null);
         this.providersChanged();
         return json(this.providerInfo(id));

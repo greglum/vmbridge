@@ -68,6 +68,18 @@ const projectFields = { branch: "branch", title: "title" } as const;
 
 type ProjectUpdate = Partial<Pick<ProjectRow, keyof typeof projectFields>>;
 
+/** The snapshot new VMs of one provider and size start from. */
+export interface BaseSnapshot {
+  snapshot: string | null;
+  /** `setupStamp` of what the snapshot holds. */
+  stamp: string | null;
+  createdAt: number | null;
+  /** The sandbox building the next snapshot, kept until it is deleted so a build cut short by a restart is cleaned up. */
+  builder: string | null;
+}
+
+const baseFields = { snapshot: "snapshot", stamp: "stamp", createdAt: "created_at", builder: "builder" } as const;
+
 /** JSON caches of what each VM's T3 server last reported, kept so sleeping VMs still render. */
 type SnapshotKind = "shell" | "config" | "scheduled_tasks";
 
@@ -103,6 +115,47 @@ export class Store {
   updateVm(id: string, update: VmUpdate) {
     const { sql, values } = assignments(vmFields, update);
     if (sql) this.db.query(`UPDATE vms SET ${sql} WHERE id = ?`).run(...values, id);
+  }
+
+  base(provider: ProviderId, size: VmSize): BaseSnapshot | null {
+    return this.db
+      .query<BaseSnapshot, [string, string]>(
+        "SELECT snapshot, stamp, created_at AS createdAt, builder FROM base_snapshots WHERE provider = ? AND size = ?",
+      )
+      .get(provider, size);
+  }
+
+  bases(provider: ProviderId): (BaseSnapshot & { size: VmSize })[] {
+    return this.db
+      .query<BaseSnapshot & { size: VmSize }, [string]>(
+        "SELECT size, snapshot, stamp, created_at AS createdAt, builder FROM base_snapshots WHERE provider = ?",
+      )
+      .all(provider);
+  }
+
+  saveBase(provider: ProviderId, size: VmSize, update: Partial<BaseSnapshot>) {
+    const { sql, values } = assignments(baseFields, update);
+    this.db.query("INSERT INTO base_snapshots (provider, size) VALUES (?, ?) ON CONFLICT DO NOTHING").run(provider, size);
+    if (sql) this.db.query(`UPDATE base_snapshots SET ${sql} WHERE provider = ? AND size = ?`).run(...values, provider, size);
+  }
+
+  deleteBase(provider: ProviderId, size: VmSize) {
+    this.db.query("DELETE FROM base_snapshots WHERE provider = ? AND size = ?").run(provider, size);
+  }
+
+  retiredSnapshots(provider: ProviderId): string[] {
+    return this.db
+      .query<{ snapshot: string }, [string]>("SELECT snapshot FROM retired_snapshots WHERE provider = ?")
+      .all(provider)
+      .map((row) => row.snapshot);
+  }
+
+  retireSnapshot(provider: ProviderId, snapshot: string) {
+    this.db.query("INSERT INTO retired_snapshots (provider, snapshot) VALUES (?, ?) ON CONFLICT DO NOTHING").run(provider, snapshot);
+  }
+
+  forgetRetired(provider: ProviderId, snapshot: string) {
+    this.db.query("DELETE FROM retired_snapshots WHERE provider = ? AND snapshot = ?").run(provider, snapshot);
   }
 
   /** Forgets a VM. Its projects stay, on their other VMs or a fresh one next time they are used. */

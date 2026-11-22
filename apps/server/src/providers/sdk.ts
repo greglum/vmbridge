@@ -23,7 +23,7 @@ export interface SdkDriverOptions {
   create?: Partial<CreateOptions>;
   /** Lists sleeping sandboxes the SDK listing leaves out (boxd). */
   listSleeping?: () => Promise<{ id: string; state: ProviderState }[]>;
-  /** Deletes a checkpoint, for providers that keep them until told to (Railway). The SDK has no delete. */
+  /** Deletes a checkpoint or base snapshot where the SDK has no delete for this provider. */
   deleteCheckpoint?: (checkpoint: string) => Promise<void>;
 }
 
@@ -58,8 +58,8 @@ export function sdkDriver(options: SdkDriverOptions): Driver {
       ...options.create,
       // A checkpoint restore is a new sandbox, so it needs a new key.
       key: from ? `${input.key}-${Date.now().toString(36)}` : input.key,
-      // Providers whose image fixes the machine (Freestyle, Superserve) refuse any size.
-      size: sized || !provider.capabilities.has("size") ? undefined : input.size,
+      // Providers whose image fixes the machine (Freestyle, Superserve) refuse any size, and a snapshot fixes it too.
+      size: from || sized || !provider.capabilities.has("size") ? undefined : input.size,
       labels: input.labels,
       ports: input.ports,
       from,
@@ -77,8 +77,15 @@ export function sdkDriver(options: SdkDriverOptions): Driver {
       return [];
     },
 
-    create: (input) => create(input),
+    create,
     connect,
+
+    snapshot: provider.capabilities.has("snapshot")
+      ? async (box) => {
+          if (!hasCapability(box, "snapshot")) throw new Error(`${provider.name} cannot snapshot this VM.`);
+          return (await box.snapshot()).id;
+        }
+      : undefined,
 
     async states(labels) {
       const states = new Map<string, ProviderState>();
@@ -132,7 +139,8 @@ export function sdkDriver(options: SdkDriverOptions): Driver {
     },
 
     async deleteCheckpoint(checkpoint) {
-      await options.deleteCheckpoint?.(checkpoint);
+      if (options.deleteCheckpoint) await options.deleteCheckpoint(checkpoint);
+      else await provider.deleteSnapshot?.(checkpoint);
     },
   };
 }

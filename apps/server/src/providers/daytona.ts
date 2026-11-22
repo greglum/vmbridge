@@ -52,16 +52,26 @@ export const daytonaProvider: ProviderDefinition = {
       throw new Error(`Daytona sandbox ${sandboxId} did not settle within ${Math.round(timeoutMs / 1000)} seconds.`);
     }
 
+    // Daytona finds a snapshot by name but deletes it only by id.
+    async function deleteSnapshot(name: string) {
+      try {
+        const { id } = await api.request<{ id: string }>("GET", "/snapshots/{name}", { params: { name } });
+        await api.request("DELETE", "/snapshots/{id}", { params: { id } });
+      } catch (error) {
+        if (!notFound(error)) throw error;
+      }
+    }
+
     return {
       ...base,
 
       // The SDK sends `target: "us"` unless told otherwise, which fails for orgs without that region, and it
       // resizes non-default sizes with a stop, resize and start. Creating through the API leaves out the
       // target (Daytona uses the org's default region) and picks a snapshot of the right size.
-      async create(input) {
+      async create(input, from) {
         const sandbox = await api.request<DaytonaSandbox>("POST", "/sandbox", {
           body: {
-            snapshot: snapshots[input.size],
+            snapshot: from ?? snapshots[input.size],
             // The SDK's label encoding, so `connectSandbox` and `listSandboxes` treat it as its own.
             labels: { ...input.labels, "sandbox-sdk": "1", "sandbox-sdk-key": input.key },
             public: false,
@@ -77,6 +87,30 @@ export const daytonaProvider: ProviderDefinition = {
           throw error;
         }
       },
+
+      // A base snapshot keeps the sandbox's disk and size. Daytona makes cold snapshots of container sandboxes from a
+      // stopped one, and a snapshot can start sandboxes once it is active.
+      async snapshot(box) {
+        const name = `vmbridge-base-${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+        await api.request("POST", "/sandbox/{sandboxId}/stop", { params: { sandboxId: box.id } });
+        await waitFor(box.id, (state) => state === "stopped", 3 * 60_000);
+        await api.request("POST", "/sandbox/{sandboxId}/snapshot", { params: { sandboxId: box.id }, body: { name } });
+        try {
+          const deadline = Date.now() + 15 * 60_000;
+          while (Date.now() < deadline) {
+            const { state } = await api.request<{ state: string }>("GET", "/snapshots/{name}", { params: { name } });
+            if (state === "active") return name;
+            if (failed.has(state)) throw new Error(`Daytona could not save the snapshot: it is ${state}.`);
+            await Bun.sleep(2000);
+          }
+          throw new Error("Daytona did not finish the snapshot within 15 minutes.");
+        } catch (error) {
+          await deleteSnapshot(name).catch(() => undefined);
+          throw error;
+        }
+      },
+
+      deleteCheckpoint: deleteSnapshot,
 
       async sleep(box) {
         await api.request("POST", "/sandbox/{sandboxId}/stop", { params: { sandboxId: box.id } });

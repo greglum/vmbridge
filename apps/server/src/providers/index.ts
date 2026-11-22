@@ -1,3 +1,4 @@
+import { Boxd, NotFoundError } from "@boxd-sh/sdk";
 import { boxd } from "@opencoredev/sandbox-sdk/boxd";
 import { freestyle } from "@opencoredev/sandbox-sdk/freestyle";
 import { instabox } from "@opencoredev/sandbox-sdk/instabox";
@@ -8,12 +9,20 @@ import { Sandbox } from "railway";
 import { boatProvider } from "./boat.ts";
 import { daytonaProvider } from "./daytona.ts";
 import { e2bProvider } from "./e2b.ts";
-import { retryNotFound, sdkDriver } from "./sdk.ts";
+import { notFound, retryNotFound, sdkDriver } from "./sdk.ts";
 import { required, type ProviderDefinition } from "./types.ts";
 
 export type { Box, Driver, ProviderDefinition, ProviderState } from "./types.ts";
 
 const minutes = (count: number) => count * 60_000;
+
+async function ignoreNotFound(request: Promise<unknown>) {
+  try {
+    await request;
+  } catch (error) {
+    if (!notFound(error)) throw error;
+  }
+}
 
 const boxdProvider: ProviderDefinition = {
   id: "boxd",
@@ -28,7 +37,8 @@ const boxdProvider: ProviderDefinition = {
   sizes: { small: "1 vCPU, 4 GB", medium: "2 vCPU, 8 GB", large: "4 vCPU, 16 GB" },
   defaultSize: "medium",
   open(config) {
-    const provider = boxd({ apiKey: required(config, "apiKey", "boxd API key") });
+    const apiKey = required(config, "apiKey", "boxd API key");
+    const provider = boxd({ apiKey });
     const driver = sdkDriver({
       id: "boxd",
       provider,
@@ -37,8 +47,19 @@ const boxdProvider: ProviderDefinition = {
       create: { idleTimeoutMs: minutes(60) },
       // Listing would otherwise skip sleeping machines, and reading their labels wakes them.
       listSleeping: async () => (await provider.listSleeping()).map(({ id, state }) => ({ id, state })),
+      // The SDK has no snapshot delete for boxd, so this uses boxd's own client.
+      async deleteCheckpoint(name) {
+        const client = new Boxd({ apiKey });
+        try {
+          await client.snapshots.delete(name);
+        } catch (error) {
+          if (!(error instanceof NotFoundError)) throw error;
+        } finally {
+          await client.close();
+        }
+      },
     });
-    return { ...driver, create: (input) => retryNotFound(() => driver.create(input)) };
+    return { ...driver, create: (input, from) => retryNotFound(() => driver.create(input, from)) };
   },
 };
 
@@ -128,16 +149,19 @@ const freestyleProvider: ProviderDefinition = {
   sizes: { small: "4 vCPU, 8 GB", medium: "4 vCPU, 8 GB", large: "4 vCPU, 8 GB" },
   defaultSize: "medium",
   open(config) {
+    const provider = freestyle({
+      apiKey: required(config, "apiKey", "Freestyle API key"),
+      // The SDK's 30 s default cut off a delete of a VM that had just run T3 and an agent. Freestyle finished it anyway.
+      requestTimeoutMs: 2 * 60_000,
+    });
     return sdkDriver({
       id: "freestyle",
-      provider: freestyle({
-        apiKey: required(config, "apiKey", "Freestyle API key"),
-        // The SDK's 30 s default cut off a delete of a VM that had just run T3 and an agent. Freestyle finished it anyway.
-        requestTimeoutMs: 2 * 60_000,
-      }),
+      provider,
       sleep: "pause",
       // Freestyle pauses a VM after this long without network traffic, in case VM Bridge is down.
       create: { idleTimeoutMs: minutes(60) },
+      // The SDK has no snapshot delete for Freestyle.
+      deleteCheckpoint: (snapshotId) => ignoreNotFound(provider.api.request("DELETE", `/v5/snapshots/${encodeURIComponent(snapshotId)}`)),
     });
   },
 };
@@ -156,16 +180,19 @@ const superserveProvider: ProviderDefinition = {
   sizes: { small: "2 vCPU, 4 GB", medium: "2 vCPU, 4 GB", large: "2 vCPU, 4 GB" },
   defaultSize: "medium",
   open(config) {
+    const provider = superserve({
+      apiKey: required(config, "apiKey", "Superserve API key"),
+      // The SDK needs Python in the VM, which the default node-22 template lacks. VM Bridge installs Node itself.
+      template: "superserve/python-3.11",
+      // Superserve has no idle timer, only a cap on time awake. It pauses a VM awake this long, in case VM Bridge is down.
+      autoPauseMs: minutes(12 * 60),
+    });
     return sdkDriver({
       id: "superserve",
-      provider: superserve({
-        apiKey: required(config, "apiKey", "Superserve API key"),
-        // The SDK needs Python in the VM, which the default node-22 template lacks. VM Bridge installs Node itself.
-        template: "superserve/python-3.11",
-        // Superserve has no idle timer, only a cap on time awake. It pauses a VM awake this long, in case VM Bridge is down.
-        autoPauseMs: minutes(12 * 60),
-      }),
+      provider,
       sleep: "pause",
+      // The SDK has no snapshot delete for Superserve.
+      deleteCheckpoint: (snapshotId) => ignoreNotFound(provider.api.request("DELETE", `/snapshots/${encodeURIComponent(snapshotId)}`)),
     });
   },
 };

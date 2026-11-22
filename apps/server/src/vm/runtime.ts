@@ -465,3 +465,15 @@ async function probeT3(box: Box) {
   const answer = await box.run(probe, { timeoutMs: 15_000 });
   return answer.ok ? answer.stdout : null;
 }
+
+/**
+ * Sets up a VM to save as a base snapshot for new VMs: the tools only, with no sign-ins, variables or GitHub token.
+ * Checks that T3 starts, then stops it and removes its data, so each VM made from the base gets its own T3 server.
+ * The setup stamp stays, so those VMs skip setup when they first connect.
+ */
+export async function prepareBase(box: Box, t3Version: string) {
+  await prepareVm(box, t3Version, {});
+  await startT3(box, null);
+  await box.process("t3").stop();
+  await check(box, `rm -rf ${t3DataDir} ${root}/env ${gitConfigPath}`, "Clearing the base VM");
+}

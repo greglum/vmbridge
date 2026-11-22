@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { SandboxError, type Preview } from "@opencoredev/sandbox-sdk";
 import type { ProviderId, VmSize, VmState } from "@vmbridge/contracts";
 import { providers, type Box, type Driver } from "./providers/index.ts";
+import type { CreateVm } from "./providers/types.ts";
 import { envVars, type Settings, type Secrets } from "./settings.ts";
 import { busyNotice, choose, maxVmsPerProject, overflowRetryMs, type VmLoad } from "./placement.ts";
 import { primaryVm, type ProjectRow, type Store, type VmRow } from "./store.ts";
@@ -11,6 +12,7 @@ import type { AgentAuth } from "./agent-auth/profiles.ts";
 import { githubName } from "./gateway/repos.ts";
 import { hasLiveWork, type Shell } from "./gateway/types.ts";
 import type { Skills } from "./skills.ts";
+import { Bases } from "./vm/bases.ts";
 import { syncSkills } from "./vm/skills.ts";
 import { checkoutRoot, credentialsFingerprint, prepareVm, quote, readCodexAuth, resolveT3Version, startT3, t3Port, writeCodexAuth, writeCredentials, type VmCredentials } from "./vm/runtime.ts";
 
@@ -92,6 +94,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
   /** When adding a VM to each project last failed. */
   private readonly overflowFailedAt = new Map<string, number>();
   private closed = false;
+  readonly bases: Bases;
 
   /** Runs once a VM's backend is connected, before anyone else can use it. */
   onConnect: (vmId: string, backend: Backend) => Promise<void> = async () => {};
@@ -105,6 +108,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
     private readonly skills: Pick<Skills, "state" | "files">,
   ) {
     super();
+    this.bases = new Bases(store, (provider) => this.driver(provider), traffic, () => this.labels());
   }
 
   driver(provider: ProviderId): Driver {
@@ -186,9 +190,10 @@ export class Fleet extends EventEmitter<FleetEvents> {
       const started = performance.now();
       const watch = stopwatch("create", id);
       let box: Box;
+      let based: boolean;
       try {
-        box = await driver.create({ key: id, size, labels: this.labels(), ports: [t3Port] });
-        watch.lap("provider create");
+        ({ box, based } = await this.createBox(provider, driver, { key: id, size, labels: this.labels(), ports: [t3Port] }));
+        watch.lap(based ? "provider create from base snapshot" : "provider create");
       } catch (error) {
         this.traffic.record({ kind: "provider", operation: "create VM", vmId: id, status: "error" });
         // A refused create leaves nothing at the provider, so a caller with its own error report drops the row.
@@ -206,9 +211,42 @@ export class Fleet extends EventEmitter<FleetEvents> {
         throw new Error(`VM ${id} was deleted while it was being created.`);
       }
       this.boxes.set(id, box);
-      this.traffic.record({ kind: "provider", operation: "create VM", vmId: id, status: "ok", durationMs: Math.round(performance.now() - started) });
+      const operation = based ? "create VM from base snapshot" : "create VM";
+      this.traffic.record({ kind: "provider", operation, vmId: id, status: "ok", durationMs: Math.round(performance.now() - started) });
       return vm;
     });
+  }
+
+  /**
+   * Creates a VM at the provider from the current base snapshot, or the plain way when there is none yet. Then starts
+   * building a new snapshot when one is due.
+   */
+  private async createBox(provider: ProviderId, driver: Driver, input: CreateVm): Promise<{ box: Box; based: boolean }> {
+    // Without the t3 version there is no telling which snapshot is current. Opening the VM will report the failure.
+    const version = await resolveT3Version(this.settings.get("t3Version")).catch(() => null);
+    if (!version) return { box: await driver.create(input), based: false };
+    const choice = this.bases.choose(provider, input.size, version);
+    let rebuild = choice.rebuild;
+    let created: { box: Box; based: boolean } | undefined;
+    if (choice.from) {
+      try {
+        created = { box: await driver.create(input, choice.from), based: true };
+      } catch (error) {
+        this.traffic.record({ kind: "provider", operation: `create VM from base snapshot: ${message(error)}`, vmId: input.key, status: "error" });
+        this.bases.failed(provider, input.size, choice.from);
+        rebuild = true;
+      }
+    }
+    created ??= { box: await driver.create(input), based: false };
+    if (rebuild) this.bases.rebuild(provider, input.size, version);
+    return created;
+  }
+
+  /** Builds the base snapshot for new VMs on a provider just added, at the size they get by default. */
+  async prepareBase(provider: ProviderId) {
+    const size = this.settings.get("vmSize") ?? providers[provider].defaultSize;
+    const version = await resolveT3Version(this.settings.get("t3Version"));
+    if (this.bases.choose(provider, size, version).rebuild) this.bases.rebuild(provider, size, version);
   }
 
   /** Wakes and connects a VM. Concurrent callers share one attempt. */
@@ -520,6 +558,8 @@ export class Fleet extends EventEmitter<FleetEvents> {
       if (vm.checkpoint) await this.driver(vm.provider).deleteCheckpoint(vm.checkpoint);
       this.store.deleteVm(vmId);
       this.traffic.record({ kind: "provider", operation: "delete VM", vmId, status: "ok" });
+      // A replaced base snapshot this VM was made from may only now be deletable.
+      void this.bases.sweep(vm.provider).catch(() => {});
       this.emit("offline", vmId);
       this.emit("changed");
     });
