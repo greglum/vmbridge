@@ -252,9 +252,13 @@ describe("rpc", () => {
       options.placed("vm1");
       return { vmId: "vm1", notice: null };
     };
-    const fleet = Object.assign(new EventEmitter(), { backend: (vmId: string) => (vmId === "vm1" ? primary : undefined), placeThread }) as unknown as Fleet;
+    let primaryAwake = true;
+    const backend = (vmId: string) => (vmId === "vm1" && primaryAwake ? primary : undefined);
+    const fleet = Object.assign(new EventEmitter(), { backend, placeThread }) as unknown as Fleet;
     const hub = new Hub(store, new Settings(store.db), fleet, traffic, unmeasured);
-    const rpc = new Rpc(hub, {} as never, {} as never, traffic, () => false);
+    // With the primary asleep too, its part of the list comes from the remote.
+    const remote = { refs: async () => ({ refs: [main], isRepo: true, hasPrimaryRemote: true, nextCursor: null, totalCount: 1 }) };
+    const rpc = new Rpc(hub, {} as never, remote as never, traffic, () => false);
     const sent: Wire[] = [];
     const client: RpcClient = { clientId: "c1", cancels: new Map(), send: (frame) => sent.push(frame as Wire), open: () => true };
     await rpc.handle(client, { _tag: "Request", id: 1, tag: "vcs.listRefs", payload: { cwd: "/projects/p1/app" } });
@@ -262,6 +266,13 @@ describe("rpc", () => {
       refs: [main, ...["hand-made", "t3code/fix-login"].map((name) => ({ name, current: false, isDefault: false, worktreePath: null }))],
       totalCount: 3,
     });
+    primaryAwake = false;
+    await rpc.handle(client, { _tag: "Request", id: 2, tag: "vcs.listRefs", payload: { cwd: "/projects/p1/app" } });
+    expect((sent.at(-1)?.exit as Wire).value).toMatchObject({
+      refs: [main, ...["hand-made", "t3code/fix-login"].map((name) => ({ name, current: false, isDefault: false, worktreePath: null }))],
+      totalCount: 3,
+    });
+    primaryAwake = true;
 
     const launch = (baseRef: string) => ({ commandId: crypto.randomUUID(), projectId: "p1", workspaceStrategy: { type: "worktree", baseRef } });
     await hub.prepare("orchestration.launchThread", launch("t3code/fix-login"), true);
