@@ -195,12 +195,58 @@ describe("rpc", () => {
     expect(sent.at(-1)?._tag).toBe("Chunk");
     expect(restarted.listenerCount("config")).toBe(1);
 
-    // Removing the only VM drops its config, so the next push has nothing to send.
-    store.deleteVm("vm1");
-    expect(() => fleet.emit("offline", "vm1")).not.toThrow();
+    // A push that fails ends the stream without failing whoever emitted the event.
+    restarted.config = () => {
+      throw new Error("Gone.");
+    };
+    expect(() => restarted.emit("config")).not.toThrow();
     expect(sent.at(-1)?.exit?._tag).toBe("Failure");
     expect(restarted.listenerCount("config")).toBe(0);
     expect(client.cancels.size).toBe(0);
+  });
+
+  test("removing the last VM while a client watches the config, as with a queued turn on it, starts no VM", async () => {
+    const traffic = { record: () => {} } as unknown as Traffic;
+    const store = new Store(openDatabase(":memory:"));
+    const settings = new Settings(store.db);
+    settings.set("defaultProvider", "boxd");
+    let started = 0;
+    const fleet = Object.assign(new EventEmitter(), {
+      backend: () => undefined,
+      any: async () => {
+        started++;
+        return "vm9";
+      },
+    }) as unknown as Fleet;
+    const busy = { environment: { orchestrationProtocolVersion: 2 }, providers: [{ instanceId: "codex", driver: "codex", enabled: true, models: [{ slug: "gpt" }] }] };
+    store.insertVm({ id: "vm1", provider: "boxd", name: "vm1", size: "medium", state: "busy", createdAt: 0 });
+    store.saveSnapshot("vm1", "config", busy);
+    const hub = new Hub(store, settings, fleet, traffic, unmeasured);
+    const rpc = new Rpc(hub, {} as never, {} as never, traffic, () => false);
+    const sent: { _tag?: string; exit?: { _tag: string } }[] = [];
+    const client: RpcClient = { clientId: "c1", cancels: new Map(), send: (frame) => sent.push(frame), open: () => true };
+    await rpc.handle(client, { _tag: "Request", id: 1, tag: "subscribeServerConfig", payload: {} });
+
+    store.deleteVm("vm1");
+    fleet.emit("offline", "vm1");
+    expect(started).toBe(0);
+    expect(sent.at(-1)?._tag).toBe("Chunk");
+    // T3 keeps its agents and models, so a new message can still start a thread.
+    expect(hub.agents().find((agent) => agent.instanceId === "codex")?.models).toHaveLength(1);
+
+    // Still so after VM Bridge restarts.
+    const restarted = new Hub(store, settings, fleet, traffic, unmeasured);
+    await new Rpc(restarted, {} as never, {} as never, traffic, () => false).handle(client, { _tag: "Request", id: 2, tag: "server.getConfig", payload: {} });
+    expect(started).toBe(0);
+    expect(sent.at(-1)?.exit?._tag).toBe("Success");
+
+    // The next VM to connect replaces it.
+    store.insertVm({ id: "vm2", provider: "boxd", name: "vm2", size: "medium", state: "starting", createdAt: 0 });
+    const fresh = { environment: { orchestrationProtocolVersion: 2, serverVersion: "2.0.0" }, providers: [] };
+    const backend = { call: async () => fresh, request: () => () => {} };
+    await fleet.onConnect("vm2", backend as never);
+    expect(restarted.descriptor().serverVersion).toBe("2.0.0");
+    expect(settings.get("fallbackConfig")).toBeNull();
   });
 
   test("two retries of one launch racing through placement launch the same thread", async () => {
