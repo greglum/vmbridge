@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Coins01Icon } from "@hugeicons/core-free-icons";
-import { vmSizes, type Estimate, type Overview, type ProviderPricing, type UsageReport } from "@vmbridge/contracts";
+import { vmSizes, type Estimate, type ExchangeRate, type Overview, type ProviderPricing, type UsageReport } from "@vmbridge/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
@@ -49,6 +49,7 @@ export function Costs({ overview }: { overview: Overview }) {
   return (
     <Page
       title="Costs"
+      wide
       actions={
         <ButtonGroup>
           {ranges.map((entry) => (
@@ -68,7 +69,6 @@ export function Costs({ overview }: { overview: Overview }) {
 function Report({ report, added }: { report: UsageReport; added: string[] }) {
   const awake = report.providers.reduce((total, provider) => total + provider.awakeMs, 0);
   const asleep = report.providers.reduce((total, provider) => total + provider.asleepMs, 0);
-  const partial = report.totals.some((total) => total.partial);
   const asOf = report.prices[0]?.asOf;
   // Providers in use first, then the rest.
   const prices = [...report.prices].sort((a, b) => Number(added.includes(b.provider)) - Number(added.includes(a.provider)));
@@ -77,107 +77,110 @@ function Report({ report, added }: { report: UsageReport; added: string[] }) {
   return (
     <>
       <div className="flex flex-col gap-3">
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(9rem,1fr))] gap-3">
           <Tile label="Estimated spend" className="col-span-2 sm:col-span-1">
-            {report.totals.length ? report.totals.map((total) => <div key={total.currency}>{money(total)}</div>) : money({ currency: "USD", amount: 0, partial: false })}
+            {money(report.total)}
           </Tile>
           <Tile label="Awake">{hours(awake)}</Tile>
           <Tile label="Asleep">{hours(asleep)}</Tile>
         </div>
         <p className="text-xs text-muted-foreground">
           Estimate from each provider's published prices{asOf && ` as of ${day(asOf)}`}, at full use of each VM's size. Storage billed per GiB is not
-          included{partial && ", and + marks sleep time on providers that don't publish its price"}.
+          included{report.total.partial && ", and + marks sleep time on providers that don't publish its price"}.
+          {report.prices.some((price) => price.currency === "EUR") && ` Euro prices convert at €1 = ${usd(report.eurUsd.rate)}, the European Central Bank rate of ${day(report.eurUsd.asOf)}.`}
         </p>
       </div>
 
-      {report.vms.length === 0 ? (
-        <Empty className="border border-dashed">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <HugeiconsIcon icon={Coins01Icon} strokeWidth={1.75} />
-            </EmptyMedia>
-            <EmptyTitle>No VM time yet</EmptyTitle>
-            <EmptyDescription>Awake and sleeping time shows here once a VM starts.</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      ) : (
-        <>
-          <Section title="Providers">
+      <div className="grid items-start gap-10 xl:grid-cols-2">
+        {report.vms.length === 0 ? (
+          <Empty className="border border-dashed xl:col-span-2">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <HugeiconsIcon icon={Coins01Icon} strokeWidth={1.75} />
+              </EmptyMedia>
+              <EmptyTitle>No VM time yet</EmptyTitle>
+              <EmptyDescription>Awake and sleeping time shows here once a VM starts.</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <>
+            <Section title="Providers">
+              <Rows
+                head={["Provider", "Awake", "Asleep", "Estimate"]}
+                rows={report.providers.map((provider) => ({
+                  key: provider.provider,
+                  cells: [
+                    <span className="flex min-w-0 items-center gap-2">
+                      <ProviderLogo id={provider.provider} className="size-5" />
+                      <span className="truncate">{label(provider.provider)}</span>
+                    </span>,
+                    hours(provider.awakeMs),
+                    hours(provider.asleepMs),
+                    money(provider.estimate),
+                  ],
+                }))}
+              />
+            </Section>
+
+            <Section title="VMs">
+              <Bars
+                rows={report.vms.map((vm) => ({
+                  key: vm.vmId,
+                  title: (
+                    <>
+                      {vm.name}
+                      {vm.deleted && <Badge variant="secondary">Deleted</Badge>}
+                    </>
+                  ),
+                  detail: `${label(vm.provider)}, ${vm.size}, asleep ${hours(vm.asleepMs)}`,
+                  value: vm.awakeMs,
+                  figure: `${hours(vm.awakeMs)} awake`,
+                  extra: money(vm.estimate),
+                }))}
+              />
+            </Section>
+
+            {report.repos.length > 0 && (
+              <Section title="Repositories">
+                <Bars
+                  rows={report.repos.map((repo) => ({
+                    key: repo.repo,
+                    title: <span className="truncate font-mono text-xs">{repo.repo}</span>,
+                    detail: repo.vms === 1 ? "1 VM" : `${repo.vms} VMs`,
+                    value: repo.awakeMs,
+                    figure: `${hours(repo.awakeMs)} awake`,
+                  }))}
+                />
+              </Section>
+            )}
+          </>
+        )}
+
+        {report.snapshots.length > 0 && (
+          <Section title="Snapshots">
             <Rows
-              head={["Provider", "Awake", "Asleep", "Estimate"]}
-              rows={report.providers.map((provider) => ({
-                key: provider.provider,
+              head={["Provider", "Kind", "Count", "Kept"]}
+              rows={report.snapshots.map((snapshot) => ({
+                key: `${snapshot.provider}:${snapshot.kind}`,
                 cells: [
                   <span className="flex min-w-0 items-center gap-2">
-                    <ProviderLogo id={provider.provider} className="size-5" />
-                    <span className="truncate">{label(provider.provider)}</span>
+                    <ProviderLogo id={snapshot.provider} className="size-5" />
+                    <span className="truncate">{label(snapshot.provider)}</span>
                   </span>,
-                  hours(provider.awakeMs),
-                  hours(provider.asleepMs),
-                  money(provider.estimate),
+                  snapshot.kind === "base" ? "Base" : "Sleep",
+                  String(snapshot.count),
+                  days(snapshot.heldMs),
                 ],
               }))}
             />
           </Section>
-
-          <Section title="VMs">
-            <Bars
-              rows={report.vms.map((vm) => ({
-                key: vm.vmId,
-                title: (
-                  <>
-                    {vm.name}
-                    {vm.deleted && <Badge variant="secondary">Deleted</Badge>}
-                  </>
-                ),
-                detail: `${label(vm.provider)}, ${vm.size}, asleep ${hours(vm.asleepMs)}`,
-                value: vm.awakeMs,
-                figure: `${hours(vm.awakeMs)} awake`,
-                extra: money(vm.estimate),
-              }))}
-            />
-          </Section>
-
-          {report.repos.length > 0 && (
-            <Section title="Repositories">
-              <Bars
-                rows={report.repos.map((repo) => ({
-                  key: repo.repo,
-                  title: <span className="truncate font-mono text-xs">{repo.repo}</span>,
-                  detail: repo.vms === 1 ? "1 VM" : `${repo.vms} VMs`,
-                  value: repo.awakeMs,
-                  figure: `${hours(repo.awakeMs)} awake`,
-                }))}
-              />
-            </Section>
-          )}
-        </>
-      )}
-
-      {report.snapshots.length > 0 && (
-        <Section title="Snapshots">
-          <Rows
-            head={["Provider", "Kind", "Count", "Kept"]}
-            rows={report.snapshots.map((snapshot) => ({
-              key: `${snapshot.provider}:${snapshot.kind}`,
-              cells: [
-                <span className="flex min-w-0 items-center gap-2">
-                  <ProviderLogo id={snapshot.provider} className="size-5" />
-                  <span className="truncate">{label(snapshot.provider)}</span>
-                </span>,
-                snapshot.kind === "base" ? "Base" : "Sleep",
-                String(snapshot.count),
-                days(snapshot.heldMs),
-              ],
-            }))}
-          />
-        </Section>
-      )}
+        )}
+      </div>
 
       <Section title="Prices">
-        <div className="flex flex-col gap-4">
+        <div className="grid items-start gap-4 xl:grid-cols-2">
           {prices.map((price) => (
-            <PriceCard key={price.provider} price={price} />
+            <PriceCard key={price.provider} price={price} eurUsd={report.eurUsd} />
           ))}
         </div>
       </Section>
@@ -244,8 +247,21 @@ export function Bars({ rows }: { rows: { key: string; title: React.ReactNode; de
   );
 }
 
-function PriceCard({ price }: { price: ProviderPricing }) {
-  const rate = (amount: number | null) => (amount === null ? "Unknown" : amount === 0 ? "Free" : `${perHour(amount, price.currency)}/h`);
+function PriceCard({ price, eurUsd }: { price: ProviderPricing; eurUsd: ExchangeRate }) {
+  const toUsd = price.currency === "EUR" ? eurUsd.rate : 1;
+  // Prices in another currency keep the published figure, with the US dollar one beside it.
+  const inUsd = (amount: number) => (toUsd === 1 ? null : `about ${perHour(amount * toUsd, "USD")}`);
+  const rate = (amount: number | null) => {
+    if (amount === null) return "Unknown";
+    if (amount === 0) return "Free";
+    const converted = inUsd(amount);
+    return (
+      <>
+        {perHour(amount, price.currency)}/h
+        {converted && <span className="block text-xs text-muted-foreground">{converted}</span>}
+      </>
+    );
+  };
   return (
     <div className="flex flex-col gap-4 rounded-xl border p-4">
       <div className="flex items-center justify-between gap-3">
@@ -274,7 +290,11 @@ function PriceCard({ price }: { price: ProviderPricing }) {
       </div>
       <dl className="grid gap-x-4 gap-y-1.5 text-xs sm:grid-cols-[7rem_minmax(0,1fr)]">
         <dt className="text-muted-foreground">Storage</dt>
-        <dd>{price.storageGibMonth === null ? "Included or not published" : `${perHour(price.storageGibMonth, price.currency)} per GiB-month`}</dd>
+        <dd>
+          {price.storageGibMonth === null
+            ? "Included or not published"
+            : [`${perHour(price.storageGibMonth, price.currency)} per GiB-month`, inUsd(price.storageGibMonth)].filter(Boolean).join(", ")}
+        </dd>
         <dt className="text-muted-foreground">Asleep</dt>
         <dd>{price.sleeping}</dd>
         <dt className="text-muted-foreground">Snapshots</dt>
@@ -304,14 +324,16 @@ export function days(ms: number) {
   return value < 1 ? hours(ms) : `${value.toFixed(1)} d`;
 }
 
-export function money({ currency, amount, partial }: Estimate) {
-  const format = new Intl.NumberFormat(undefined, { style: "currency", currency, minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const usd = (amount: number) => new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 3 }).format(amount);
+
+export function money({ amount, partial }: Estimate) {
+  const format = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const text = amount > 0 && amount < 0.01 ? `<${format.format(0.01)}` : format.format(amount);
   return partial ? `${text} +` : text;
 }
 
 /** Small unit prices keep enough digits to tell providers apart. */
-function perHour(amount: number, currency: Estimate["currency"]) {
+function perHour(amount: number, currency: ProviderPricing["currency"]) {
   return new Intl.NumberFormat(undefined, { style: "currency", currency, minimumFractionDigits: 2, maximumSignificantDigits: 3 }).format(amount);
 }
 

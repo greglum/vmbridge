@@ -5,7 +5,7 @@ import { openDatabase } from "../src/db.ts";
 import type { Fleet } from "../src/fleet.ts";
 import { Hub } from "../src/gateway/hub.ts";
 import type { Wire } from "../src/gateway/types.ts";
-import { pricing } from "../src/pricing.ts";
+import { eurUsd, pricing } from "../src/pricing.ts";
 import { Settings } from "../src/settings.ts";
 import { Store } from "../src/store.ts";
 import { Traffic } from "../src/traffic.ts";
@@ -67,19 +67,20 @@ describe("report", () => {
     sleep("a", monday + day + 2 * hour);
     wake("b", monday + day);
     sleep("b", monday + day + hour);
-    const { days, totals } = report(monday, monday + 2 * day);
+    const { days, total } = report(monday, monday + 2 * day);
     expect(days.map((entry) => entry.providers.map((provider) => [provider.provider, provider.awakeMs]))).toEqual([
       [["boat", 2 * hour]],
       [["boat", 2 * hour], ["boxd", hour]],
     ]);
     // The second day's boat VM sleeps for the rest of it, which Boat does not charge.
     expect(days[1]!.providers[0]!.asleepMs).toBe(22 * hour);
-    expect(days[0]!.providers[0]!.estimate).toEqual({ currency: "USD", amount: 2 * 0.036, partial: false });
+    expect(days[0]!.providers[0]!.estimate).toEqual({ amount: 2 * 0.036, partial: false });
     // boxd bills memory while paused: one hour awake, then 23 asleep.
     const boxd = pricing("boxd");
-    expect(days[1]!.providers[1]!.estimate.amount).toBeCloseTo(boxd.runningHourly.medium + 23 * boxd.asleepHourly.medium!, 6);
-    // Matches what the Costs page totals.
-    expect(totals.find((total) => total.currency === "USD")?.amount).toBeCloseTo(4 * 0.036, 6);
+    const boxdDay = (boxd.runningHourly.medium + 23 * boxd.asleepHourly.medium!) * eurUsd.rate;
+    expect(days[1]!.providers[1]!.estimate.amount).toBeCloseTo(boxdDay, 6);
+    // Matches what the Costs page totals, in US dollars.
+    expect(total.amount).toBeCloseTo(4 * 0.036 + boxdDay, 6);
   });
 
   test("counts lifecycle events by day and provider, with median times", () => {

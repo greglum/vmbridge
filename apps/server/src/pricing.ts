@@ -1,4 +1,4 @@
-import { vmSizes, type Currency, type ProviderId, type ProviderPricing, type VmSize } from "@vmbridge/contracts";
+import { vmSizes, type Currency, type Estimate, type ProviderId, type ProviderPricing, type VmSize } from "@vmbridge/contracts";
 import { providers } from "./providers/index.ts";
 
 /**
@@ -21,6 +21,13 @@ interface Published {
 }
 
 const asOf = "2026-11-23";
+
+/** Estimates are in US dollars, so euro prices (boxd's) convert at this ECB reference rate. Update it with the prices. */
+export const eurUsd = {
+  rate: 1.099,
+  source: "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/eurofxref-graph-usd.en.html",
+  asOf: "2026-11-20",
+};
 const hoursPerMonth = 730;
 
 // Daytona's built-in snapshots VM Bridge creates from (see providers/daytona.ts) fix the reserved disk.
@@ -160,15 +167,15 @@ export function pricing(provider: ProviderId): ProviderPricing {
 const hourMs = 3_600_000;
 
 /**
- * Estimated cost of time awake and asleep on one provider and size, in the provider's currency. Storage billed per GiB
+ * Estimated cost of time awake and asleep on one provider and size, in US dollars. Storage billed per GiB
  * is left out: VM Bridge does not know how much each VM or snapshot holds. `partial` when time asleep has no
  * published price.
  */
-export function estimate(provider: ProviderId, size: VmSize, awakeMs: number, asleepMs: number) {
+export function estimate(provider: ProviderId, size: VmSize, awakeMs: number, asleepMs: number): Estimate {
   const asleep = asleepHourly(provider, size);
+  const toUsd = published[provider].currency === "EUR" ? eurUsd.rate : 1;
   return {
-    currency: published[provider].currency,
-    amount: (awakeMs / hourMs) * runningHourly(provider, size) + (asleepMs / hourMs) * (asleep ?? 0),
+    amount: ((awakeMs / hourMs) * runningHourly(provider, size) + (asleepMs / hourMs) * (asleep ?? 0)) * toUsd,
     partial: asleep === null && asleepMs > 0,
   };
 }

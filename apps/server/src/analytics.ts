@@ -64,7 +64,7 @@ function median(values: number[]): number | null {
   return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
 }
 
-const add = (a: Estimate, b: Estimate): Estimate => ({ currency: a.currency, amount: a.amount + b.amount, partial: a.partial || b.partial });
+const add = (a: Estimate, b: Estimate): Estimate => ({ amount: a.amount + b.amount, partial: a.partial || b.partial });
 
 /**
  * VM time, spend, lifecycle, turns and errors from `from` to `until` (which ends at `now` at the latest), by day in
@@ -199,6 +199,6 @@ export function analyticsReport(store: Store, usage: Usage, from: number, until:
     agents: [...agentTurns.values()].map(({ threadIds, ...entry }) => ({ ...entry, threads: threadIds.size })).sort((a, b) => b.turns - a.turns),
     snapshots: costs.snapshots,
     threads: new Set(turns.map((turn) => turn.threadId)).size,
-    totals: costs.totals,
+    total: costs.total,
   };
 }

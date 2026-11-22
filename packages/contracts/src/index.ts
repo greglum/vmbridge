@@ -319,6 +319,7 @@ export interface ProviderPricing {
   label: string;
   /** The machine each size gets. */
   machines: Record<VmSize, string>;
+  /** The currency the provider publishes its prices in. Estimates convert them to US dollars. */
   currency: Currency;
   /** The pricing page the numbers come from. */
   source: string;
@@ -337,9 +338,8 @@ export interface ProviderPricing {
   caveat?: string;
 }
 
-/** An estimated cost in one currency. `partial` when part of the time has no published price. */
+/** An estimated cost in US dollars. `partial` when part of the time has no published price. */
 export interface Estimate {
-  currency: Currency;
   amount: number;
   partial: boolean;
 }
@@ -389,8 +389,16 @@ export interface UsageReport {
   vms: VmUsage[];
   repos: RepoUsage[];
   snapshots: SnapshotUsage[];
-  /** Per currency, since providers bill in different ones. */
-  totals: Estimate[];
+  total: Estimate;
+  /** The fixed rate euro prices convert to US dollars at. */
+  eurUsd: ExchangeRate;
+}
+
+/** US dollars per euro, from `source` on `asOf` (YYYY-MM-DD). */
+export interface ExchangeRate {
+  rate: number;
+  source: string;
+  asOf: string;
 }
 
 /** One provider's time and estimated cost on one day. */
@@ -468,8 +476,7 @@ export interface AnalyticsReport {
   snapshots: SnapshotUsage[];
   /** Threads with a turn in the range. */
   threads: number;
-  /** Estimated spend per currency. */
-  totals: Estimate[];
+  total: Estimate;
 }
 
 export interface TrafficEvent {
