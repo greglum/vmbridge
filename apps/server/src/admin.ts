@@ -11,6 +11,7 @@ import {
   type VmInfo,
   type VmSize,
 } from "@vmbridge/contracts";
+import { analyticsReport } from "./analytics.ts";
 import { InvalidSignIn, type AgentAuth, type TokenInput } from "./agent-auth/profiles.ts";
 import { TooManyAttempts, type DashboardAuth } from "./auth/dashboard.ts";
 import { fetchGitHubAccount, fetchGitHubRepos, GitHubRejected } from "./github.ts";
@@ -67,6 +68,15 @@ const text = (value: unknown, label: string) => {
   return value.trim();
 };
 
+/** The dashboard sends its own range, such as the start of the month in its time zone. */
+function timeRange(request: Request) {
+  const params = new URL(request.url).searchParams;
+  const from = Number(params.get("from"));
+  const to = Number(params.get("to") ?? Date.now());
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) throw new BadRequest("Send a time range.");
+  return { from, to };
+}
+
 /**
  * The dashboard's API under /admin/api. Every route except login needs the dashboard cookie.
  * Secret values go in and never come out: responses only say whether each one is set.
@@ -120,12 +130,19 @@ export class Admin {
     if (path === "/events" && method === "GET") return this.events(request);
     if (path === "/traffic" && method === "GET") return json(this.deps.traffic.recent);
     if (path === "/usage" && method === "GET") {
-      // The dashboard sends its own range, such as the start of the month in its time zone.
-      const params = new URL(request.url).searchParams;
-      const from = Number(params.get("from"));
-      const to = Number(params.get("to") ?? Date.now());
-      if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) throw new BadRequest("Send a time range.");
+      const { from, to } = timeRange(request);
       return json(this.deps.usage.report(from, to));
+    }
+    if (path === "/analytics" && method === "GET") {
+      const { from, to } = timeRange(request);
+      // Days split at the dashboard's midnights.
+      const timeZone = new URL(request.url).searchParams.get("tz") || Intl.DateTimeFormat().resolvedOptions().timeZone;
+      try {
+        return json(analyticsReport(store, this.deps.usage, from, to, timeZone));
+      } catch (error) {
+        if (error instanceof RangeError) throw new BadRequest("Unknown time zone.");
+        throw error;
+      }
     }
 
     if (path === "/network" && method === "GET") return json(await networkInfo(this.deps.host, this.deps.port));

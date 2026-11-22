@@ -225,6 +225,8 @@ export class Hub extends EventEmitter<HubEvents> {
     for (const held of this.store.heldCommands(vmId)) applyHeldCommand(shell, held.payload, new Date(held.createdAt).toISOString());
     for (const thread of threadsOf(shell)) this.store.setThreadVm(thread.id, vmId);
     this.store.saveSnapshot(vmId, "shell", shell);
+    if (item.kind === "thread.updated" && item.thread) this.recordTurn(vmId, item.thread);
+    else if (item.kind === "snapshot" && !enrichment) for (const thread of threadsOf(shell)) this.recordTurn(vmId, thread);
     if (item.kind === "thread.updated" && item.thread) this.refreshProjectionSoon(vmId, item.thread.id);
     if (item.kind === "snapshot" && !enrichment) void this.cacheMissingProjections(vmId);
     const working = hasLiveWork(shell);
@@ -233,6 +235,27 @@ export class Hub extends EventEmitter<HubEvents> {
     this.setBusy(vmId, working);
     this.bump();
     this.emit("shell");
+  }
+
+  /** Records a thread's latest run as a turn for analytics, once per run. Only IDs and names: never messages. */
+  private recordTurn(vmId: string, thread: Row) {
+    const runId = str(thread.activeRunId) ?? str(thread.latestRunId);
+    const vm = this.store.vm(vmId);
+    if (!runId || !vm) return;
+    const projectId = str(thread.projectId);
+    const model = thread.modelSelection as Wire | undefined;
+    // A run first seen in a snapshot, as after VM Bridge restarts, may have started long before.
+    const updated = Date.parse(str(thread.updatedAt) ?? "");
+    this.store.recordTurn({
+      threadId: thread.id,
+      runId,
+      at: Number.isNaN(updated) ? Date.now() : Math.min(updated, Date.now()),
+      vmId,
+      provider: vm.provider,
+      repo: (projectId && this.store.project(projectId)?.url) || null,
+      agent: str(thread.providerInstanceId) ?? str(model?.provider) ?? null,
+      model: str(model?.model) ?? null,
+    });
   }
 
   /**
