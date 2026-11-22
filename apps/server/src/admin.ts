@@ -157,12 +157,17 @@ export class Admin {
         const added = settings.get("providers");
         if (!added.includes(id)) {
           settings.set("providers", [...added, id]);
-          // So the first VM there can already start from a base snapshot.
-          void fleet.prepareBase(id).catch(() => {});
+          // No VM is created there until it is built, so the first one already starts from it.
+          fleet.prepareBase(id);
         }
         // The first provider added becomes the default.
         if (!settings.get("defaultProvider")) settings.set("defaultProvider", id);
         this.providersChanged();
+        return json(this.providerInfo(id));
+      }
+      if (action === "setup" && method === "POST") {
+        if (!settings.get("providers").includes(id)) throw new BadRequest(`Add ${definition.label} first.`);
+        fleet.prepareBase(id, true);
         return json(this.providerInfo(id));
       }
       if (action === "default" && method === "POST") {
@@ -314,6 +319,8 @@ export class Admin {
         if (version && !/^\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(version)) throw new BadRequest("Use an exact version, such as 0.1.11.");
         settings.set("t3Version", version || null);
       }
+      // A new default size needs its own base snapshot, and a new T3 version an updated one. Either may fix a failed build.
+      if (input.vmSize !== undefined || input.t3Version !== undefined) fleet.prepareBases(true);
       fleet.emit("changed");
       return json(this.overview().settings);
     }
@@ -432,6 +439,7 @@ export class Admin {
       configured: definition.fields.every((field) => !field.required || Boolean(all[field.key])),
       added: settings.get("providers").includes(id),
       isDefault: settings.get("defaultProvider") === id,
+      setup: this.deps.fleet.setup(id),
     };
   }
 

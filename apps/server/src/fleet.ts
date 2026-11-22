@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { SandboxError, type Preview } from "@opencoredev/sandbox-sdk";
-import type { ProviderId, VmSize, VmState } from "@vmbridge/contracts";
+import type { ProviderId, ProviderSetup, VmSize, VmState } from "@vmbridge/contracts";
 import { providers, type Box, type Driver } from "./providers/index.ts";
 import type { CreateVm } from "./providers/types.ts";
 import { envVars, type Settings, type Secrets } from "./settings.ts";
@@ -28,6 +28,12 @@ type FleetEvents = {
 export class NoProvider extends Error {
   constructor() {
     super("Choose a VM provider in the VM Bridge dashboard first.");
+  }
+}
+
+export class SettingUp extends Error {
+  constructor(provider: ProviderId) {
+    super(`${providers[provider].label} is still setting up. Try again when it is ready in the VM Bridge dashboard.`);
   }
 }
 
@@ -108,7 +114,14 @@ export class Fleet extends EventEmitter<FleetEvents> {
     private readonly skills: Pick<Skills, "state" | "files">,
   ) {
     super();
-    this.bases = new Bases(store, (provider) => this.driver(provider), traffic, () => this.labels());
+    this.bases = new Bases(
+      store,
+      (provider) => this.driver(provider),
+      traffic,
+      () => this.labels(),
+      (provider) => this.settings.get("providers").includes(provider),
+      () => this.emit("changed"),
+    );
   }
 
   driver(provider: ProviderId): Driver {
@@ -175,14 +188,39 @@ export class Fleet extends EventEmitter<FleetEvents> {
     return { vmbridge: this.settings.get("bridgeId").slice(0, 12) };
   }
 
+  /** The size new VMs on a provider get unless a repository rule picks another. */
+  private defaultSize(provider: ProviderId): VmSize {
+    return this.settings.get("vmSize") ?? providers[provider].defaultSize;
+  }
+
+  /** The base snapshot new VMs on a provider start from, at the size they get by default. */
+  setup(provider: ProviderId): ProviderSetup {
+    return this.bases.status(provider, this.defaultSize(provider));
+  }
+
+  /** No VM is created on a provider while its first base snapshot builds, so none starts the slow way meanwhile. */
+  private settingUp(provider: ProviderId) {
+    return this.setup(provider).state === "building";
+  }
+
+  /** The default provider, or while it sets up, another added provider that is ready. */
+  private available(): ProviderId {
+    const preferred = this.settings.get("defaultProvider");
+    if (!preferred) throw new NoProvider();
+    if (!this.settingUp(preferred)) return preferred;
+    const other = this.settings.get("providers").find((provider) => !this.settingUp(provider));
+    if (!other) throw new SettingUp(preferred);
+    return other;
+  }
+
   /** Creates a VM, on the default provider and size unless told otherwise. It is not started or connected yet. */
   async create(choice: { provider?: ProviderId; size?: VmSize; discardOnError?: boolean } = {}): Promise<VmRow> {
-    const provider = choice.provider ?? this.settings.get("defaultProvider");
-    if (!provider) throw new NoProvider();
+    const provider = choice.provider ?? this.available();
     if (!this.settings.get("providers").includes(provider)) throw new Error(`Add ${providers[provider].label} in Setup first.`);
+    if (this.settingUp(provider)) throw new SettingUp(provider);
     const driver = this.driver(provider);
     const id = shortId();
-    const size = choice.size ?? this.settings.get("vmSize") ?? providers[provider].defaultSize;
+    const size = choice.size ?? this.defaultSize(provider);
     this.store.insertVm({ id, provider, name: `vm-${id.slice(0, 6)}`, size, state: "provisioning", createdAt: Date.now() });
     this.emit("changed");
     // Under the VM's lock, so deleting a VM that is still being created waits and then deletes it at the provider too.
@@ -234,8 +272,13 @@ export class Fleet extends EventEmitter<FleetEvents> {
         created = { box: await driver.create(input, choice.from), based: true };
       } catch (error) {
         this.traffic.record({ kind: "provider", operation: `create VM from base snapshot: ${message(error)}`, vmId: input.key, status: "error" });
-        this.bases.failed(provider, input.size, choice.from);
-        rebuild = true;
+        // A full plan would refuse a plain create too. Only a snapshot the provider no longer has is replaced: other
+        // errors leave a working one alone and fall back to a plain create.
+        if (error instanceof SandboxError && error.code === "quota") throw error;
+        if (error instanceof SandboxError && error.code === "not_found") {
+          this.bases.failed(provider, input.size, choice.from);
+          rebuild = true;
+        }
       }
     }
     created ??= { box: await driver.create(input), based: false };
@@ -243,13 +286,28 @@ export class Fleet extends EventEmitter<FleetEvents> {
     return created;
   }
 
-  /** Builds the base snapshot for new VMs on a provider just added, at the size they get by default. */
-  async prepareBase(provider: ProviderId) {
-    const size = this.settings.get("vmSize") ?? providers[provider].defaultSize;
-    const version = await resolveT3Version(this.settings.get("t3Version"));
-    // Removed while the version resolved. Checked with no await before `rebuild`, so a later `drop` waits for the build.
-    if (!this.settings.get("providers").includes(provider)) return;
-    if (this.bases.choose(provider, size, version).rebuild) this.bases.rebuild(provider, size, version);
+  /**
+   * Builds the base snapshot for new VMs on a provider, at the size they get by default, when it has none or an outdated
+   * one. Without one the build counts as started right away, so no VM is created there before it is done.
+   * `retry` builds again after a failure.
+   */
+  prepareBase(provider: ProviderId, retry = false) {
+    if (!this.bases.supported(provider)) return;
+    const size = this.defaultSize(provider);
+    const version = resolveT3Version(this.settings.get("t3Version"));
+    if (!this.store.base(provider, size)?.snapshot) return this.bases.rebuild(provider, size, version, retry);
+    void version
+      .then((resolved) => {
+        // Removed while the version resolved.
+        if (!this.settings.get("providers").includes(provider)) return;
+        if (this.bases.choose(provider, size, resolved).rebuild) this.bases.rebuild(provider, size, resolved, retry);
+      })
+      .catch(() => {});
+  }
+
+  /** `prepareBase` for every added provider, as on start or once the default size or T3 version changes. */
+  prepareBases(retry = false) {
+    for (const provider of this.settings.get("providers")) this.prepareBase(provider, retry);
   }
 
   /** Wakes and connects a VM. Concurrent callers share one attempt. */
@@ -573,9 +631,10 @@ export class Fleet extends EventEmitter<FleetEvents> {
     const name = githubName(url)?.toLowerCase();
     const rule = name ? this.settings.get("repoRules").find((entry) => entry.repo.toLowerCase() === name) : undefined;
     // A rule naming a provider that was removed since falls back to the default.
-    const provider = rule?.provider && this.settings.get("providers").includes(rule.provider) ? rule.provider : this.settings.get("defaultProvider");
-    if (!provider) throw new NoProvider();
-    return { provider, size: rule?.size ?? this.settings.get("vmSize") ?? providers[provider].defaultSize };
+    // So does one naming a provider still setting up.
+    const ruled = rule?.provider && this.settings.get("providers").includes(rule.provider) && !this.settingUp(rule.provider) ? rule.provider : null;
+    const provider = ruled ?? this.available();
+    return { provider, size: rule?.size ?? this.defaultSize(provider) };
   }
 
   /** A VM to read T3's configuration from when none is cached: any existing VM, or a new one. Concurrent callers share one. */
@@ -642,7 +701,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
         if (!choice) throw new Error("None of this project's VMs could start, and VM Bridge could not add one.");
         if (choice.kind === "create") {
           const like = this.store.vm(primary);
-          const target = like ? { provider: like.provider, size: like.size } : this.placement(project.url);
+          const target = like && !this.settingUp(like.provider) ? { provider: like.provider, size: like.size } : this.placement(project.url);
           let vmId: string | undefined;
           try {
             vmId = await this.addVm(project, progress, { ...target, discardOnError: true });
@@ -774,6 +833,8 @@ fi`,
   async resume() {
     // So the dashboard can tell sleeping VMs behind on sign-ins or variables before any VM wakes.
     void this.credentials().catch(() => {});
+    // Builds first, so `reap` leaves their VMs alone.
+    this.prepareBases();
     void this.bases.reap().catch(() => {});
     for (const vm of this.store.vms()) {
       if (!["ready", "busy", "starting"].includes(vm.state)) continue;

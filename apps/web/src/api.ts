@@ -87,6 +87,12 @@ export function duration(ms: number) {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`;
 }
 
+/** Time since `at` as a running clock, such as "42s" or "3m 05s". */
+export function elapsed(at: number, now = Date.now()) {
+  const seconds = Math.max(0, Math.floor((now - at) / 1000));
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
+
 export function ago(at: number | null, now = Date.now()) {
   if (!at) return "never";
   const seconds = Math.max(0, Math.round((now - at) / 1000));

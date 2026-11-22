@@ -43,7 +43,19 @@ export interface ProviderInfo {
   added: boolean;
   /** New VMs go here unless a repository rule picks another provider. */
   isDefault: boolean;
+  setup: ProviderSetup;
 }
+
+/**
+ * The base snapshot new VMs on a provider start from, at the size they get by default. While the first one builds,
+ * no VM is created there. After a failure, VMs there start the slower way without one.
+ */
+export type ProviderSetup =
+  | { state: "unsupported" }
+  | { state: "none" }
+  | { state: "building"; startedAt: number }
+  | { state: "ready" }
+  | { state: "failed"; reason: string };
 
 /** Where new VMs for one GitHub repository go. Null fields fall back to the defaults. */
 export interface RepoRule {
