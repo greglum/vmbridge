@@ -621,19 +621,27 @@ export class Hub extends EventEmitter<HubEvents> {
       }
     } else vmId = this.route(payload);
 
-    const outgoing = this.into({ ...payload }, vmId);
-    if (threadId) outgoing.threadId = threadId;
     if (commandId && !previous) {
-      // Claimed in one insert: a retry racing this one through placement reuses whatever thread ID won.
+      // Claimed in one insert: a retry racing this one through placement adopts whatever VM and thread won,
+      // and gives back the reservation it made for its own.
       this.store.saveCommand(commandId, vmId, fingerprint, threadId ?? null);
       const claimed = this.store.command(commandId)!;
       if (claimed.fingerprint !== fingerprint) throw new Error("This commandId was already used for another request.");
-      if (claimed.threadId && claimed.threadId !== threadId) {
-        if (threadId) this.launches.delete(threadId);
-        threadId = claimed.threadId;
-        outgoing.threadId = threadId;
+      const winner = claimed.threadId ?? undefined;
+      if (winner !== threadId) {
+        if (threadId) {
+          this.launches.delete(threadId);
+          this.busyNotices.delete(threadId);
+        }
+        threadId = winner;
+      } else if (threadId && claimed.vmId !== vmId) {
+        this.launches.set(threadId, { vmId: claimed.vmId, at: Date.now() });
+        this.busyNotices.delete(threadId);
       }
+      vmId = claimed.vmId;
     }
+    const outgoing = this.into({ ...payload }, vmId);
+    if (threadId) outgoing.threadId = threadId;
     if (launching) {
       this.store.setThreadVm(outgoing.threadId as string, vmId);
       const strategy = outgoing.workspaceStrategy as Wire | undefined;
@@ -660,10 +668,13 @@ export class Hub extends EventEmitter<HubEvents> {
     }
     const awake = Boolean(this.fleet.backend(vm.id));
     const stats = awake ? this.stats.get(vm.id) : null;
+    // A sleeping VM runs nothing. One that is not connected yet, as after VM Bridge restarts, counts the turns
+    // its last saved shell had, so it does not look empty until it reconnects.
+    const running = vm.state === "sleeping" ? 0 : threadsOf(shell).filter(isWorking).length;
     return {
       vmId: vm.id,
       awake,
-      turns: (awake ? threadsOf(shell).filter(isWorking).length : 0) + launched,
+      turns: running + launched,
       vcpus: stats?.cpu?.cores ?? labelVcpus(providers[vm.provider].sizes[vm.size]),
       memory: stats?.memory ?? null,
       disk: stats?.disk ?? this.stats.lastDisk(vm.id),
@@ -679,12 +690,13 @@ export class Hub extends EventEmitter<HubEvents> {
   /**
    * The VM's own setup snapshot for a thread, carrying its busy notice when it has one. T3 has no other place
    * for a notice on a starting thread, and its setup card hides once the agent runs, so the notice goes on
-   * the agent stage, which T3 leaves without detail.
+   * the agent stage while T3 leaves it without detail. T3's own detail, such as a failure, wins.
    */
   withBusyNotice(threadId: string, snapshot: Wire): Wire {
     const notice = this.busyNotices.get(threadId);
     if (!notice || !Array.isArray(snapshot.stages)) return snapshot;
-    return { ...snapshot, stages: (snapshot.stages as Wire[]).map((stage) => (stage.id === "agent" ? { ...stage, detail: notice } : stage)) };
+    const stages = (snapshot.stages as Wire[]).map((stage) => (stage.id === "agent" && stage.detail == null ? { ...stage, detail: notice } : stage));
+    return { ...snapshot, stages };
   }
 
   reportSetup(threadId: string, detail: string, phase: "running" | "done" | "failed" = "running") {

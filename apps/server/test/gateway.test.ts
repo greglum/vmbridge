@@ -113,6 +113,29 @@ describe("routing a project on two VMs", () => {
       { id: "checkout", detail: null },
       { id: "agent", detail: "This VM is running 4 threads on 2 vCPUs, so this one may be slow." },
     ]);
+    // T3's own detail, such as why the agent failed to start, is not hidden by the notice.
+    const failed = { stages: [{ id: "agent", status: "failed", detail: "Agent exited" }] };
+    expect(hub.withBusyNotice(threadId, failed).stages).toEqual([{ id: "agent", status: "failed", detail: "Agent exited" }]);
+  });
+
+  test("after VM Bridge restarts, a VM still reconnecting counts the turns its saved shell had", async () => {
+    const { store } = setup();
+    const working = (id: string) => ({ id, projectId: "p1", activeRunId: `run-${id}` });
+    store.saveSnapshot("vm1", "shell", { threads: [working("t1"), working("t3"), { id: "t4", projectId: "p1" }] });
+    store.saveSnapshot("vm2", "shell", { threads: [working("t2")] });
+    store.updateVm("vm2", { state: "sleeping" });
+    const fleet = Object.assign(new EventEmitter(), { backend: () => undefined }) as unknown as Fleet;
+    const hub = new Hub(store, new Settings(store.db), fleet, { record: () => {} } as unknown as Traffic, unmeasured);
+    const seen: Record<string, number> = {};
+    const placeThread = async (_projectId: string, options: { load: (vm: VmRow) => VmLoad; placed: (vmId: string) => void }) => {
+      for (const vmId of ["vm1", "vm2"]) seen[vmId] = options.load(store.vm(vmId)!).turns;
+      options.placed("vm2");
+      return { vmId: "vm2", notice: null };
+    };
+    Object.assign(fleet, { placeThread });
+    await hub.prepare("orchestration.launchThread", { commandId: "l1", projectId: "p1" }, true);
+    // A sleeping VM runs nothing, whatever it was doing when it went to sleep.
+    expect(seen).toEqual({ vm1: 2, vm2: 0 });
   });
 
   test("the provider losing one VM takes only that VM from the project", () => {
@@ -198,5 +221,42 @@ describe("rpc", () => {
     const [a, b] = await Promise.all([hub.prepare("orchestration.launchThread", launch, true), hub.prepare("orchestration.launchThread", launch, true)]);
     expect(a.payload.threadId).toBeString();
     expect(b.payload.threadId).toBe(a.payload.threadId);
+  });
+
+  test("a retry that placement sent to another VM follows the VM and thread that won, and gives back its own reservation", async () => {
+    const traffic = { record: () => {} } as unknown as Traffic;
+    const store = new Store(openDatabase(":memory:"));
+    for (const id of ["vm1", "vm2"]) store.insertVm({ id, provider: "boxd", name: id, size: "medium", state: "ready", createdAt: 0 });
+    store.insertProject({ id: "p1", url: "https://github.com/acme/app.git", branch: null, title: "app", createdAt: 0 });
+    store.addProjectVm("p1", "vm1");
+    store.setCheckout("p1", "vm1", "/workspace/app");
+    store.addProjectVm("p1", "vm2");
+    store.setCheckout("p1", "vm2", "/workspace/app-2");
+    // The first retry lands on vm1, the second, seeing it, on vm2 with a busy notice.
+    let calls = 0;
+    const turnsSeen: number[] = [];
+    const placeThread = async (_projectId: string, options: { load: (vm: VmRow) => VmLoad; placed: (vmId: string) => void }) => {
+      const vmId = calls++ === 0 ? "vm1" : "vm2";
+      await Bun.sleep(calls === 1 ? 1 : 5);
+      options.placed(vmId);
+      return { vmId, notice: vmId === "vm2" ? "busy" : null };
+    };
+    const fleet = Object.assign(new EventEmitter(), { backend: () => undefined, placeThread }) as unknown as Fleet;
+    const hub = new Hub(store, new Settings(store.db), fleet, traffic, unmeasured);
+    const launch = { commandId: "c1", projectId: "p1", message: "Fix the login page", cwd: "/projects/p1/app" };
+    const [a, b] = await Promise.all([hub.prepare("orchestration.launchThread", launch, true), hub.prepare("orchestration.launchThread", launch, true)]);
+    expect([a.vmId, b.vmId]).toEqual(["vm1", "vm1"]);
+    expect(b.payload.threadId).toBe(a.payload.threadId);
+    expect(b.payload.cwd).toBe("/workspace/app");
+    expect(store.threadVm(a.payload.threadId as string)).toBe("vm1");
+    // vm2 no longer counts the losing thread toward its load.
+    Object.assign(fleet, {
+      placeThread: async (_projectId: string, options: { load: (vm: VmRow) => VmLoad }) => {
+        turnsSeen.push(options.load(store.vm("vm1")!).turns, options.load(store.vm("vm2")!).turns);
+        return { vmId: "vm1", notice: null };
+      },
+    });
+    await hub.prepare("orchestration.launchThread", { commandId: "c2", projectId: "p1" }, true);
+    expect(turnsSeen).toEqual([1, 0]);
   });
 });
