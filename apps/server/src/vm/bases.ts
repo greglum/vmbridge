@@ -9,7 +9,10 @@ import { prepareBase, setupStamp, t3Port } from "./runtime.ts";
 export const baseMaxAgeMs = 7 * 24 * 60 * 60_000;
 /** How long to wait after a failed build before trying again, when an older snapshot is still on record. */
 export const baseRetryMs = 10 * 60_000;
-/** A build running longer than this stops holding its provider back, so a hung provider call cannot lock anyone out. */
+/**
+ * A build running longer than this is given up: its VM is deleted and it counts as failed, so a hung provider call
+ * cannot hold its provider back, and Retry or a new key can start another.
+ */
 export const baseSetupLimitMs = 15 * 60_000;
 
 /**
@@ -27,7 +30,7 @@ export function chooseBase(base: BaseSnapshot | null, stamp: string, now: number
  * created without a current one.
  */
 export class Bases {
-  private readonly building = new Map<string, { startedAt: number; done: Promise<void> }>();
+  private readonly building = new Map<string, { startedAt: number; done: Promise<void>; abort: AbortController }>();
   private readonly failures = new Map<string, { at: number; reason: string }>();
 
   constructor(
@@ -36,7 +39,7 @@ export class Bases {
     private readonly traffic: Traffic,
     private readonly labels: () => Record<string, string>,
     private readonly added: (provider: ProviderId) => boolean,
-    /** Called when a build starts, ends, or runs past `baseSetupLimitMs`. */
+    /** Called when a build starts, ends, or is given up. */
     private readonly changed: () => void,
   ) {}
 
@@ -46,7 +49,7 @@ export class Bases {
     if (this.store.base(provider, size)?.snapshot) return { state: "ready" };
     const build = this.building.get(key);
     if (build && now - build.startedAt < baseSetupLimitMs) return { state: "building", startedAt: build.startedAt };
-    if (build) return { state: "failed", reason: "Setup is taking longer than 15 minutes." };
+    if (build) return { state: "failed", reason: tookTooLong };
     const failure = this.failures.get(key);
     if (failure) return { state: "failed", reason: failure.reason };
     return this.supported(provider) ? { state: "none" } : { state: "unsupported" };
@@ -90,6 +93,7 @@ export class Bases {
       try {
         await driver.deleteCheckpoint(snapshot);
         this.store.forgetRetired(provider, snapshot);
+        this.record(provider, "delete snapshot", "ok");
       } catch {
         // Tried again later.
       }
@@ -106,10 +110,10 @@ export class Bases {
       try {
         if (builder) await driver.destroy(builder);
         this.store.deleteBase(provider, size);
-      } catch {
+      } catch (error) {
         // The build VM stays on record so `reap` deletes it on the next start.
         this.store.saveBase(provider, size, { snapshot: null, stamp: null, createdAt: null });
-        this.record(provider, "delete base snapshot VM", "error");
+        this.record(provider, "delete base snapshot VM", "error", undefined, error);
       }
     }
     await this.sweep(provider);
@@ -125,8 +129,9 @@ export class Bases {
       try {
         await this.driver(base.provider).destroy(base.builder);
         this.store.saveBase(base.provider, base.size, { builder: null });
-      } catch {
-        this.record(base.provider, "delete base snapshot VM", "error");
+        this.record(base.provider, "delete base snapshot VM", "ok");
+      } catch (error) {
+        this.record(base.provider, "delete base snapshot VM", "error", undefined, error);
       }
     }
   }
@@ -146,17 +151,17 @@ export class Bases {
     const startedAt = Date.now();
     const took = () => `${Math.round((Date.now() - startedAt) / 1000)} s`;
     console.log(`[base ${key}] build started`);
-    const limit = setTimeout(() => {
-      console.error(`[base ${key}] still building after ${baseSetupLimitMs / 60_000} minutes`);
-      this.changed();
-    }, baseSetupLimitMs);
-    const done = this.build(provider, size, t3Version)
+    const abort = new AbortController();
+    const limit = setTimeout(() => this.giveUp(provider, size, abort), baseSetupLimitMs);
+    const done = this.build(provider, size, t3Version, abort.signal)
       .then(
         (built) => {
           this.failures.delete(key);
           console.log(built ? `[base ${key}] ready in ${took()}` : `[base ${key}] build skipped: provider removed`);
         },
         (error) => {
+          // Given up already, and a newer build may run under the same key.
+          if (abort.signal.aborted) return;
           const reason = failureReason(provider, error);
           this.failures.set(key, { at: Date.now(), reason });
           console.error(`[base ${key}] build failed after ${took()}: ${reason}`);
@@ -164,11 +169,34 @@ export class Bases {
       )
       .finally(() => {
         clearTimeout(limit);
+        if (this.building.get(key)?.abort !== abort) return;
         this.building.delete(key);
         this.changed();
       });
-    this.building.set(key, { startedAt, done });
+    this.building.set(key, { startedAt, done, abort });
     this.changed();
+  }
+
+  /**
+   * Stops waiting for a build stuck past `baseSetupLimitMs`: it counts as failed and its VM is deleted. The stuck call
+   * may still return later; the build then stops at its next step and deletes whatever it made.
+   */
+  private giveUp(provider: ProviderId, size: VmSize, abort: AbortController) {
+    const key = `${provider}:${size}`;
+    if (this.building.get(key)?.abort !== abort) return;
+    abort.abort();
+    this.building.delete(key);
+    this.failures.set(key, { at: Date.now(), reason: tookTooLong });
+    console.error(`[base ${key}] build given up after ${baseSetupLimitMs / 60_000} minutes`);
+    this.record(provider, `build ${size} base snapshot`, "error", undefined, tookTooLong);
+    this.changed();
+    // `reap` deletes it now that no build runs, and keeps it on record if the delete fails.
+    void this.reap(provider);
+  }
+
+  /** True while a build runs on the provider. Its VM is not on record until the provider's create returns. */
+  running(provider: ProviderId) {
+    return [...this.building.keys()].some((key) => key.startsWith(`${provider}:`));
   }
 
   /** Every build running now, settled. */
@@ -176,12 +204,13 @@ export class Bases {
     await Promise.all([...this.building.values()].map((build) => build.done));
   }
 
-  /** False when the provider was removed before the build began. */
-  private async build(provider: ProviderId, size: VmSize, pending: string | Promise<string>) {
+  /** False when the provider was removed before the build began. Stops at its next step once `signal` aborts. */
+  private async build(provider: ProviderId, size: VmSize, pending: string | Promise<string>, signal: AbortSignal) {
     const driver = this.driver(provider);
     const started = performance.now();
     try {
       const t3Version = await pending;
+      signal.throwIfAborted();
       // Removed while the version resolved.
       if (!this.added(provider)) return false;
       const leftover = this.store.base(provider, size)?.builder;
@@ -191,17 +220,30 @@ export class Bases {
       }
       const key = `base-${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
       const box = await driver.create({ key, size, labels: this.labels(), ports: [t3Port] });
+      if (signal.aborted) {
+        await driver.destroy(box.id).catch((error) => this.record(provider, "delete base snapshot VM", "error", undefined, error));
+        signal.throwIfAborted();
+      }
       this.store.saveBase(provider, size, { builder: box.id });
       let snapshot: string;
       try {
         await prepareBase(box, t3Version);
+        signal.throwIfAborted();
         if (!driver.snapshot) throw new Error(`${provider} cannot snapshot a VM.`);
         snapshot = await driver.snapshot(box);
+        if (signal.aborted) {
+          // Saved too late to use, so it goes the way replaced snapshots go.
+          this.store.retireSnapshot(provider, snapshot);
+          signal.throwIfAborted();
+        }
       } finally {
         // On record until deleted, so the next build deletes it when this delete fails.
         await driver.destroy(box.id).then(
-          () => this.store.saveBase(provider, size, { builder: null }),
-          () => this.record(provider, "delete base snapshot VM", "error"),
+          () => {
+            // A newer build may have its own VM on record by now.
+            if (this.store.base(provider, size)?.builder === box.id) this.store.saveBase(provider, size, { builder: null });
+          },
+          (error) => this.record(provider, "delete base snapshot VM", "error", undefined, error),
         );
       }
       const replaced = this.store.base(provider, size)?.snapshot;
@@ -211,15 +253,19 @@ export class Bases {
       this.record(provider, `build ${size} base snapshot`, "ok", Math.round(performance.now() - started));
       return true;
     } catch (error) {
-      this.record(provider, `build ${size} base snapshot: ${error instanceof Error ? error.message : String(error)}`, "error");
+      // Recorded when it was given up.
+      if (!signal.aborted) this.record(provider, `build ${size} base snapshot`, "error", undefined, error);
       throw error;
     }
   }
 
-  private record(provider: ProviderId, operation: string, status: "ok" | "error", durationMs?: number) {
-    this.traffic.record({ kind: "provider", operation: `${provider}: ${operation}`, status, durationMs });
+  private record(provider: ProviderId, operation: string, status: "ok" | "error", durationMs?: number, error?: unknown) {
+    const reason = error === undefined ? undefined : error instanceof Error ? error.message : String(error);
+    this.traffic.record({ kind: "provider", operation, provider, status, durationMs, ...(reason ? { reason } : {}) });
   }
 }
+
+const tookTooLong = `Setup took longer than ${baseSetupLimitMs / 60_000} minutes.`;
 
 /** Why a build failed, short enough to show next to a provider. */
 function failureReason(provider: ProviderId, error: unknown) {

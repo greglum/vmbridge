@@ -192,6 +192,7 @@ function VmCard({ data }: NodeProps<VmNode>) {
         {projects.length > shown.length && <span className="pl-6 text-faint">+{projects.length - shown.length} more</span>}
         {projects.length === 0 && <span className="text-faint">No repository yet</span>}
         {vm.state === "error" && vm.error && <p className="line-clamp-2 text-xs text-destructive">{vm.error}</p>}
+        {vm.state !== "error" && vm.problem && <p className="line-clamp-2 text-xs text-destructive">{vm.problem}</p>}
       </div>
       <div className="flex items-center justify-between gap-3 rounded-b-xl border-t px-3.5 py-2.5">
         <Status {...state} />
@@ -686,6 +687,9 @@ function VmDetails({ vm, overview, now, onClose }: { vm: VmInfo; overview: Overv
           ))}
         </dl>
         {vm.error && <p className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-[13px] text-destructive">{vm.error}</p>}
+        {vm.state !== "error" && vm.problem && (
+          <p className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-[13px] text-destructive">{vm.problem}</p>
+        )}
         {awake && <Resources stats={vm.stats} now={now} />}
         <section className="flex flex-col gap-2">
           <h3 className="text-xs font-medium text-muted-foreground">Repositories</h3>

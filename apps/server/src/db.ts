@@ -154,6 +154,20 @@ const migrations = [
     PRIMARY KEY (provider, snapshot)
   );
   `,
+  // The latest background failures (see traffic.ts), kept across restarts. `resolved` is set once the same operation
+  // works again for the same VM or provider.
+  `
+  CREATE TABLE errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    reason TEXT,
+    vm_id TEXT,
+    provider TEXT,
+    resolved INTEGER NOT NULL DEFAULT 0
+  );
+  `,
 ];
 
 export function openDatabase(path: string): Database {

@@ -52,7 +52,7 @@ export async function start(options: StartOptions = {}) {
   const settings = new Settings(db);
   const secrets = new Secrets(db);
   const store = new Store(db);
-  const traffic = new Traffic();
+  const traffic = new Traffic(db);
 
   const agents = new AgentAuth(join(dir, "auths"), settings);
   const skills = new Skills(db);
@@ -99,7 +99,7 @@ export async function start(options: StartOptions = {}) {
     sweeping = true;
     hub
       .sweep()
-      .catch(() => {})
+      .catch((error) => traffic.record({ kind: "system", operation: "idle sweep", status: "error", reason: error instanceof Error ? error.message : String(error) }))
       .finally(() => (sweeping = false));
   }, 15_000);
   const codexSync = setInterval(() => void fleet.syncCodexAuth().catch(() => {}), 60 * 60_000);
