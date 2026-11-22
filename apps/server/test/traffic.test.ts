@@ -29,6 +29,13 @@ describe("background failures", () => {
     expect(new Traffic(db).recent).toHaveLength(2);
   });
 
+  test("a failed base snapshot build does not flag its provider, since Setup shows it", () => {
+    const traffic = new Traffic(openDatabase(":memory:"));
+    traffic.record({ kind: "provider", operation: "look for untracked VMs", provider: "boat", status: "error", reason: "HTTP 401" });
+    traffic.record({ kind: "provider", operation: "build medium base snapshot", provider: "boat", status: "error", reason: "HTTP 401" });
+    expect(traffic.problems().providers).toEqual(new Map([["boat", "Look for untracked VMs failed: HTTP 401"]]));
+  });
+
   test("stop flagging after a day, and only the latest ones are kept", () => {
     const db = openDatabase(":memory:");
     const traffic = new Traffic(db);
