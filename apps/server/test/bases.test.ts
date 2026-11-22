@@ -158,14 +158,54 @@ describe("base snapshots", () => {
     expect(store.base("boxd", "medium")?.snapshot).toBe("snap1");
   });
 
-  test("a build cut short by a restart has its VM deleted by the next build", async () => {
+  test("a build VM left by a restart is deleted before the next VM is created, so it cannot hold the last VM allowed", async () => {
     const { fleet, store, events } = setup();
     store.saveBase("boxd", "medium", { builder: "stale" });
     await fleet.create();
     await fleet.bases.settled();
-    expect(events.indexOf("destroy stale")).toBeLessThan(events.findIndex((event) => event.startsWith("snapshot")));
-    expect(events).toContain("destroy stale");
+    expect(events[0]).toBe("destroy stale");
+    expect(events[1]).toBe("create sb1");
     expect(store.base("boxd", "medium")?.builder).toBeNull();
+  });
+
+  test("a build VM left on record is deleted on start, even for a removed provider, and a running build's is not", async () => {
+    const { fleet, store, driver, events } = setup();
+    store.saveBase("e2b", "medium", { builder: "orphan" });
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    driver.snapshot = async () => (await held, "snap1");
+    await fleet.create();
+    await until(() => store.base("boxd", "medium")?.builder != null);
+    await fleet.resume();
+    await until(() => events.includes("destroy orphan"));
+    expect(store.builders("e2b")).toEqual([]);
+    expect(events.filter((event) => event.startsWith("destroy"))).toEqual(["destroy orphan"]);
+    release();
+    await fleet.bases.settled();
+  });
+
+  test("removing a provider keeps a build VM it could not delete on record, so the next start deletes it", async () => {
+    const { fleet, store, driver, events } = setup();
+    store.saveBase("boxd", "medium", { snapshot: "snap0", stamp, createdAt: Date.now(), builder: "stuck" });
+    const destroy = driver.destroy;
+    driver.destroy = async () => Promise.reject(new Error("Provider is down."));
+    await fleet.bases.drop("boxd");
+    expect(store.base("boxd", "medium")).toEqual({ snapshot: null, stamp: null, createdAt: null, builder: "stuck" });
+    expect(events).toContain("delete snap0");
+
+    driver.destroy = destroy;
+    await fleet.bases.reap();
+    expect(events).toContain("destroy stuck");
+    expect(store.builders()).toEqual([]);
+  });
+
+  test("a provider removed while its first build was being prepared builds nothing", async () => {
+    const { fleet, settings, events } = setup();
+    const preparing = fleet.prepareBase("boxd");
+    settings.set("providers", []);
+    await preparing;
+    await fleet.bases.settled();
+    expect(events).toEqual([]);
   });
 
   test("a failed build is not retried on every create", async () => {

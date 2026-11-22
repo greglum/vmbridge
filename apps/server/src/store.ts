@@ -133,6 +133,15 @@ export class Store {
       .all(provider);
   }
 
+  /** Build VMs on record, of one provider or all. */
+  builders(provider?: ProviderId): { provider: ProviderId; size: VmSize; builder: string }[] {
+    return this.db
+      .query<{ provider: ProviderId; size: VmSize; builder: string }, [string | null]>(
+        "SELECT provider, size, builder FROM base_snapshots WHERE builder IS NOT NULL AND (?1 IS NULL OR provider = ?1)",
+      )
+      .all(provider ?? null);
+  }
+
   saveBase(provider: ProviderId, size: VmSize, update: Partial<BaseSnapshot>) {
     const { sql, values } = assignments(baseFields, update);
     this.db.query("INSERT INTO base_snapshots (provider, size) VALUES (?, ?) ON CONFLICT DO NOTHING").run(provider, size);

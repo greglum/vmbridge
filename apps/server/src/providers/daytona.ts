@@ -94,8 +94,9 @@ export const daytonaProvider: ProviderDefinition = {
         const name = `vmbridge-base-${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
         await api.request("POST", "/sandbox/{sandboxId}/stop", { params: { sandboxId: box.id } });
         await waitFor(box.id, (state) => state === "stopped", 3 * 60_000);
-        await api.request("POST", "/sandbox/{sandboxId}/snapshot", { params: { sandboxId: box.id }, body: { name } });
         try {
+          // Inside the try: Daytona may start the snapshot even when this request fails.
+          await api.request("POST", "/sandbox/{sandboxId}/snapshot", { params: { sandboxId: box.id }, body: { name } });
           const deadline = Date.now() + 15 * 60_000;
           while (Date.now() < deadline) {
             const { state } = await api.request<{ state: string }>("GET", "/snapshots/{name}", { params: { name } });
