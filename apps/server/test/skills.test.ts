@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { skillDescription } from "../src/skills.ts";
+import { openDatabase } from "../src/db.ts";
+import { skillDescription, Skills } from "../src/skills.ts";
 import { applyScript, instructionHash, skillHash, type InstructionsState, type SkillFile } from "../src/vm/skills.ts";
 
 const temps: string[] = [];
@@ -116,4 +117,24 @@ test("reads a skill's description in each YAML form", () => {
   expect(skillDescription('---\ndescription: "Quoted: words."\n---\n')).toBe("Quoted: words.");
   expect(skillDescription("---\ndescription: >\n  Folded\n  words.\nname: a\n---\n")).toBe("Folded words.");
   expect(skillDescription("# No front matter")).toBeNull();
+});
+
+test("switching sync all says so even when no skill changes, so the dashboard redraws", () => {
+  const root = mkdtempSync(join(tmpdir(), "vmbridge-roots-"));
+  temps.push(root);
+  mkdirSync(join(root, "alpha"));
+  writeFileSync(join(root, "alpha", "SKILL.md"), "---\nname: alpha\n---\n");
+  const skills = new Skills(openDatabase(":memory:"), () => [root]);
+  let changes = 0;
+  skills.on("changed", () => changes++);
+
+  skills.setSyncAll(true);
+  expect(changes).toBe(1);
+  // Off installs and removes nothing, and on again finds alpha already installed.
+  for (const sync of [false, true]) {
+    changes = 0;
+    skills.setSyncAll(sync);
+    expect(skills.syncAll).toBe(sync);
+    expect(changes).toBe(1);
+  }
 });

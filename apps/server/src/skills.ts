@@ -98,7 +98,7 @@ export function readSkillFolder(dir: string): SkillFile[] {
  * The skills every VM gets, kept in VM Bridge's database with their files: from skills.sh, or copied from a folder
  * on this machine and re-read when that folder changes. With `syncAll`, every skill in this machine's skill folders
  * is installed that way. The agents' global instructions files go to every VM with them, in the same sync. Emits
- * `changed` whenever the set or a skill's or instructions file's content changes.
+ * `changed` whenever the set, a skill's or instructions file's content, or `syncAll` changes.
  */
 export class Skills extends EventEmitter<{ changed: [] }> {
   private readonly settings: Settings;
@@ -122,7 +122,8 @@ export class Skills extends EventEmitter<{ changed: [] }> {
   /** Turning it off keeps the skills it installed until they are removed. */
   setSyncAll(sync: boolean) {
     this.settings.set("syncLocalSkills", sync);
-    this.refreshLocal();
+    // The switch itself is part of what the dashboard shows, so it changed even when no skill did.
+    if (!this.refreshLocal()) this.emit("changed");
   }
 
   private rows() {
