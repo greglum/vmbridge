@@ -174,12 +174,19 @@ if ! command -v git >/dev/null; then
   else apt-get update -qq && apt-get install -y -qq git; fi
 fi
 
-# The GitHub CLI, for agents opening pull requests. It signs in with GH_TOKEN.
-if [ ! -x "$root/gh/bin/gh" ]; then
-  case "$(uname -m)" in x86_64) gharch=amd64 ;; aarch64|arm64) gharch=arm64 ;; *) echo "unsupported CPU" >&2; exit 70 ;; esac
-  tag="$(node -e 'fetch("https://api.github.com/repos/cli/cli/releases/latest",{headers:process.env.GH_TOKEN?{authorization:"Bearer "+process.env.GH_TOKEN}:{}}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(j=>process.stdout.write(j.tag_name),e=>{console.error("GitHub CLI release lookup failed:",e);process.exit(1)})')"
-  rm -rf "$root/gh" && mkdir -p "$root/gh"
-  fetch "https://github.com/cli/cli/releases/download/$tag/gh_\${tag#v}_linux_$gharch.tar.gz" | tar -xz -C "$root/gh" --strip-components=1
+# The GitHub CLI, for agents opening pull requests. It signs in with GH_TOKEN. A pinned release, as GitHub's API
+# refuses anonymous calls from IPs that many VMs share (boxd), while release downloads have no such limit.
+# Optional: setup goes on without it. Every step is chained, as set -e does not apply inside a function called with ||.
+ghversion=2.105.0
+install_gh() {
+  local gharch
+  case "$(uname -m)" in x86_64) gharch=amd64 ;; aarch64|arm64) gharch=arm64 ;; *) return 1 ;; esac
+  rm -rf "$root/gh.new" && mkdir -p "$root/gh.new" &&
+    fetch "https://github.com/cli/cli/releases/download/v$ghversion/gh_\${ghversion}_linux_$gharch.tar.gz" | tar -xz -C "$root/gh.new" --strip-components=1 &&
+    rm -rf "$root/gh" && mv "$root/gh.new" "$root/gh"
+}
+if ! "$root/gh/bin/gh" --version 2>/dev/null | grep -Fq "version $ghversion "; then
+  install_gh || { rm -rf "$root/gh.new"; echo "Could not install the GitHub CLI $ghversion. Setup goes on without it." >&2; }
 fi
 mkdir -p "$root/gh-config"
 
