@@ -319,29 +319,39 @@ export class Rpc {
     const cwd = str(call.payload.cwd);
     const project = cwd ? projectForPath(cwd, this.hub.projects()) : undefined;
     const primary = project && primaryVm(project);
-    const backend = primary?.checkoutPath ? this.hub.fleet.backend(primary.vmId) : undefined;
-    if (!project || !primary || !backend || project.vms.length < 2 || call.payload.refKind === "remote") return this.vcsFallback(call);
+    if (!project || !primary || project.vms.length < 2 || call.payload.refKind === "remote") return this.vcsFallback(call);
     const query = (str(call.payload.query) ?? "").toLowerCase();
     const elsewhere = [...(await this.hub.sparseBranches(project.id))]
       .filter(([name, vms]) => !vms.has(primary.vmId) && name.toLowerCase().includes(query))
       .map(([name]) => name)
       .sort();
-    if (!elsewhere.length) return this.forward(call);
-    const vmId = primary.vmId;
-    const exit = await new Promise<Frame>((resolve, reject) => {
-      try {
-        backend.request(call.tag, this.hub.into(call.payload, vmId), (frame) => frame._tag === "Exit" && resolve(frame));
-      } catch (error) {
-        reject(error);
-      }
-    });
-    if ((exit.exit as Wire | undefined)?._tag !== "Success") return call.client.send({ ...(this.hub.out(exit, vmId) as Wire), requestId: call.id });
-    const listed = this.hub.out((exit.exit as Wire).value, vmId) as Wire;
-    const extra = elsewhere.map((name) => ({ name, current: false, isDefault: false, worktreePath: null }));
+    if (!elsewhere.length) return this.vcsFallback(call);
+    const backend = primary.checkoutPath ? this.hub.fleet.backend(primary.vmId) : undefined;
+    let listed: Wire;
+    if (backend) {
+      const vmId = primary.vmId;
+      const exit = await new Promise<Frame>((resolve, reject) => {
+        try {
+          backend.request(call.tag, this.hub.into(call.payload, vmId), (frame) => frame._tag === "Exit" && resolve(frame));
+        } catch (error) {
+          reject(error);
+        }
+      });
+      if ((exit.exit as Wire | undefined)?._tag !== "Success") return call.client.send({ ...(this.hub.out(exit, vmId) as Wire), requestId: call.id });
+      listed = this.hub.out((exit.exit as Wire).value, vmId) as Wire;
+    } else {
+      // The primary is asleep: its part comes from the remote, as for a project on one VM.
+      const remote = await this.branches.refs(project, call.payload).catch(() => null);
+      if (!remote) return this.vcsFallback(call);
+      listed = remote;
+    }
+    const refs = (listed.refs as Wire[] | undefined) ?? [];
+    const shown = new Set(refs.map((ref) => ref.name));
+    const extra = elsewhere.filter((name) => !shown.has(name)).map((name) => ({ name, current: false, isDefault: false, worktreePath: null }));
     // They follow the primary's last page, so earlier pages and cursors stay as the primary gave them.
     this.reply(call, {
       ...listed,
-      refs: listed.nextCursor == null ? [...((listed.refs as Wire[] | undefined) ?? []), ...extra] : listed.refs,
+      refs: listed.nextCursor == null ? [...refs, ...extra] : refs,
       totalCount: Number(listed.totalCount ?? 0) + extra.length,
     });
   }
