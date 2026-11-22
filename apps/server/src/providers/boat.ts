@@ -55,6 +55,7 @@ export const boatProvider: ProviderDefinition = {
     keepsMemory: false,
   },
   sizes: { small: "2 vCPU, 4 GB", medium: "4 vCPU, 8 GB", large: "8 vCPU, 16 GB" },
+  defaultSize: "small",
 
   open(config) {
     const apiKey = required(config, "apiKey", "Boat API key");

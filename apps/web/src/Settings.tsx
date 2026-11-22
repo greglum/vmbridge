@@ -48,7 +48,8 @@ export function Settings({ overview, onLoggedOut }: { overview: Overview; onLogg
 function VmSettings({ overview }: { overview: Overview }) {
   const [form, setForm] = useState<BridgeSettings>(overview.settings);
   const action = useAction();
-  const sizes = overview.providers.find((provider) => provider.id === overview.defaultProvider)?.sizes;
+  const provider = overview.providers.find((entry) => entry.id === overview.defaultProvider);
+  const sizes = provider?.sizes;
   return (
     <Section title="VMs">
       <form
@@ -61,11 +62,15 @@ function VmSettings({ overview }: { overview: Overview }) {
         <FieldGroup>
           <Field>
             <FieldLabel htmlFor="vm-size">Size for new VMs</FieldLabel>
-            <Select value={form.vmSize} onValueChange={(value) => setForm({ ...form, vmSize: value as VmSize })}>
+            <Select value={form.vmSize ?? fallback} onValueChange={(value) => setForm({ ...form, vmSize: value === fallback ? null : (value as VmSize) })}>
               <SelectTrigger id="vm-size" className="w-full data-[size=default]:h-9">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value={fallback}>
+                  Default
+                  {provider && <span className="text-muted-foreground">{provider.sizes[provider.defaultSize]}</span>}
+                </SelectItem>
                 {vmSizes.map((size) => (
                   <SelectItem key={size} value={size}>
                     <span className="capitalize">{size}</span>
@@ -270,7 +275,7 @@ function RepoRules({ overview }: { overview: Overview }) {
           </form>
         </div>
         {action.error && <FieldError>{action.error}</FieldError>}
-        <p className="text-[13px] text-muted-foreground">New VMs for a repository use its provider and size. A repository already on a VM stays there.</p>
+        <p className="text-[13px] text-muted-foreground">New VMs for a repository use its provider and size. When it is busy, its extra VMs match its first one.</p>
       </div>
     </Section>
   );

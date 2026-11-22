@@ -22,22 +22,31 @@ export interface VmRow {
   lastSleptAt: number | null;
 }
 
+/** One VM holding a project. */
+export interface ProjectVm {
+  vmId: string;
+  /** Absolute checkout path on the VM, once cloned. */
+  checkoutPath: string | null;
+}
+
 export interface ProjectRow {
   id: string;
   url: string;
   branch: string | null;
   title: string;
-  vmId: string | null;
-  /** Absolute checkout path on the VM, once cloned. */
-  checkoutPath: string | null;
   createdAt: number;
+  /** VMs holding this project, primary (the first added) first. */
+  vms: ProjectVm[];
 }
+
+/** The VM a project's root path and new automations go to. */
+export const primaryVm = (project: ProjectRow): ProjectVm | undefined => project.vms[0];
 
 const vmColumns = `id, provider, sandbox_id AS sandboxId, name, size, state, error, t3_token AS t3Token,
   t3_version AS t3Version, t3_credentials AS t3Credentials, skills, checkpoint, created_at AS createdAt, last_activity_at AS lastActivityAt,
   last_connected_at AS lastConnectedAt, last_slept_at AS lastSleptAt`;
 
-const projectColumns = `id, url, branch, title, vm_id AS vmId, checkout_path AS checkoutPath, created_at AS createdAt`;
+const projectColumns = `id, url, branch, title, created_at AS createdAt`;
 
 const vmFields = {
   sandboxId: "sandbox_id",
@@ -55,7 +64,7 @@ const vmFields = {
 
 type VmUpdate = Partial<Pick<VmRow, keyof typeof vmFields>>;
 
-const projectFields = { vmId: "vm_id", checkoutPath: "checkout_path", branch: "branch", title: "title" } as const;
+const projectFields = { branch: "branch", title: "title" } as const;
 
 type ProjectUpdate = Partial<Pick<ProjectRow, keyof typeof projectFields>>;
 
@@ -96,17 +105,28 @@ export class Store {
     if (sql) this.db.query(`UPDATE vms SET ${sql} WHERE id = ?`).run(...values, id);
   }
 
-  /** Forgets a VM. Its projects stay and get a fresh VM next time they are used. */
+  /** Forgets a VM. Its projects stay, on their other VMs or a fresh one next time they are used. */
   deleteVm(id: string) {
-    this.db.transaction(() => {
-      this.db.query("UPDATE projects SET checkout_path = NULL WHERE vm_id = ?").run(id);
-      this.db.query("DELETE FROM vms WHERE id = ?").run(id);
-    })();
+    // Its project_vms rows go with it (ON DELETE CASCADE).
+    this.db.query("DELETE FROM vms WHERE id = ?").run(id);
     this.projectCache = null;
   }
 
   projects(): readonly ProjectRow[] {
-    this.projectCache ??= this.db.query<ProjectRow, []>(`SELECT ${projectColumns} FROM projects ORDER BY created_at`).all();
+    if (!this.projectCache) {
+      const links = this.db
+        .query<ProjectVm & { projectId: string }, []>(
+          "SELECT project_id AS projectId, vm_id AS vmId, checkout_path AS checkoutPath FROM project_vms ORDER BY added_at, rowid",
+        )
+        .all();
+      this.projectCache = this.db
+        .query<Omit<ProjectRow, "vms">, []>(`SELECT ${projectColumns} FROM projects ORDER BY created_at`)
+        .all()
+        .map((project) => ({
+          ...project,
+          vms: links.filter((link) => link.projectId === project.id).map(({ vmId, checkoutPath }) => ({ vmId, checkoutPath })),
+        }));
+    }
     return this.projectCache;
   }
 
@@ -114,7 +134,7 @@ export class Store {
     return this.projects().find((project) => project.id === id) ?? null;
   }
 
-  insertProject(project: Omit<ProjectRow, "vmId" | "checkoutPath">) {
+  insertProject(project: Omit<ProjectRow, "vms">) {
     this.db
       .query("INSERT INTO projects (id, url, branch, title, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(project.id, project.url, project.branch, project.title, project.createdAt);
@@ -124,6 +144,25 @@ export class Store {
   updateProject(id: string, update: ProjectUpdate) {
     const { sql, values } = assignments(projectFields, update);
     if (sql) this.db.query(`UPDATE projects SET ${sql} WHERE id = ?`).run(...values, id);
+    this.projectCache = null;
+  }
+
+  /** Adds a VM to a project, after its existing ones. */
+  addProjectVm(projectId: string, vmId: string) {
+    this.db
+      .query("INSERT OR IGNORE INTO project_vms (project_id, vm_id, added_at) VALUES (?, ?, ?)")
+      .run(projectId, vmId, Date.now());
+    this.projectCache = null;
+  }
+
+  setCheckout(projectId: string, vmId: string, checkoutPath: string) {
+    this.db.query("UPDATE project_vms SET checkout_path = ? WHERE project_id = ? AND vm_id = ?").run(checkoutPath, projectId, vmId);
+    this.projectCache = null;
+  }
+
+  /** Takes a VM away from every project it held, such as when the provider lost it. */
+  removeVmFromProjects(vmId: string) {
+    this.db.query("DELETE FROM project_vms WHERE vm_id = ?").run(vmId);
     this.projectCache = null;
   }
 

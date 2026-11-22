@@ -3,7 +3,8 @@ import { SandboxError, type Preview } from "@opencoredev/sandbox-sdk";
 import type { ProviderId, VmSize, VmState } from "@vmbridge/contracts";
 import { providers, type Box, type Driver } from "./providers/index.ts";
 import { envVars, type Settings, type Secrets } from "./settings.ts";
-import type { ProjectRow, Store, VmRow } from "./store.ts";
+import { busyNotice, choose, maxVmsPerProject, overflowRetryMs, type VmLoad } from "./placement.ts";
+import { primaryVm, type ProjectRow, type Store, type VmRow } from "./store.ts";
 import type { Traffic } from "./traffic.ts";
 import { Backend, TokenRejected } from "./vm/backend.ts";
 import type { AgentAuth } from "./agent-auth/profiles.ts";
@@ -44,9 +45,16 @@ export function providerValues(settings: Settings, secrets: Secrets, id: Provide
 const repoName = (url: string) =>
   new URL(url).pathname.split("/").filter(Boolean).pop()?.replace(/\.git$/, "") || "repository";
 
+/** Where a new top-level thread went. `notice` is set when that VM had no room for it. */
+export interface ThreadPlacement {
+  vmId: string;
+  notice: string | null;
+}
+
 /**
  * Owns every VM: creating, waking, connecting to its T3 server, cloning its project, and sleeping.
- * One project per VM. Each VM operation runs under that VM's lock.
+ * A VM holds one project, and a busy project gets more VMs (see `placeThread`). Each VM operation runs
+ * under that VM's lock, and each project's placement under the project's.
  */
 export class Fleet extends EventEmitter<FleetEvents> {
   private readonly backends = new Map<string, Backend>();
@@ -62,6 +70,8 @@ export class Fleet extends EventEmitter<FleetEvents> {
   private latest?: string;
   /** VMs whose T3 server could not be restarted for these sign-ins, so the idle sweep stops trying. */
   private readonly unrestartable = new Map<string, string>();
+  /** When adding a VM to each project last failed. */
+  private readonly overflowFailedAt = new Map<string, number>();
   private closed = false;
 
   /** Runs once a VM's backend is connected, before anyone else can use it. */
@@ -149,7 +159,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
     if (!this.settings.get("providers").includes(provider)) throw new Error(`Add ${providers[provider].label} in Setup first.`);
     const driver = this.driver(provider);
     const id = shortId();
-    const size = choice.size ?? this.settings.get("vmSize");
+    const size = choice.size ?? this.settings.get("vmSize") ?? providers[provider].defaultSize;
     this.store.insertVm({ id, provider, name: `vm-${id.slice(0, 6)}`, size, state: "provisioning", createdAt: Date.now() });
     this.emit("changed");
     // Under the VM's lock, so deleting a VM that is still being created waits and then deletes it at the provider too.
@@ -397,9 +407,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
 
   private markGone(vmId: string) {
     this.store.updateVm(vmId, { state: "gone", error: "The provider no longer has this VM." });
-    for (const project of this.store.projects()) {
-      if (project.vmId === vmId) this.store.updateProject(project.id, { vmId: null, checkoutPath: null });
-    }
+    this.store.removeVmFromProjects(vmId);
     this.emit("offline", vmId);
     this.emit("changed");
   }
@@ -445,7 +453,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
     if (vm && box) await this.driver(vm.provider).keepAlive(box);
   }
 
-  /** Deletes the VM at the provider. Its projects get a new VM next time. */
+  /** Deletes the VM at the provider. Its projects keep their other VMs, or get a new one next time. */
   destroy(vmId: string) {
     return this.exclusive(vmId, async () => {
       const vm = this.store.vm(vmId);
@@ -470,7 +478,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
     // A rule naming a provider that was removed since falls back to the default.
     const provider = rule?.provider && this.settings.get("providers").includes(rule.provider) ? rule.provider : this.settings.get("defaultProvider");
     if (!provider) throw new NoProvider();
-    return { provider, size: rule?.size ?? this.settings.get("vmSize") };
+    return { provider, size: rule?.size ?? this.settings.get("vmSize") ?? providers[provider].defaultSize };
   }
 
   /** A VM to read T3's configuration from when none is cached: any existing VM, or a new one. Concurrent callers share one. */
@@ -488,13 +496,13 @@ export class Fleet extends EventEmitter<FleetEvents> {
   }
 
   /**
-   * The VM holding a project's checkout, creating, cloning and registering it as needed.
+   * The project's primary VM, creating, cloning and registering it as needed.
    * A VM without a project (such as the first one, started to read T3's configuration) is reused.
    */
   place(projectId: string, progress: (detail: string) => void = () => {}): Promise<string> {
     let flight = this.placing.get(projectId);
     if (!flight) {
-      flight = this.exclusive(`project:${projectId}`, () => this.placeProject(projectId, progress)).finally(() =>
+      flight = this.exclusive(`project:${projectId}`, () => this.placePrimary(projectId, progress)).finally(() =>
         this.placing.delete(projectId),
       );
       this.placing.set(projectId, flight);
@@ -502,34 +510,111 @@ export class Fleet extends EventEmitter<FleetEvents> {
     return flight;
   }
 
-  private async placeProject(projectId: string, progress: (detail: string) => void): Promise<string> {
-    let project = this.store.project(projectId);
+  /**
+   * The VM a new top-level thread of this project runs on (see `choose`): one of the project's VMs with
+   * room, waking it if it sleeps, else a new VM like the primary, else the least loaded one with a notice.
+   * Threads already running never move. `placed` runs before the next placement for this project starts,
+   * so it can count the thread toward that VM's load before T3 reports it.
+   */
+  placeThread(
+    projectId: string,
+    options: { load: (vm: VmRow) => VmLoad; placed: (vmId: string) => void; progress: (detail: string) => void },
+  ): Promise<ThreadPlacement> {
+    const { load, placed, progress } = options;
+    return this.exclusive(`project:${projectId}`, async () => {
+      const primary = await this.placePrimary(projectId, progress);
+      // VMs that failed to wake or set up during this placement.
+      const failed = new Set<string>();
+      for (;;) {
+        const project = this.project(projectId);
+        const vms = project.vms.flatMap(({ vmId }) => {
+          const vm = this.store.vm(vmId);
+          return vm && vm.state !== "gone" && !failed.has(vmId) ? [vm] : [];
+        });
+        const loads = vms.map(load);
+        const retryAt = (this.overflowFailedAt.get(projectId) ?? -Infinity) + overflowRetryMs;
+        const choice = choose(loads, project.vms.length < maxVmsPerProject && Date.now() >= retryAt);
+        if (!choice) throw new Error("None of this project's VMs could start, and VM Bridge could not add one.");
+        if (choice.kind === "create") {
+          const like = this.store.vm(primary);
+          const existing = new Set(this.store.vms().map((vm) => vm.id));
+          let vmId: string | undefined;
+          try {
+            vmId = await this.addVm(project, progress, like ? { provider: like.provider, size: like.size } : this.placement(project.url));
+            await this.setUp(vmId, projectId, progress);
+            this.overflowFailedAt.delete(projectId);
+            placed(vmId);
+            return { vmId, notice: null };
+          } catch (error) {
+            this.overflowFailedAt.set(projectId, Date.now());
+            if (vmId) failed.add(vmId);
+            // A create the provider refused leaves nothing there, so its row goes too rather than piling up.
+            for (const vm of this.store.vms()) if (!existing.has(vm.id) && vm.state === "error" && !vm.sandboxId) this.store.deleteVm(vm.id);
+            this.emit("changed");
+            this.traffic.record({ kind: "system", operation: `add a VM for ${project.title}: ${message(error)}`, vmId, status: "error" });
+            continue;
+          }
+        }
+        const { vmId } = choice.load;
+        if (!choice.load.awake || !project.vms.find((entry) => entry.vmId === vmId)?.checkoutPath) {
+          try {
+            await this.setUp(vmId, projectId, progress);
+          } catch (error) {
+            // Nothing to fall back to from the primary: fail the launch as before.
+            if (vmId === primary) throw error;
+            failed.add(vmId);
+            continue;
+          }
+        }
+        placed(vmId);
+        return { vmId, notice: choice.room ? null : busyNotice(choice.load) };
+      }
+    });
+  }
+
+  private project(projectId: string): ProjectRow {
+    const project = this.store.project(projectId);
     if (!project) throw new Error("Unknown project.");
-    if (project.vmId && project.checkoutPath) return project.vmId;
-    if (!project.vmId) {
-      const taken = new Set(this.store.projects().flatMap((p) => (p.vmId ? [p.vmId] : [])));
-      const target = this.placement(project.url);
-      const free = this.store
-        .vms()
-        .find((vm) => vm.provider === target.provider && vm.size === target.size && !taken.has(vm.id) && vm.state !== "gone" && vm.state !== "error" && vm.sandboxId);
-      progress(free ? "Using an idle VM" : `Creating a VM on ${providers[target.provider].label}`);
-      const vmId = free?.id ?? (await this.create(target)).id;
-      this.store.updateProject(projectId, { vmId });
-      this.emit("changed");
-      project = { ...project, vmId };
-    }
-    const vmId = project.vmId!;
-    progress("Starting the VM");
+    return project;
+  }
+
+  private async placePrimary(projectId: string, progress: (detail: string) => void): Promise<string> {
+    const project = this.project(projectId);
+    const primary = primaryVm(project);
+    if (primary?.checkoutPath) return primary.vmId;
+    const vmId = primary?.vmId ?? (await this.addVm(project, progress, this.placement(project.url)));
+    await this.setUp(vmId, projectId, progress);
+    return vmId;
+  }
+
+  /** Gives a project another VM: an idle one holding no project if one matches, else a new one. */
+  private async addVm(project: ProjectRow, progress: (detail: string) => void, target: { provider: ProviderId; size: VmSize }): Promise<string> {
+    const taken = new Set(this.store.projects().flatMap((p) => p.vms.map((entry) => entry.vmId)));
+    const free = this.store
+      .vms()
+      .find((vm) => vm.provider === target.provider && vm.size === target.size && !taken.has(vm.id) && vm.state !== "gone" && vm.state !== "error" && vm.sandboxId);
+    progress(free ? "Using an idle VM" : `Creating a VM on ${providers[target.provider].label}`);
+    const vmId = free?.id ?? (await this.create(target)).id;
+    this.store.addProjectVm(project.id, vmId);
+    this.emit("changed");
+    return vmId;
+  }
+
+  /** Wakes one of a project's VMs and makes sure it holds the checkout and T3 knows the project. */
+  private async setUp(vmId: string, projectId: string, progress: (detail: string) => void) {
+    const project = this.project(projectId);
+    const awake = Boolean(this.backend(vmId));
+    if (!awake) progress(this.store.vm(vmId)?.state === "sleeping" ? "Waking a VM" : "Starting the VM");
     const backend = await this.ensure(vmId);
+    if (project.vms.find((entry) => entry.vmId === vmId)?.checkoutPath) return;
     const release = this.lease(vmId);
     try {
       progress("Cloning the repository");
       const checkoutPath = await this.clone(vmId, project);
       progress("Registering the project with T3");
       await this.register(backend, project, checkoutPath);
-      this.store.updateProject(projectId, { checkoutPath });
+      this.store.setCheckout(projectId, vmId, checkoutPath);
       this.emit("changed");
-      return vmId;
     } finally {
       release();
     }

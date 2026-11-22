@@ -120,6 +120,20 @@ const migrations = [
   );
   ALTER TABLE vms ADD COLUMN skills TEXT;
   `,
+  // A project can live on several VMs. The first one added is its primary. The old projects.vm_id and
+  // projects.checkout_path columns stay behind unused: SQLite cannot drop a column a foreign key uses.
+  `
+  CREATE TABLE project_vms (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    vm_id TEXT NOT NULL REFERENCES vms(id) ON DELETE CASCADE,
+    checkout_path TEXT,
+    added_at INTEGER NOT NULL,
+    PRIMARY KEY (project_id, vm_id)
+  );
+  INSERT INTO project_vms (project_id, vm_id, checkout_path, added_at)
+    SELECT id, vm_id, checkout_path, created_at FROM projects WHERE vm_id IS NOT NULL;
+  UPDATE projects SET vm_id = NULL, checkout_path = NULL;
+  `,
 ];
 
 export function openDatabase(path: string): Database {

@@ -26,6 +26,7 @@ const boxdProvider: ProviderDefinition = {
     keepsMemory: true,
   },
   sizes: { small: "1 vCPU, 4 GB", medium: "2 vCPU, 8 GB", large: "4 vCPU, 16 GB" },
+  defaultSize: "medium",
   open(config) {
     const provider = boxd({ apiKey: required(config, "apiKey", "boxd API key") });
     return sdkDriver({
@@ -51,6 +52,7 @@ const instaboxProvider: ProviderDefinition = {
     keepsMemory: true,
   },
   sizes: { small: "2 vCPU, 4 GB", medium: "4 vCPU, 8 GB", large: "8 vCPU, 16 GB" },
+  defaultSize: "small",
   open(config) {
     return sdkDriver({
       id: "instabox",
@@ -88,6 +90,7 @@ const railwayProvider: ProviderDefinition = {
     keepsMemory: false,
   },
   sizes: { small: "1 vCPU, 2 GB", medium: "2 vCPU, 4 GB", large: "4 vCPU, 8 GB" },
+  defaultSize: "medium",
   open(config) {
     // Railway has no pause, and its idle timeout destroys the VM, so VM Bridge never sets one.
     // Sleep is a checkpoint followed by destroy, and waking restores the checkpoint.
@@ -122,6 +125,7 @@ const freestyleProvider: ProviderDefinition = {
   },
   // The base snapshot fixes the machine. Freestyle can only grow a VM, never shrink it.
   sizes: { small: "4 vCPU, 8 GB", medium: "4 vCPU, 8 GB", large: "4 vCPU, 8 GB" },
+  defaultSize: "medium",
   open(config) {
     return sdkDriver({
       id: "freestyle",
@@ -149,6 +153,7 @@ const superserveProvider: ProviderDefinition = {
   },
   // Every Superserve template has the same machine.
   sizes: { small: "2 vCPU, 4 GB", medium: "2 vCPU, 4 GB", large: "2 vCPU, 4 GB" },
+  defaultSize: "medium",
   open(config) {
     return sdkDriver({
       id: "superserve",

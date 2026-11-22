@@ -23,9 +23,10 @@ export type Direction = "in" | "out";
 
 /** Rewrites paths for one VM: `out` from VM to client, `in` from client to VM. */
 export function translate(value: unknown, vmId: string, direction: Direction, projects: readonly ProjectRow[]): unknown {
-  const checkouts = projects
-    .filter((project) => project.vmId === vmId && project.checkoutPath)
-    .map((project) => ({ vm: project.checkoutPath!, client: projectRoot(project) }));
+  // A project on several VMs has the same client root on each, mapped to that VM's own checkout.
+  const checkouts = projects.flatMap((project) =>
+    project.vms.flatMap((entry) => (entry.vmId === vmId && entry.checkoutPath ? [{ vm: entry.checkoutPath, client: projectRoot(project) }] : [])),
+  );
 
   const path = (item: string) => {
     for (const checkout of checkouts) {

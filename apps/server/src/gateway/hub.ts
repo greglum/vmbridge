@@ -1,16 +1,19 @@
 import { EventEmitter } from "node:events";
 import { providers } from "../providers/index.ts";
 import { message, type Fleet } from "../fleet.ts";
+import { labelVcpus, type VmLoad } from "../placement.ts";
 import type { Settings } from "../settings.ts";
-import type { ProjectRow, Store } from "../store.ts";
+import { primaryVm, type ProjectRow, type Store, type VmRow } from "../store.ts";
 import type { Traffic } from "../traffic.ts";
 import { T3Rejected, type Backend, type Frame } from "../vm/backend.ts";
+import type { Stats } from "../vm/stats.ts";
 import { defaultAgents, pendingAgent, presentAgent, type AgentReport } from "./agents.ts";
 import { applyHeldCommand } from "./held.ts";
 import { isPathKey, projectForPath, projectRoot, translate, vmForPath } from "./paths.ts";
 import { repositoryIdentity } from "./repos.ts";
 import {
   hasLiveWork,
+  isWorking,
   str,
   threadsOf,
   type Projection,
@@ -57,6 +60,9 @@ export const bridgeAuth = {
 
 const sha256 = (value: string) => new Bun.CryptoHasher("sha256").update(value).digest("hex");
 
+/** How long a thread just placed on a VM counts toward its load before T3 lists it. */
+const launchGraceMs = 2 * 60_000;
+
 /**
  * Everything T3 clients see: one merged shell, one config, and routing from each request to the
  * VM that owns it. Caches what every VM last reported so sleeping VMs keep their threads visible.
@@ -66,6 +72,10 @@ export class Hub extends EventEmitter<HubEvents> {
   private readonly configs: Map<string, ServerConfig>;
   private readonly schedules: Map<string, ScheduledTasks>;
   private readonly setupProgress = new Map<string, Wire>();
+  /** Threads placed on a VM without room, with the notice their setup shows. */
+  private readonly busyNotices = new Map<string, string>();
+  /** Top-level threads placed on a VM, by thread ID, counted toward its load until T3 lists them. */
+  private readonly launches = new Map<string, { vmId: string; at: number }>();
   private readonly waking = new Map<string, { count: number; id: string; startedAt: string; message: string }>();
   private readonly projectionRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
   /** Fleet-wide agent updates T3 started, by agent instance. */
@@ -79,6 +89,7 @@ export class Hub extends EventEmitter<HubEvents> {
     readonly settings: Settings,
     readonly fleet: Fleet,
     readonly traffic: Traffic,
+    private readonly stats: Pick<Stats, "get" | "lastDisk">,
   ) {
     super();
     this.setMaxListeners(0);
@@ -550,8 +561,13 @@ export class Hub extends EventEmitter<HubEvents> {
     const { vms, projects } = this.targets(payload);
     if (chosen) vms.add(chosen);
     for (const project of projects) {
-      if (project.vmId) vms.add(project.vmId);
-      else if (vms.size) throw new Error("This project has no checkout on that VM.");
+      // A request naming a thread or VM path goes there. One naming only the project goes to its primary VM.
+      if (vms.size) {
+        if ([...vms].some((vmId) => !project.vms.some((entry) => entry.vmId === vmId))) throw new Error("This project has no checkout on that VM.");
+      } else {
+        const primary = primaryVm(project);
+        if (primary) vms.add(primary.vmId);
+      }
     }
     if (vms.size === 1) return [...vms][0]!;
     throw new Error(
@@ -581,28 +597,44 @@ export class Hub extends EventEmitter<HubEvents> {
     const { vms, projects } = this.targets(payload);
     if (projects.length > 1 || vms.size > 1) throw new Error("This request mixes projects from different VMs.");
     const [project] = projects;
+    const launching = tag === "orchestration.launchThread";
+    // Known before placement, so placement can count it toward its VM's load.
+    let threadId = launching ? (previous?.threadId ?? str(payload.threadId) ?? crypto.randomUUID()) : undefined;
     let vmId: string;
     if (previous || vms.size) vmId = this.route(payload, previous?.vmId);
     else if (project && allocate) {
       const listener = (projectId: string, detail: string) => projectId === project.id && progress?.(detail);
+      const report = (detail: string) => this.emit("placement", project.id, detail);
       this.on("placement", listener);
       try {
-        vmId = await this.fleet.place(project.id, (detail) => this.emit("placement", project.id, detail));
+        if (threadId) {
+          const placed = await this.fleet.placeThread(project.id, {
+            load: (vm) => this.load(vm),
+            placed: (id) => this.launches.set(threadId!, { vmId: id, at: Date.now() }),
+            progress: report,
+          });
+          vmId = placed.vmId;
+          if (placed.notice) this.busyNotices.set(threadId, placed.notice);
+        } else vmId = await this.fleet.place(project.id, report);
       } finally {
         this.off("placement", listener);
       }
     } else vmId = this.route(payload);
 
     const outgoing = this.into({ ...payload }, vmId);
-    if (tag === "orchestration.launchThread") outgoing.threadId = previous?.threadId ?? str(outgoing.threadId) ?? crypto.randomUUID();
+    if (threadId) outgoing.threadId = threadId;
     if (commandId && !previous) {
       // Claimed in one insert: a retry racing this one through placement reuses whatever thread ID won.
-      this.store.saveCommand(commandId, vmId, fingerprint, str(outgoing.threadId) ?? null);
+      this.store.saveCommand(commandId, vmId, fingerprint, threadId ?? null);
       const claimed = this.store.command(commandId)!;
       if (claimed.fingerprint !== fingerprint) throw new Error("This commandId was already used for another request.");
-      if (claimed.threadId) outgoing.threadId = claimed.threadId;
+      if (claimed.threadId && claimed.threadId !== threadId) {
+        if (threadId) this.launches.delete(threadId);
+        threadId = claimed.threadId;
+        outgoing.threadId = threadId;
+      }
     }
-    if (tag === "orchestration.launchThread") {
+    if (launching) {
       this.store.setThreadVm(outgoing.threadId as string, vmId);
       const strategy = outgoing.workspaceStrategy as Wire | undefined;
       const placed = project && this.store.project(project.id);
@@ -611,9 +643,31 @@ export class Hub extends EventEmitter<HubEvents> {
         outgoing.workspaceStrategy = { type: "worktree", baseRef: str(strategy?.branch) ?? placed.branch ?? "HEAD" };
       }
     }
-    const threadId = str(payload.threadId);
-    if (payload.type === "thread.create" && threadId) this.store.setThreadVm(threadId, vmId);
+    const created = str(payload.threadId);
+    if (payload.type === "thread.create" && created) this.store.setThreadVm(created, vmId);
     return { vmId, payload: outgoing };
+  }
+
+  /** One of a project's VMs as placement sees it, from the cached shell and the latest resource reading. */
+  private load(vm: VmRow): VmLoad {
+    const shell = this.shells.get(vm.id);
+    const listed = new Set(threadsOf(shell).map((thread) => thread.id));
+    const now = Date.now();
+    let launched = 0;
+    for (const [threadId, launch] of this.launches) {
+      if (now - launch.at > launchGraceMs) this.launches.delete(threadId);
+      else if (launch.vmId === vm.id && !listed.has(threadId)) launched++;
+    }
+    const awake = Boolean(this.fleet.backend(vm.id));
+    const stats = awake ? this.stats.get(vm.id) : null;
+    return {
+      vmId: vm.id,
+      awake,
+      turns: (awake ? threadsOf(shell).filter(isWorking).length : 0) + launched,
+      vcpus: stats?.cpu?.cores ?? labelVcpus(providers[vm.provider].sizes[vm.size]),
+      memory: stats?.memory ?? null,
+      disk: stats?.disk ?? this.stats.lastDisk(vm.id),
+    };
   }
 
   // Worktree setup progress shown while VM Bridge places a new thread
@@ -622,9 +676,22 @@ export class Hub extends EventEmitter<HubEvents> {
     return this.setupProgress.get(threadId) ?? null;
   }
 
+  /**
+   * The VM's own setup snapshot for a thread, carrying its busy notice when it has one. T3 has no other place
+   * for a notice on a starting thread, and its setup card hides once the agent runs, so the notice goes on
+   * the agent stage, which T3 leaves without detail.
+   */
+  withBusyNotice(threadId: string, snapshot: Wire): Wire {
+    const notice = this.busyNotices.get(threadId);
+    if (!notice || !Array.isArray(snapshot.stages)) return snapshot;
+    return { ...snapshot, stages: (snapshot.stages as Wire[]).map((stage) => (stage.id === "agent" ? { ...stage, detail: notice } : stage)) };
+  }
+
   reportSetup(threadId: string, detail: string, phase: "running" | "done" | "failed" = "running") {
     const previous = this.setupProgress.get(threadId);
     const now = new Date().toISOString();
+    // A busy VM's notice stays on the stage through the rest of the setup. Failures show their own text.
+    const notice = phase === "failed" ? undefined : this.busyNotices.get(threadId);
     const startedAt = previous?.phase === "running" ? previous.startedAt : now;
     const stage = (previous?.stages as Wire[] | undefined)?.[0];
     this.setupProgress.delete(threadId);
@@ -640,11 +707,11 @@ export class Hub extends EventEmitter<HubEvents> {
       stages: [
         {
           id: "checkout",
-          status: phase,
+          status: notice ? "warning" : phase,
           startedAt: stage?.startedAt ?? now,
           endedAt: phase === "running" ? null : now,
           percent: null,
-          detail: detail.slice(0, 200),
+          detail: (notice ?? detail).slice(0, 200),
           tail: [],
         },
       ],
@@ -654,7 +721,10 @@ export class Hub extends EventEmitter<HubEvents> {
     // Keep the newest 200, dropping settled ones first.
     if (this.setupProgress.size > 200) {
       const settled = [...this.setupProgress].find(([, snapshot]) => snapshot.phase !== "running");
-      if (settled) this.setupProgress.delete(settled[0]);
+      if (settled) {
+        this.setupProgress.delete(settled[0]);
+        this.busyNotices.delete(settled[0]);
+      }
     }
     this.emit("setup", threadId);
   }

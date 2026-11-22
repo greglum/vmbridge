@@ -122,6 +122,8 @@ export function parseStats(output: string, at: number): VmStats {
  */
 export class Stats {
   private readonly latest = new Map<string, VmStats>();
+  /** Disk survives sleep, so its last reading still tells whether a sleeping VM has room for more work. */
+  private readonly disks = new Map<string, Usage>();
   private readonly reading = new Map<string, Promise<VmStats | null>>();
 
   constructor(private readonly fleet: Fleet) {
@@ -131,6 +133,11 @@ export class Stats {
 
   get(vmId: string) {
     return this.latest.get(vmId) ?? null;
+  }
+
+  /** The VM's disk when it was last read, awake or not. */
+  lastDisk(vmId: string) {
+    return this.disks.get(vmId) ?? null;
   }
 
   /** Reads a VM now, sharing a reading already under way. A VM that is not connected keeps what it has. */
@@ -148,6 +155,7 @@ export class Stats {
         if (!result || result.exitCode === null || !result.stdout) return this.get(vmId);
         const stats = parseStats(result.stdout, Date.now());
         this.latest.set(vmId, stats);
+        if (stats.disk) this.disks.set(vmId, stats.disk);
         this.fleet.emit("changed");
         return stats;
       })().finally(() => this.reading.delete(vmId));

@@ -33,6 +33,8 @@ export interface ProviderInfo {
   fields: ProviderField[];
   features: ProviderFeatures;
   sizes: Record<VmSize, string>;
+  /** The size new VMs get when no setting or rule picks one. */
+  defaultSize: VmSize;
   /** Non-secret field values. Secret fields report only whether they are set. */
   values: Record<string, string>;
   secretsSet: string[];
@@ -201,7 +203,8 @@ export interface ProjectInfo {
   title: string;
   url: string;
   branch: string | null;
-  vmId: string | null;
+  /** VMs holding the project, primary first. */
+  vmIds: string[];
   createdAt: number;
 }
 
@@ -265,7 +268,8 @@ export interface GitHubAccount {
 }
 
 export interface BridgeSettings {
-  vmSize: VmSize;
+  /** Null: each provider's default size. */
+  vmSize: VmSize | null;
   idleMinutes: number;
   t3Version: string | null;
 }
