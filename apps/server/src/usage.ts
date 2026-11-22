@@ -1,10 +1,15 @@
 import type { Database } from "bun:sqlite";
 import { providerIds, type Estimate, type ProviderId, type SnapshotUsage, type UsageReport, type VmSize } from "@vmbridge/contracts";
 import { githubName } from "./gateway/repos.ts";
+import { mayBeAwake } from "./fleet.ts";
 import { estimate, pricing } from "./pricing.ts";
 import type { Store } from "./store.ts";
 
-/** Awake: VM Bridge is connected to its T3 server. Asleep: VM Bridge put it to sleep. Other states (starting, error) count as neither. */
+/**
+ * Awake: VM Bridge is connected to its T3 server, or the VM may still run at its provider, such as while VM Bridge
+ * reconnects a dropped connection or after a failed sleep. Asleep: VM Bridge put it to sleep. A VM waking from sleep
+ * counts as neither until it connects.
+ */
 export type VmUsageState = "awake" | "asleep";
 
 /** One stretch of a VM awake or asleep. */
@@ -94,7 +99,9 @@ export class Usage {
     const projects = this.store.projects();
     const wanted = new Map<string, { name: string; provider: ProviderId; size: VmSize; state: VmUsageState; repos: string[] }>();
     for (const vm of this.store.vms()) {
-      const state = awake.has(vm.id) ? "awake" : vm.state === "sleeping" ? "asleep" : null;
+      let state: VmUsageState | null = null;
+      if (vm.state === "sleeping") state = "asleep";
+      else if (awake.has(vm.id) || (vm.state !== "gone" && mayBeAwake(vm))) state = "awake";
       if (!state) continue;
       const repos = projects.filter((project) => project.vms.some((entry) => entry.vmId === vm.id)).map((project) => project.url);
       wanted.set(vm.id, { name: vm.name, provider: vm.provider, size: vm.size, state, repos });

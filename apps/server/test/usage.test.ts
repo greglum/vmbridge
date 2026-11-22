@@ -56,14 +56,33 @@ describe("VM intervals", () => {
     expect(usage.intervals(0, hour, 30 * minute)).toHaveLength(1);
   });
 
-  test("a disconnected or starting VM counts as neither awake nor asleep", () => {
+  test("a VM waking from sleep counts as neither awake nor asleep until it connects", () => {
+    const { store, usage, addVm, wake, sleep } = setup();
+    addVm("a");
+    store.updateVm("a", { sandboxId: "box-a", lastConnectedAt: 0, lastSleptAt: hour });
+    sleep("a", hour);
+    store.updateVm("a", { state: "starting" });
+    usage.sync(2 * hour);
+    wake("a", 3 * hour);
+    expect(usage.intervals(0, 4 * hour, 4 * hour).map((entry) => [entry.state, entry.startedAt, entry.endedAt])).toEqual([
+      ["asleep", hour, 2 * hour],
+      ["awake", 3 * hour, 4 * hour],
+    ]);
+  });
+
+  test("a dropped connection stays awake while VM Bridge reconnects, as the VM still runs", () => {
     const { store, awake, usage, addVm, wake } = setup();
     addVm("a");
+    store.updateVm("a", { sandboxId: "box-a", lastConnectedAt: 1 });
     wake("a", 0);
     awake.delete("a");
-    store.updateVm("a", { state: "error" });
+    store.updateVm("a", { state: "starting" });
     usage.sync(hour);
-    expect(usage.intervals(0, 2 * hour, 2 * hour).map((entry) => [entry.state, entry.endedAt])).toEqual([["awake", hour]]);
+    // A failed try leaves it in error until the next one.
+    store.updateVm("a", { state: "error" });
+    usage.sync(2 * hour);
+    wake("a", 3 * hour);
+    expect(usage.intervals(0, 4 * hour, 4 * hour).map((entry) => [entry.state, entry.startedAt, entry.endedAt])).toEqual([["awake", 0, 4 * hour]]);
   });
 
   test("deleting a VM ends its interval and keeps its history", () => {
