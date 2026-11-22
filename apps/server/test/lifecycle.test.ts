@@ -9,6 +9,7 @@ import { Fleet } from "../src/fleet.ts";
 import { Hub } from "../src/gateway/hub.ts";
 import { Rpc, type RpcClient } from "../src/gateway/rpc.ts";
 import type { Shell, Wire } from "../src/gateway/types.ts";
+import type { SandboxInfo } from "@opencoredev/sandbox-sdk/provider";
 import type { Box, Driver } from "../src/providers/index.ts";
 import { saveEnvVars, Secrets, Settings } from "../src/settings.ts";
 import { Skills } from "../src/skills.ts";
@@ -193,6 +194,7 @@ function setup(skillRoots?: string[]) {
     connect: async () => box,
     keepAlive: async () => {},
     deleteCheckpoint: async (checkpoint: string) => void events.push(`delete checkpoint ${checkpoint}`),
+    list: async (): Promise<SandboxInfo[]> => [],
   };
   /** Another Fleet on the same database, as after VM Bridge restarts. */
   const newFleet = () => {
@@ -231,6 +233,57 @@ describe("creating and deleting VMs", () => {
     expect(a).toBe(b);
     expect(store.vms()).toHaveLength(1);
     expect(events).toEqual(["create", "wake"]);
+  });
+});
+
+describe("VMs VM Bridge lost track of", () => {
+  const sandbox = (id: string, key: string | undefined, bridge: string): SandboxInfo => ({ id, key, labels: { "sandbox-sdk": "1", vmbridge: bridge }, state: "running", createdAt: 0 });
+
+  test("deletes this bridge's VMs nobody has on record and drops creates a restart cut short, touching nothing else", async () => {
+    const { fleet, store, settings, driver, events } = setup();
+    const ours = settings.get("bridgeId").slice(0, 12);
+    const kept = await fleet.create();
+    // Created before VM Bridge stopped: the row never got its sandbox.
+    store.insertVm({ id: "aaaaaaaaaaaa", provider: "boxd", name: "vm-aaaaaa", size: "medium", state: "provisioning", createdAt: 0 });
+    store.saveBase("boxd", "medium", { builder: "sb-builder" });
+    driver.list = async () => [
+      sandbox("sb1", kept.id, ours),
+      sandbox("sb-stuck", "aaaaaaaaaaaa", ours),
+      sandbox("sb-deleted-row", "bbbbbbbbbbbb-m1abc", ours),
+      sandbox("sb-build", "base-cccccccccccc", ours),
+      sandbox("sb-builder", "base-dddddddddddd", ours),
+      sandbox("sb-other-bridge", "eeeeeeeeeeee", "otherbridge0"),
+      sandbox("sb-no-key", undefined, ours),
+      sandbox("sb-own-key", "my-app", ours),
+    ];
+    events.length = 0;
+    await fleet.reconcile("boxd");
+    expect(events).toEqual(["destroy sb-stuck", "destroy sb-deleted-row", "destroy sb-build"]);
+    expect(store.vm("aaaaaaaaaaaa")).toBeNull();
+    expect(store.vm(kept.id)).not.toBeNull();
+  });
+
+  test("leaves a VM alone while its create runs", async () => {
+    const { fleet, store, settings, driver, box, events } = setup();
+    const created = gate();
+    driver.create = async () => (events.push("create"), await created.promise, box);
+    const creating = fleet.create();
+    await until(() => events.includes("create"));
+    const [vm] = store.vms();
+    driver.list = async () => [sandbox("sb1", vm!.id, settings.get("bridgeId").slice(0, 12))];
+    await fleet.reconcile("boxd");
+    created.release();
+    await creating;
+    expect(events).toEqual(["create"]);
+    expect(store.vm(vm!.id)).toMatchObject({ sandboxId: "sb1" });
+  });
+
+  test("runs on start, before VMs reconnect", async () => {
+    const { store, settings, driver, events, newFleet } = setup();
+    driver.list = async () => [sandbox("sb-lost", "ffffffffffff", settings.get("bridgeId").slice(0, 12))];
+    await newFleet().resume();
+    await until(() => events.includes("destroy sb-lost"));
+    expect(store.vms()).toEqual([]);
   });
 });
 
@@ -287,6 +340,24 @@ describe("checkpoints", () => {
     await fleet.ensure(vm.id);
     expect(events).toEqual(["create", "wake", "sleep", "wake", "delete checkpoint cp1"]);
     expect(store.vm(vm.id)).toMatchObject({ sandboxId: "sb2", checkpoint: null });
+  });
+
+  test("a checkpoint that could not be deleted after a wake is deleted by the next sweep", async () => {
+    const { fleet, store, driver, box, events } = setup();
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    driver.sleep = async () => (events.push("sleep"), { checkpoint: "cp1" });
+    await fleet.sleep(vm.id);
+    driver.wake = async () => (events.push("wake"), { ...box, id: "sb2" });
+    driver.deleteCheckpoint = async () => {
+      throw new Error("Railway is down.");
+    };
+    await fleet.ensure(vm.id);
+    expect(store.retiredSnapshots("boxd")).toEqual(["cp1"]);
+    driver.deleteCheckpoint = async (checkpoint) => void events.push(`delete checkpoint ${checkpoint}`);
+    await fleet.bases.sweep("boxd");
+    expect(events.at(-1)).toBe("delete checkpoint cp1");
+    expect(store.retiredSnapshots("boxd")).toEqual([]);
   });
 
   test("deleting a VM asleep as a checkpoint deletes the checkpoint", async () => {

@@ -44,6 +44,8 @@ export interface ProviderInfo {
   /** New VMs go here unless a repository rule picks another provider. */
   isDefault: boolean;
   setup: ProviderSetup;
+  /** The latest background failure on this provider not since put right, such as a VM or snapshot it could not delete. */
+  problem: string | null;
 }
 
 /**
@@ -170,6 +172,8 @@ export interface VmInfo {
   stats: VmStats | null;
   /** The VM has not got the installed skills or synced instructions yet. A sleeping VM gets them when it wakes. */
   skillsPending: boolean;
+  /** The latest background failure on this VM not since put right, such as a failed sleep that may leave it running. */
+  problem: string | null;
 }
 
 /** Where an installed skill comes from: skills.sh, or a folder on the machine running VM Bridge. */
@@ -314,7 +318,10 @@ export interface TrafficEvent {
   operation: string;
   clientId?: string;
   vmId?: string;
+  provider?: ProviderId;
   status?: "ok" | "error";
+  /** Why it failed. */
+  reason?: string;
   durationMs?: number;
 }
 

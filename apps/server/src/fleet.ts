@@ -61,6 +61,13 @@ export const mayBeAwake = (vm: VmRow) => Boolean(vm.sandboxId) && (vm.lastConnec
 
 const shortId = () =>crypto.randomUUID().replaceAll("-", "").slice(0, 12);
 
+/** How often to look for untracked VMs before a create, after the check on start. */
+export const reconcileEveryMs = 10 * 60_000;
+/** Provider keys VM Bridge creates: a VM's ID, with a suffix when it starts from a snapshot or checkpoint. */
+const vmKey = /^([0-9a-f]{12})(?:-[0-9a-z]+)?$/;
+/** Provider keys of base snapshot build VMs (see vm/bases.ts). */
+const buildKey = /^base-[0-9a-f]{12}$/;
+
 /** Provider config: the non-secret options plus every secret field, read from the secrets table. */
 export function providerValues(settings: Settings, secrets: Secrets, id: ProviderId) {
   const values = { ...settings.get("providerOptions")[id] };
@@ -102,6 +109,9 @@ export class Fleet extends EventEmitter<FleetEvents> {
   private readonly unrestartable = new Map<string, string>();
   /** When adding a VM to each project last failed. */
   private readonly overflowFailedAt = new Map<string, number>();
+  /** When each provider was last checked for untracked VMs, and the check running now. */
+  private readonly reconciledAt = new Map<ProviderId, number>();
+  private readonly reconciling = new Map<ProviderId, Promise<void>>();
   private closed = false;
   readonly bases: Bases;
 
@@ -250,8 +260,8 @@ export class Fleet extends EventEmitter<FleetEvents> {
       this.store.updateVm(id, { sandboxId: box.id });
       const vm = this.store.vm(id);
       if (!vm) {
-        // The row went away some other way: do not leave a billable VM nobody knows about.
-        await driver.destroy(box.id).catch(() => {});
+        // The row went away some other way: do not leave a billable VM nobody knows about. `reconcile` retries a failed delete.
+        await driver.destroy(box.id).catch((error) => this.failed("delete VM", error, { vmId: id, provider }));
         throw new Error(`VM ${id} was deleted while it was being created.`);
       }
       this.boxes.set(id, box);
@@ -266,8 +276,10 @@ export class Fleet extends EventEmitter<FleetEvents> {
    * building a new snapshot when one is due.
    */
   private async createBox(provider: ProviderId, driver: Driver, input: CreateVm): Promise<{ box: Box; based: boolean }> {
-    // Without the t3 version there is no telling which snapshot is current. Opening the VM will report the failure.
+    // Leftover VMs can hold the last VM the provider allows.
     await this.bases.reap(provider);
+    if (Date.now() - (this.reconciledAt.get(provider) ?? -Infinity) >= reconcileEveryMs) await this.reconcile(provider);
+    // Without the t3 version there is no telling which snapshot is current. Opening the VM will report the failure.
     const version = await resolveT3Version(this.settings.get("t3Version")).catch(() => null);
     if (!version) return { box: await driver.create(input), based: false };
     const choice = this.bases.choose(provider, input.size, version);
@@ -363,8 +375,13 @@ export class Fleet extends EventEmitter<FleetEvents> {
       // Restoring a checkpoint makes a new sandbox. It holds the files now, so the checkpoint can go.
       if (box.id !== vm.sandboxId) {
         this.store.updateVm(vmId, { sandboxId: box.id, checkpoint: null });
-        if (vm.checkpoint) {
-          await driver.deleteCheckpoint(vm.checkpoint).catch(() => this.traffic.record({ kind: "provider", operation: "delete checkpoint", vmId, status: "error" }));
+        const { checkpoint } = vm;
+        if (checkpoint) {
+          await driver.deleteCheckpoint(checkpoint).catch((error) => {
+            // On record, so the next sweep deletes it instead of it being billed forever.
+            this.store.retireSnapshot(vm.provider, checkpoint);
+            this.failed("delete snapshot", error, { vmId, provider: vm.provider });
+          });
         }
       }
       this.boxes.set(vmId, box);
@@ -379,11 +396,11 @@ export class Fleet extends EventEmitter<FleetEvents> {
       this.traffic.record({ kind: "provider", operation: "wake VM", vmId, status: "ok", durationMs: Math.round(performance.now() - started) });
       return backend;
     } catch (error) {
-      this.traffic.record({ kind: "provider", operation: "wake VM", vmId, status: "error" });
+      this.failed("wake VM", error, { vmId, provider: vm.provider });
       if (error instanceof SandboxError && error.code === "not_found") this.markGone(vmId);
       else {
         // Woken but unusable: put it back to sleep so it does not run, and bill, outside the idle sweep.
-        if (box && wasAsleep) await this.sleepBox(vmId, this.driver(vm.provider), box).catch(() => {});
+        if (box && wasAsleep) await this.sleepBox(vmId, this.driver(vm.provider), box).catch((sleepError) => this.failed("sleep VM", sleepError, { vmId, provider: vm.provider }));
         this.setState(vmId, "error", message(error));
       }
       throw error;
@@ -626,10 +643,10 @@ export class Fleet extends EventEmitter<FleetEvents> {
       try {
         await this.sleepBox(vmId, driver, box);
         this.emit("changed");
-        this.traffic.record({ kind: "provider", operation: "sleep VM", vmId, status: "ok", durationMs: Math.round(performance.now() - started) });
+        this.traffic.record({ kind: "provider", operation: "sleep VM", vmId, provider: vm.provider, status: "ok", durationMs: Math.round(performance.now() - started) });
       } catch (error) {
         this.setState(vmId, "error", message(error));
-        this.traffic.record({ kind: "provider", operation: "sleep VM", vmId, status: "error" });
+        this.failed("sleep VM", error, { vmId, provider: vm.provider });
         throw error;
       }
     });
@@ -865,13 +882,74 @@ fi`,
     if (!response.ok) throw new Error(`T3 refused to register the project (${response.status}).`);
   }
 
-  /** Reconnects VMs that were awake when VM Bridge stopped. */
+  /**
+   * Deletes VMs at the provider that carry this bridge's label but that VM Bridge has no record of, such as one whose
+   * create returned after VM Bridge stopped, and drops VMs whose create never finished. Only a sandbox whose key is one
+   * VM Bridge gives its VMs or build VMs is touched, and none that an operation running now may still record.
+   * Concurrent callers share one check.
+   */
+  reconcile(provider: ProviderId): Promise<void> {
+    let flight = this.reconciling.get(provider);
+    if (!flight) {
+      flight = this.findUntracked(provider)
+        .then(
+          () => void this.reconciledAt.set(provider, Date.now()),
+          (error) => this.failed("look for untracked VMs", error, { provider }),
+        )
+        .finally(() => this.reconciling.delete(provider));
+      this.reconciling.set(provider, flight);
+    }
+    return flight;
+  }
+
+  private async findUntracked(provider: ProviderId) {
+    const driver = this.driver(provider);
+    const labels = this.labels();
+    const listed = await driver.list(labels);
+    for (const sandbox of listed) {
+      // Checked here too, so a provider that ignored the filter cannot hand over another bridge's or anyone's machines.
+      if (sandbox.labels.vmbridge !== labels.vmbridge || !sandbox.key) continue;
+      const owner = vmKey.exec(sandbox.key)?.[1];
+      if (!owner && !buildKey.test(sandbox.key)) continue;
+      // Read now, not before listing, so a create or wake that finished meanwhile counts.
+      if (this.store.vms().some((vm) => vm.sandboxId === sandbox.id)) continue;
+      if (owner && this.locks.has(owner)) continue;
+      if (!owner && (this.bases.running(provider) || this.store.builders(provider).some((base) => base.builder === sandbox.id))) continue;
+      try {
+        await driver.destroy(sandbox.id);
+        console.log(`[reconcile ${provider}] deleted untracked VM ${sandbox.id}`);
+        this.traffic.record({ kind: "provider", operation: "delete untracked VM", provider, status: "ok" });
+      } catch (error) {
+        this.failed("delete untracked VM", error, { provider });
+      }
+    }
+    // A create cut short by a restart. Any VM it made at the provider was deleted above, or is retried next time.
+    for (const vm of this.store.vms()) {
+      if (vm.provider !== provider || vm.state !== "provisioning" || vm.sandboxId || this.locks.has(vm.id)) continue;
+      this.store.deleteVm(vm.id);
+      console.log(`[reconcile ${provider}] dropped VM ${vm.id}, whose create never finished`);
+      this.emit("changed");
+    }
+  }
+
+  /** Records a failure in the dashboard log, which keeps it across restarts and flags its VM or provider. */
+  private failed(operation: string, error: unknown, subject: { vmId?: string; provider?: ProviderId }) {
+    this.traffic.record({ kind: "provider", operation, ...subject, status: "error", reason: message(error) });
+  }
+
+  /** Reconnects VMs that were awake when VM Bridge stopped, and cleans up after anything a stop cut short. */
   async resume() {
     // So the dashboard can tell sleeping VMs behind on sign-ins or variables before any VM wakes.
     void this.credentials().catch(() => {});
     // Builds first, so `reap` leaves their VMs alone.
     this.prepareBases();
     void this.bases.reap().catch(() => {});
+    // Providers removed since still hold their VMs.
+    const used = new Set([...this.settings.get("providers"), ...this.store.vms().map((vm) => vm.provider)]);
+    for (const provider of used) {
+      void this.reconcile(provider);
+      void this.bases.sweep(provider).catch(() => {});
+    }
     for (const vm of this.store.vms()) {
       // A VM that failed while awake may still run. Connected, the idle sweep can put it to sleep.
       const awake = ["ready", "busy", "starting"].includes(vm.state) || (vm.state === "error" && mayBeAwake(vm));

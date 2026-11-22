@@ -187,7 +187,10 @@ export class Admin {
       if (!action && method === "DELETE") {
         const remaining = settings.get("providers").filter((entry) => entry !== id);
         settings.set("providers", remaining);
-        void fleet.bases.drop(id).catch(() => {});
+        // Its base snapshots are billed until deleted, so a failure stays on the provider in Setup.
+        void fleet.bases.drop(id).catch((error) =>
+          this.deps.traffic.record({ kind: "provider", operation: "remove provider", provider: id, status: "error", reason: message(error) }),
+        );
         if (settings.get("defaultProvider") === id) settings.set("defaultProvider", remaining[0] ?? null);
         this.providersChanged();
         return json(this.providerInfo(id));
@@ -425,7 +428,7 @@ export class Admin {
     return json({ error: "Not found." }, 404);
   }
 
-  private providerInfo(id: ProviderId): ProviderInfo {
+  private providerInfo(id: ProviderId, problems = this.deps.traffic.problems()): ProviderInfo {
     const definition = providers[id];
     const { settings, secrets } = this.deps;
     const values = { ...settings.get("providerOptions")[id] };
@@ -447,6 +450,7 @@ export class Admin {
       added: settings.get("providers").includes(id),
       isDefault: settings.get("defaultProvider") === id,
       setup: this.deps.fleet.setup(id),
+      problem: problems.providers.get(id) ?? null,
     };
   }
 
@@ -463,6 +467,7 @@ export class Admin {
     const projects = store.projects();
     const idleMs = settings.get("idleMinutes") * 60_000;
     const skills = this.deps.skills.state();
+    const problems = this.deps.traffic.problems();
     const vms = store
       .vms()
       .filter((vm) => vm.state !== "gone")
@@ -502,6 +507,7 @@ export class Admin {
           stats: vm.state === "ready" || vm.state === "busy" ? this.deps.stats.get(vm.id) : null,
           skillsPending:
             vm.sandboxId !== null && vm.skills !== skills.fingerprint && (skills.skills.length > 0 || skills.instructions.length > 0 || vm.skills !== null),
+          problem: problems.vms.get(vm.id) ?? null,
         };
       });
     return {
@@ -511,7 +517,7 @@ export class Admin {
         github: secrets.has("github.token"),
         agents: agents.some((profile) => profile.inUse),
       },
-      providers: settings.get("providers").map((id) => this.providerInfo(id)),
+      providers: settings.get("providers").map((id) => this.providerInfo(id, problems)),
       defaultProvider,
       repoRules: settings.get("repoRules"),
       github: secrets.has("github.token") ? settings.get("github") : null,

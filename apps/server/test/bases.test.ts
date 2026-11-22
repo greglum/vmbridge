@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { SandboxError } from "@opencoredev/sandbox-sdk";
 import type { AgentAuth } from "../src/agent-auth/profiles.ts";
 import { openDatabase } from "../src/db.ts";
@@ -355,18 +355,52 @@ describe("setting up a provider", () => {
     ]);
   });
 
-  test("a build that hangs stops holding its provider back after the limit", async () => {
-    const { fleet, driver } = setup();
+  test("a build that hangs is given up at the limit: its VM is deleted and Retry builds again at once", async () => {
+    const { fleet, store, driver, events } = setup();
     let release = () => {};
     const held = new Promise<void>((resolve) => (release = resolve));
-    driver.snapshot = async () => (await held, "snap1");
-    fleet.prepareBase("boxd");
-    const started = Date.now();
-    expect(fleet.bases.status("boxd", "medium", started + baseSetupLimitMs + 1)).toEqual({
-      state: "failed",
-      reason: "Setup is taking longer than 15 minutes.",
-    });
-    release();
+    const snapshot = driver.snapshot;
+    driver.snapshot = async (box) => (await held, snapshot(box));
+    jest.useFakeTimers();
+    try {
+      fleet.prepareBase("boxd");
+      // Fake timers stop `Bun.sleep`, so this waits on the event loop instead.
+      for (let i = 0; i < 200 && !store.base("boxd", "medium")?.builder; i++) await new Promise((resolve) => setImmediate(resolve));
+      jest.advanceTimersByTime(baseSetupLimitMs);
+    } finally {
+      jest.useRealTimers();
+    }
+    const builder = events.find((event) => event.startsWith("create"))!.slice("create ".length);
+    expect(fleet.setup("boxd")).toEqual({ state: "failed", reason: "Setup took longer than 15 minutes." });
+    await until(() => events.includes(`destroy ${builder}`));
+    expect(store.base("boxd", "medium")?.builder).toBeNull();
+
+    driver.snapshot = snapshot;
+    fleet.prepareBase("boxd", true);
+    expect(fleet.setup("boxd").state).toBe("building");
     await fleet.bases.settled();
+    expect(store.base("boxd", "medium")).toMatchObject({ snapshot: "snap1", builder: null });
+
+    // The stuck call returns at last: its snapshot is too late to use and goes with the replaced ones.
+    release();
+    await until(() => store.retiredSnapshots("boxd").includes("snap2"));
+    expect(store.base("boxd", "medium")?.snapshot).toBe("snap1");
+    expect(fleet.setup("boxd")).toEqual({ state: "ready" });
+  });
+
+  test("removing a provider does not wait for a build that was given up", async () => {
+    const { fleet, store, settings, driver } = setup();
+    driver.snapshot = () => new Promise<string>(() => {});
+    jest.useFakeTimers();
+    try {
+      fleet.prepareBase("boxd");
+      for (let i = 0; i < 200 && !store.base("boxd", "medium")?.builder; i++) await new Promise((resolve) => setImmediate(resolve));
+      jest.advanceTimersByTime(baseSetupLimitMs);
+    } finally {
+      jest.useRealTimers();
+    }
+    settings.set("providers", []);
+    const dropped = await Promise.race([fleet.bases.drop("boxd").then(() => true), Bun.sleep(500).then(() => false)]);
+    expect(dropped).toBe(true);
   });
 });

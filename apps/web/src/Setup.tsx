@@ -43,6 +43,7 @@ function ProviderStatus({ provider }: { provider: ProviderInfo }) {
   const { setup } = provider;
   if (provider.added && setup.state === "building") return <SettingUp startedAt={setup.startedAt} />;
   if (provider.added && setup.state === "failed") return "Setup failed";
+  if (provider.problem) return <span className="text-destructive">Needs attention</span>;
   if (provider.isDefault) return "Default";
   if (provider.added) return "Added";
   return provider.configured ? "Ready" : "Not set up";
@@ -105,7 +106,10 @@ function Providers({ overview }: { overview: Overview }) {
     });
   }, [added, overview.defaultProvider]);
   // The list loads once per change of providers, while each added provider's setup comes live with the overview.
-  const live = list.map((entry) => ({ ...entry, setup: overview.providers.find((added) => added.id === entry.id)?.setup ?? entry.setup }));
+  const live = list.map((entry) => {
+    const added = overview.providers.find((candidate) => candidate.id === entry.id);
+    return added ? { ...entry, setup: added.setup, problem: added.problem } : entry;
+  });
   const provider = live.find((entry) => entry.id === chosen);
   const replace = (next: ProviderInfo) => setList((current) => current.map((entry) => (entry.id === next.id ? next : entry)));
 
@@ -191,6 +195,7 @@ function ProviderForm({ provider, onSaved }: { provider: ProviderInfo; onSaved: 
           <Badge variant="secondary">{sleepModes[provider.features.sleep]}</Badge>
         </div>
         {provider.added && <ProviderSetup provider={provider} busy={save.busy} onRetry={() => void retry()} />}
+        {provider.problem && <p className="break-words text-sm text-destructive">{provider.problem}</p>}
         <FieldGroup>
           {provider.fields.map((field) => {
             const id = `field-${provider.id}-${field.key}`;
