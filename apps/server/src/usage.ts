@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { providerIds, type Estimate, type ProviderId, type SnapshotUsage, type UsageReport, type VmSize } from "@vmbridge/contracts";
 import { githubName } from "./gateway/repos.ts";
 import { mayBeAwake } from "./fleet.ts";
-import { estimate, pricing } from "./pricing.ts";
+import { estimate, eurUsd, pricing } from "./pricing.ts";
 import type { Store } from "./store.ts";
 
 /**
@@ -233,7 +233,7 @@ export class Usage {
         provider,
         awakeMs: sum(own.map((vm) => vm.awakeMs)),
         asleepMs: sum(own.map((vm) => vm.asleepMs)),
-        estimate: combine(own.map((vm) => vm.estimate))[0]!,
+        estimate: combine(own.map((vm) => vm.estimate)),
       }];
     });
 
@@ -257,7 +257,8 @@ export class Usage {
         .map(([repo, entry]) => ({ repo, awakeMs: entry.awakeMs, vms: entry.vms.size }))
         .sort((a, b) => b.awakeMs - a.awakeMs),
       snapshots: [...snapshots.values()].map(({ names, ...entry }) => entry),
-      totals: combine(providers.map((provider) => provider.estimate)),
+      total: combine(providers.map((provider) => provider.estimate)),
+      eurUsd,
     };
   }
 }
@@ -270,12 +271,7 @@ function clip(startedAt: number, endedAt: number, from: number, to: number) {
 
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
 
-/** Adds estimates up per currency. */
-function combine(estimates: Estimate[]): Estimate[] {
-  const totals = new Map<Estimate["currency"], Estimate>();
-  for (const { currency, amount, partial } of estimates) {
-    const total = totals.get(currency) ?? { currency, amount: 0, partial: false };
-    totals.set(currency, { currency, amount: total.amount + amount, partial: total.partial || partial });
-  }
-  return [...totals.values()];
-}
+const combine = (estimates: Estimate[]): Estimate => ({
+  amount: sum(estimates.map((entry) => entry.amount)),
+  partial: estimates.some((entry) => entry.partial),
+});

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { providerIds, vmSizes } from "@vmbridge/contracts";
 import { openDatabase } from "../src/db.ts";
-import { estimate, machine, pricing } from "../src/pricing.ts";
+import { estimate, eurUsd, machine, pricing } from "../src/pricing.ts";
 import { Store } from "../src/store.ts";
 import { Usage } from "../src/usage.ts";
 
@@ -193,16 +193,16 @@ describe("costs", () => {
     expect(pricing("daytona").runningHourly.medium).toBeCloseTo(2 * 0.0504 + 4 * 0.0162 + 8 * 0.000108, 6);
   });
 
-  test("estimates charge awake and asleep time, and flag asleep time without a price", () => {
-    expect(estimate("boat", "medium", 10 * hour, 100 * hour)).toEqual({ currency: "USD", amount: 0.36, partial: false });
-    const boxd = estimate("boxd", "medium", hour, 2 * hour);
-    expect(boxd.currency).toBe("EUR");
-    expect(boxd.amount).toBeCloseTo(2 * 0.039 + 8 * 0.012 + 2 * 8 * 0.012, 6);
+  test("estimates charge awake and asleep time in US dollars, and flag asleep time without a price", () => {
+    expect(estimate("boat", "medium", 10 * hour, 100 * hour)).toEqual({ amount: 0.36, partial: false });
+    // boxd publishes euros.
+    expect(pricing("boxd").currency).toBe("EUR");
+    expect(estimate("boxd", "medium", hour, 2 * hour).amount).toBeCloseTo((2 * 0.039 + 8 * 0.012 + 2 * 8 * 0.012) * eurUsd.rate, 6);
     expect(estimate("railway", "medium", hour, hour).partial).toBe(true);
     expect(estimate("railway", "medium", hour, 0).partial).toBe(false);
   });
 
-  test("the report totals each currency separately", () => {
+  test("the report totals every provider in one US dollar figure", () => {
     const { usage, addVm, wake, sleep } = setup();
     addVm("a", "boat");
     addVm("b", "boxd");
@@ -211,9 +211,8 @@ describe("costs", () => {
     sleep("a", hour);
     sleep("b", hour);
     const report = usage.report(0, hour, hour);
-    expect(report.totals).toEqual([
-      { currency: "USD", amount: 0.036, partial: false },
-      { currency: "EUR", amount: pricing("boxd").runningHourly.medium, partial: false },
-    ]);
+    expect(report.total.amount).toBeCloseTo(0.036 + pricing("boxd").runningHourly.medium * eurUsd.rate, 6);
+    expect(report.total.partial).toBe(false);
+    expect(report.eurUsd).toEqual(eurUsd);
   });
 });

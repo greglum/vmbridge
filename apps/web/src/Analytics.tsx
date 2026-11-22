@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Analytics01Icon } from "@hugeicons/core-free-icons";
-import { agentKinds, providerIds, type AnalyticsDay, type AnalyticsReport, type Currency, type Overview, type ProviderActivity, type ProviderId } from "@vmbridge/contracts";
+import { agentKinds, providerIds, type AnalyticsDay, type AnalyticsReport, type Overview, type ProviderActivity, type ProviderId } from "@vmbridge/contracts";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -50,6 +50,7 @@ export function Analytics({ overview }: { overview: Overview }) {
   return (
     <Page
       title="Analytics"
+      wide
       actions={
         <ButtonGroup>
           {ranges.map((entry) => (
@@ -72,15 +73,13 @@ function Report({ report, label }: { report: AnalyticsReport; label: (id: Provid
   const turns = sum((day) => day.turns);
   const errors = sum((day) => day.errors.reduce((total, entry) => total + entry.count, 0));
   const used = providerIds.filter((id) => report.days.some((day) => day.providers.some((provider) => provider.provider === id && provider.awakeMs > 0)));
-  const currencies = [...new Set(report.days.flatMap((day) => day.providers.map((provider) => provider.estimate.currency)))];
+  const spent = providerIds.filter((id) => report.days.some((day) => day.providers.some((provider) => provider.provider === id)));
   const errorProviders = [...new Set(report.days.flatMap((day) => day.errors.map((entry) => entry.provider)))];
 
   return (
     <>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <Tile label="Estimated spend">
-          {report.totals.length ? report.totals.map((total) => <div key={total.currency}>{money(total)}</div>) : money({ currency: "USD", amount: 0, partial: false })}
-        </Tile>
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(9rem,1fr))] gap-3">
+        <Tile label="Estimated spend">{money(report.total)}</Tile>
         <Tile label="Awake">{hours(awake)}</Tile>
         <Tile label="VMs created">{sum((day) => day.created)}</Tile>
         <Tile label="Wakes">{sum((day) => day.wakes)}</Tile>
@@ -100,22 +99,20 @@ function Report({ report, label }: { report: AnalyticsReport; label: (id: Provid
         )}
       </Section>
 
-      {currencies.map((currency) => (
-        <Section key={currency} title={currencies.length > 1 ? `Estimated spend, ${currency}` : "Estimated spend"}>
+      {spent.length > 0 && (
+        <Section title="Estimated spend">
           <DayChart
             days={report.days}
-            series={providerIds
-              .filter((id) => report.days.some((day) => day.providers.some((provider) => provider.provider === id && provider.estimate.currency === currency)))
-              .map((id) => ({
-                key: id,
-                label: label(id),
-                color: providerColors[id],
-                value: (day) => day.providers.find((provider) => provider.provider === id)?.estimate.amount ?? 0,
-              }))}
-            format={(amount) => money({ currency: currency as Currency, amount, partial: false })}
+            series={spent.map((id) => ({
+              key: id,
+              label: label(id),
+              color: providerColors[id],
+              value: (day) => day.providers.find((provider) => provider.provider === id)?.estimate.amount ?? 0,
+            }))}
+            format={(amount) => money({ amount, partial: false })}
           />
         </Section>
-      ))}
+      )}
 
       <Section title="Threads and turns">
         {turns ? (
@@ -132,7 +129,7 @@ function Report({ report, label }: { report: AnalyticsReport; label: (id: Provid
 
       <Section title="VMs">
         {report.providers.length ? (
-          <div className="flex flex-col gap-3">
+          <div className="grid gap-3 xl:grid-cols-2">
             {report.providers.map((provider) => (
               <Lifecycle key={provider.provider} activity={provider} label={label(provider.provider)} />
             ))}
@@ -142,88 +139,90 @@ function Report({ report, label }: { report: AnalyticsReport; label: (id: Provid
         )}
       </Section>
 
-      {report.sizes.length > 0 && (
-        <Section title="Sizes">
-          <Rows
-            head={["Provider", "VMs", "Awake"]}
-            rows={report.sizes.map((size) => ({
-              key: `${size.provider}:${size.size}`,
-              cells: [
-                <span className="flex min-w-0 items-center gap-2">
-                  <ProviderLogo id={size.provider} className="size-5" />
-                  <span className="truncate">
-                    {label(size.provider)} <span className="text-muted-foreground capitalize">{size.size}</span>
-                  </span>
-                </span>,
-                String(size.vms),
-                hours(size.awakeMs),
-              ],
-            }))}
-          />
-        </Section>
-      )}
-
-      <Section title="Repositories">
-        {report.repos.length ? (
-          <Bars
-            rows={report.repos.map((repo) => ({
-              key: repo.repo,
-              title: <span className="truncate font-mono text-xs">{repo.repo}</span>,
-              detail: `${count(repo.threads, "thread")}, ${count(repo.turns, "turn")}`,
-              value: repo.awakeMs,
-              figure: `${hours(repo.awakeMs)} awake`,
-            }))}
-          />
-        ) : (
-          <Nothing>Repositories show here once a VM holds one.</Nothing>
-        )}
-      </Section>
-
-      <Section title="Agents and models">
-        {report.agents.length ? (
-          <Rows
-            head={["Agent", "Threads", "Turns"]}
-            rows={report.agents.map((agent) => {
-              const kind = agentKinds.find((entry) => entry === agent.agent.toLowerCase());
-              return {
-                key: `${agent.agent}:${agent.model}`,
+      <div className="grid items-start gap-10 xl:grid-cols-2">
+        {report.sizes.length > 0 && (
+          <Section title="Sizes">
+            <Rows
+              head={["Provider", "VMs", "Awake"]}
+              rows={report.sizes.map((size) => ({
+                key: `${size.provider}:${size.size}`,
                 cells: [
                   <span className="flex min-w-0 items-center gap-2">
-                    {kind ? <AgentLogo agent={kind} className="size-5" /> : <span className="size-5 shrink-0 rounded-md bg-muted" />}
+                    <ProviderLogo id={size.provider} className="size-5" />
                     <span className="truncate">
-                      {agent.agent} {agent.model && <span className="font-mono text-xs text-muted-foreground">{agent.model}</span>}
+                      {label(size.provider)} <span className="text-muted-foreground capitalize">{size.size}</span>
                     </span>
                   </span>,
-                  String(agent.threads),
-                  String(agent.turns),
+                  String(size.vms),
+                  hours(size.awakeMs),
                 ],
-              };
-            })}
-          />
-        ) : (
-          <Nothing>Agents and models show here once a thread runs a turn.</Nothing>
+              }))}
+            />
+          </Section>
         )}
-      </Section>
 
-      {report.snapshots.length > 0 && (
-        <Section title="Snapshots">
-          <Rows
-            head={["Provider", "Kind", "Count", "Kept"]}
-            rows={report.snapshots.map((snapshot) => ({
-              key: `${snapshot.provider}:${snapshot.kind}`,
-              cells: [
-                <span className="flex min-w-0 items-center gap-2">
-                  <ProviderLogo id={snapshot.provider} className="size-5" />
-                  <span className="truncate">{label(snapshot.provider)}</span>
-                </span>,
-                snapshot.kind === "base" ? "Base" : "Sleep",
-                String(snapshot.count),
-                days(snapshot.heldMs),
-              ],
-            }))}
-          />
+        <Section title="Repositories">
+          {report.repos.length ? (
+            <Bars
+              rows={report.repos.map((repo) => ({
+                key: repo.repo,
+                title: <span className="truncate font-mono text-xs">{repo.repo}</span>,
+                detail: `${count(repo.threads, "thread")}, ${count(repo.turns, "turn")}`,
+                value: repo.awakeMs,
+                figure: `${hours(repo.awakeMs)} awake`,
+              }))}
+            />
+          ) : (
+            <Nothing>Repositories show here once a VM holds one.</Nothing>
+          )}
         </Section>
-      )}
+
+        <Section title="Agents and models">
+          {report.agents.length ? (
+            <Rows
+              head={["Agent", "Threads", "Turns"]}
+              rows={report.agents.map((agent) => {
+                const kind = agentKinds.find((entry) => entry === agent.agent.toLowerCase());
+                return {
+                  key: `${agent.agent}:${agent.model}`,
+                  cells: [
+                    <span className="flex min-w-0 items-center gap-2">
+                      {kind ? <AgentLogo agent={kind} className="size-5" /> : <span className="size-5 shrink-0 rounded-md bg-muted" />}
+                      <span className="truncate">
+                        {agent.agent} {agent.model && <span className="font-mono text-xs text-muted-foreground">{agent.model}</span>}
+                      </span>
+                    </span>,
+                    String(agent.threads),
+                    String(agent.turns),
+                  ],
+                };
+              })}
+            />
+          ) : (
+            <Nothing>Agents and models show here once a thread runs a turn.</Nothing>
+          )}
+        </Section>
+
+        {report.snapshots.length > 0 && (
+          <Section title="Snapshots">
+            <Rows
+              head={["Provider", "Kind", "Count", "Kept"]}
+              rows={report.snapshots.map((snapshot) => ({
+                key: `${snapshot.provider}:${snapshot.kind}`,
+                cells: [
+                  <span className="flex min-w-0 items-center gap-2">
+                    <ProviderLogo id={snapshot.provider} className="size-5" />
+                    <span className="truncate">{label(snapshot.provider)}</span>
+                  </span>,
+                  snapshot.kind === "base" ? "Base" : "Sleep",
+                  String(snapshot.count),
+                  days(snapshot.heldMs),
+                ],
+              }))}
+            />
+          </Section>
+        )}
+      </div>
 
       <Section title="Errors">
         {errors ? (
@@ -324,7 +323,7 @@ function DayChart({ days, series, format, detail }: { days: AnalyticsDay[]; seri
         <div className="flex items-baseline justify-between text-xs text-muted-foreground tabular-nums">
           <span>{format(max)}</span>
         </div>
-        <div className="mt-1 flex h-36 items-end gap-0.5 border-b border-border sm:gap-1" onPointerLeave={() => setHovered(null)}>
+        <div className="mt-1 flex h-36 items-end gap-0.5 border-b border-border sm:gap-1 xl:h-48" onPointerLeave={() => setHovered(null)}>
           {days.map((day, index) => (
             <button
               key={day.start}
