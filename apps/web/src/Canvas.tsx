@@ -490,15 +490,16 @@ function CanvasMenu({
                 </ContextMenuSubTrigger>
                 <ContextMenuSubContent className="w-44">
                   {overview.providers.map((provider) => (
-                    <ContextMenuItem key={provider.id} onSelect={() => create({ provider: provider.id })}>
+                    <ContextMenuItem key={provider.id} disabled={provider.setup.state === "building"} onSelect={() => create({ provider: provider.id })}>
                       <ProviderLogo id={provider.id} className="size-4 rounded" />
                       {provider.label}
+                      {provider.setup.state === "building" && <span className="ml-auto text-xs text-muted-foreground">Setting up</span>}
                     </ContextMenuItem>
                   ))}
                 </ContextMenuSubContent>
               </ContextMenuSub>
             ) : (
-              <ContextMenuItem disabled={!overview.setup.provider} onSelect={() => create({})}>
+              <ContextMenuItem disabled={!overview.providers.some((provider) => provider.setup.state !== "building")} onSelect={() => create({})}>
                 <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} />
                 New VM
               </ContextMenuItem>
@@ -520,17 +521,20 @@ function NewVm({ overview }: { overview: Overview }) {
   const [picking, setPicking] = useState(false);
   const [provider, setProvider] = useState(overview.defaultProvider);
   const [picked, setSize] = useState(overview.settings.vmSize);
-  const chosen = overview.providers.find((entry) => entry.id === provider) ?? overview.providers[0];
+  // No VM can be created on a provider while it sets up.
+  const ready = overview.providers.filter((entry) => entry.setup.state !== "building");
+  const chosen = ready.find((entry) => entry.id === provider) ?? ready[0];
   const size = picked ?? chosen?.defaultSize;
   const make = (body: object) => void create.run(() => api("/vms", { body })).then((ok) => ok && setPicking(false));
+  const blocked = !overview.setup.provider ? "Add a provider first" : ready.length ? undefined : "Setting up the provider";
   return (
     <>
       <Button
         variant="outline"
         size="lg"
         className="bg-card"
-        disabled={create.busy || !overview.setup.provider}
-        title={overview.setup.provider ? undefined : "Add a provider first"}
+        disabled={create.busy || Boolean(blocked)}
+        title={blocked}
         onClick={() => (overview.providers.length > 1 ? setPicking(!picking) : make({}))}
       >
         <HugeiconsIcon icon={Add01Icon} data-icon="inline-start" strokeWidth={2} />
@@ -546,9 +550,10 @@ function NewVm({ overview }: { overview: Overview }) {
               </SelectTrigger>
               <SelectContent>
                 {overview.providers.map((entry) => (
-                  <SelectItem key={entry.id} value={entry.id}>
+                  <SelectItem key={entry.id} value={entry.id} disabled={entry.setup.state === "building"}>
                     <ProviderLogo id={entry.id} className="size-4 rounded" />
                     {entry.label}
+                    {entry.setup.state === "building" && <span className="text-muted-foreground">Setting up</span>}
                   </SelectItem>
                 ))}
               </SelectContent>
