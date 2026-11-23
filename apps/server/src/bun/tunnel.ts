@@ -6,6 +6,7 @@ import type { CloudflareInfo, TunnelMode } from "@vmbridge/contracts";
 import { isLoopback } from "../auth/dashboard.ts";
 import type { Secrets, Settings } from "../settings.ts";
 import type { Traffic } from "../traffic.ts";
+import { childEnv } from "./env.ts";
 
 export const tunnelTokenSecret = "cloudflare.tunnelToken";
 const knownPaths = ["/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared", "/usr/bin/cloudflared"];
@@ -250,7 +251,7 @@ export class CloudflareTunnel {
         stdout: "pipe",
         stderr: "pipe",
         // In the environment, not the arguments, so other users on this machine cannot read it from the process list.
-        env: token ? { ...process.env, TUNNEL_TOKEN: token } : { ...process.env, TUNNEL_TOKEN: undefined },
+        env: childEnv(token ? { TUNNEL_TOKEN: token } : {}),
       });
       this.child = child;
       let lastError: string | null = null;
@@ -398,7 +399,7 @@ export class CloudflareTunnel {
     const pid = Number(readFileSync(pidFile, "utf8").trim());
     rmSync(pidFile, { force: true });
     if (!Number.isInteger(pid) || pid <= 0) return;
-    const name = Bun.spawnSync(["ps", "-p", String(pid), "-o", "comm="]).stdout.toString().trim();
+    const name = Bun.spawnSync(["ps", "-p", String(pid), "-o", "comm="], { env: childEnv() }).stdout.toString().trim();
     if (!name.endsWith("cloudflared")) return;
     try {
       process.kill(pid, "SIGTERM");
@@ -420,7 +421,7 @@ async function readLines(stream: ReadableStream<Uint8Array>, onLine: (line: stri
 
 /** Runs a short cloudflared command and returns its output, or throws with its last error line. */
 async function cloudflared(binary: string, args: string[]): Promise<string> {
-  const child = Bun.spawn([binary, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 30_000 });
+  const child = Bun.spawn([binary, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 30_000, env: childEnv() });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   if (code !== 0) throw new Error(redact(stderr.trim().split("\n").at(-1) || `cloudflared ${args[1]} failed.`));
   return stdout;

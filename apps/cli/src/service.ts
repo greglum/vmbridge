@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { dataDir } from "@vmbridge/server";
+import { childEnv, dataDir } from "@vmbridge/server";
 
 const label = "dev.vmbridge";
 
@@ -25,7 +25,7 @@ function environment() {
 }
 
 async function exec(args: string[]) {
-  const child = Bun.spawn(args, { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  const child = Bun.spawn(args, { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: childEnv() });
   const [stderr, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
   return { ok: code === 0, stderr: stderr.trim() };
 }

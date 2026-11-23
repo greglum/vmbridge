@@ -1,5 +1,6 @@
 import { networkInterfaces } from "node:os";
 import type { Address, CloudflareInfo, NetworkInfo } from "@vmbridge/contracts";
+import { childEnv } from "./env.ts";
 
 const macAppBinary = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
 const httpsPortCandidates = [443, 8443, 10443, 11443, 12443];
@@ -22,7 +23,7 @@ function tailscaleBinary(): string | null {
 async function tailscale(args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   const binary = tailscaleBinary();
   if (!binary) return { ok: false, stdout: "", stderr: "Tailscale is not installed." };
-  const child = Bun.spawn([binary, ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 10_000 });
+  const child = Bun.spawn([binary, ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 10_000, env: childEnv() });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   return { ok: code === 0, stdout, stderr };
 }

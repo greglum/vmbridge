@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { childVariables } from "../src/bun/env.ts";
 import { openDatabase } from "../src/bun/sqlite.ts";
 import { Secrets, Settings } from "../src/settings.ts";
 import { Traffic } from "../src/traffic.ts";
@@ -231,6 +232,28 @@ exec sleep 30`;
     expect(await Bun.file(join(dir, "bin", "args")).text()).not.toContain("tok-secret-value");
     expect(await Bun.file(join(dir, "bin", "env")).text()).toBe("token=tok-secret-value\n");
     await tunnel.stop();
+  });
+
+  test("gives cloudflared only the variables it needs, never VM Bridge's password or key", async () => {
+    const saved = { password: process.env.VMBRIDGE_PASSWORD, key: process.env.VMBRIDGE_ENCRYPTION_KEY };
+    process.env.VMBRIDGE_PASSWORD = "password-secret-value";
+    process.env.VMBRIDGE_ENCRYPTION_KEY = "key-secret-value";
+    try {
+      // Names only, so a failure never prints a value from the environment the tests run in.
+      const { dir, settings, tunnel } = setup(`env | cut -d= -f1 > "$(dirname "$0")/names"\n${quick}`);
+      settings.set("cloudflareTunnel", { enabled: true, hostname: null, port: null });
+      await tunnel.apply();
+      await tunnel.ready(5_000);
+      await tunnel.stop();
+      const names = (await Bun.file(join(dir, "bin", "names")).text()).split("\n").filter((name) => name && name !== "PWD" && name !== "SHLVL" && name !== "_");
+      expect(names).toContain("PATH");
+      expect(names.filter((name) => !childVariables.includes(name))).toEqual([]);
+    } finally {
+      for (const [name, value] of [["VMBRIDGE_PASSWORD", saved.password], ["VMBRIDGE_ENCRYPTION_KEY", saved.key]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 
   test("asks for a login before making a named tunnel", async () => {
