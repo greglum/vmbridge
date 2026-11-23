@@ -132,7 +132,7 @@ export async function networkInfo(served: Served, cloudflare: CloudflareInfo): P
   if (httpsUrl && loopback) addresses.push({ kind: "tailscale-https", label: "Tailscale HTTPS", url: httpsUrl });
   if (cloudflare.url) addresses.push({ kind: "cloudflare", label: "Cloudflare Tunnel", url: cloudflare.url });
   const localNetwork = { enabled: fixed ? wildcard || addresses.some((address) => address.kind === "lan") : served.localNetwork, fixed };
-  return { port, localNetwork, addresses, tailscale: { installed, running, dnsName, httpsUrl }, cloudflare };
+  return { platform: "bun", port, localNetwork, addresses, tailscale: { installed, running, dnsName, httpsUrl }, cloudflare };
 }
 
 /**
