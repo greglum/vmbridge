@@ -34,7 +34,7 @@ interface SettingValues {
   shellSequence: number;
   /** T3 agent provider switches and display names set from T3's settings screen. */
   agentPreferences: Record<string, ProviderPreference>;
-  /** The sign-in profile each agent uses on every VM. Profiles live under `<data dir>/auths`. */
+  /** The sign-in profile each agent uses on every VM (see agent-auth/profiles.ts). */
   agentProfiles: Partial<Record<AgentKind, string>>;
   /** Agents whose global instructions file on this machine every VM gets. */
   instructionSync: Partial<Record<AgentKind, boolean>>;
