@@ -26,7 +26,7 @@ import { Secrets, Settings } from "./settings.ts";
 import { Skills } from "./skills.ts";
 import { Store } from "./store.ts";
 import { Traffic } from "./traffic.ts";
-import { CloudflareTunnel } from "./tunnel.ts";
+import { CloudflareTunnel } from "./bun/tunnel.ts";
 import { Usage } from "./usage.ts";
 import { Stats } from "./vm/stats.ts";
 

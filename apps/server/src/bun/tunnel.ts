@@ -3,8 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import type { CloudflareInfo, TunnelMode } from "@vmbridge/contracts";
-import type { Secrets, Settings } from "./settings.ts";
-import type { Traffic } from "./traffic.ts";
+import type { Secrets, Settings } from "../settings.ts";
+import type { Traffic } from "../traffic.ts";
 
 export const tunnelTokenSecret = "cloudflare.tunnelToken";
 const knownPaths = ["/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared", "/usr/bin/cloudflared"];
