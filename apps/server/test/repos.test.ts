@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { lsRemote, parseRefs, pktLines, RemoteBranches } from "../src/gateway/repos.ts";
+import { lsRemote, normalizeRemote, parseRefs, pktLines, RemoteBranches } from "../src/gateway/repos.ts";
 
 const pkt = (line: string) => `${(Buffer.byteLength(line) + 4).toString(16).padStart(4, "0")}${line}`;
 const oid = "a".repeat(40);
@@ -119,8 +119,8 @@ describe("reading branches over git's HTTP protocol", () => {
 
   test("the GitHub token goes to github.com only, as git's Basic auth", async () => {
     const seen = gitHost();
-    await lsRemote("https://github.com/acme/private.git", "gh-token");
-    await lsRemote("https://gitlab.com/acme/app.git", "gh-token");
+    await lsRemote("https://github.com/acme/private.git", { token: "gh-token" });
+    await lsRemote("https://gitlab.com/acme/app.git", { token: "gh-token" });
     const auth = seen.map((request) => request.headers.get("authorization"));
     expect(auth).toEqual([`Basic ${btoa("x-access-token:gh-token")}`, `Basic ${btoa("x-access-token:gh-token")}`, null, null]);
   });
@@ -146,5 +146,130 @@ describe("reading branches over git's HTTP protocol", () => {
     expect(branches).toMatchObject({ names: ["dev", "main"], defaultBranch: "main" });
     expect(seen[0]).toBe("https://github.com/acme/app.git/info/refs?service=git-upload-pack");
     expect(seen.slice(1).every((url) => url.startsWith("https://api.github.com/repos/acme/app"))).toBe(true);
+  });
+});
+
+/** Like fetch, `redirect: "follow"` follows `location` itself, "error" throws, and "manual" hands back the 3xx. */
+function redirecting(routes: Record<string, () => Response>) {
+  const seen: string[] = [];
+  const answer = async (url: string, init?: RequestInit): Promise<Response> => {
+    seen.push(url);
+    const response = (routes[url] ?? (() => new Response("", { status: 404 })))();
+    const location = response.headers.get("location");
+    if (!location || response.status < 300 || response.status > 399 || init?.redirect === "manual") return response;
+    if (init?.redirect === "error") throw new TypeError("redirect");
+    return answer(new URL(location, url).href, init);
+  };
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => answer(String(input), init)) as typeof fetch;
+  return seen;
+}
+
+const v0Refs = () =>
+  new Response(`${pkt("# service=git-upload-pack\n")}0000${pkt(`${oid} HEAD\0symref=HEAD:refs/heads/main\n`)}${pkt(`${oid} refs/heads/main\n`)}0000`, {
+    headers: advertisement,
+  });
+
+describe("what a hostile git server cannot do", () => {
+  test("an endless answer is cut off at the size cap instead of filling memory", async () => {
+    let pulled = 0;
+    let cancelled = false;
+    globalThis.fetch = (async (_input: string | URL | Request) =>
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            pulled += 64 * 1024;
+            controller.enqueue(new Uint8Array(64 * 1024));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+        { headers: advertisement },
+      )) as typeof fetch;
+    await expect(lsRemote("https://git.example.com/app.git")).rejects.toThrow("too large");
+    expect(cancelled).toBe(true);
+    expect(pulled).toBeLessThan(9 * 1024 * 1024);
+    // A declared length over the cap is refused before reading anything.
+    globalThis.fetch = (async (_input: string | URL | Request) => new Response("", { headers: { ...advertisement, "content-length": String(64 * 1024 * 1024) } })) as typeof fetch;
+    await expect(lsRemote("https://git.example.com/app.git")).rejects.toThrow("too large");
+  });
+
+  test("a redirect to a loopback or plain HTTP address is never requested", async () => {
+    const internal = () => Response.json({ names: ["INTERNAL-ONLY-DATA"] });
+    const seen = redirecting({
+      "https://evil.example.com/app.git/info/refs?service=git-upload-pack": () =>
+        new Response("", { status: 302, headers: { location: "http://127.0.0.1:3790/admin/api/x/info/refs?service=git-upload-pack" } }),
+      "https://evil.example.com/b.git/info/refs?service=git-upload-pack": () =>
+        new Response("", { status: 302, headers: { location: "https://127.0.0.1/b.git/info/refs?service=git-upload-pack" } }),
+      "http://127.0.0.1:3790/admin/api/x/info/refs?service=git-upload-pack": internal,
+      "https://127.0.0.1/b.git/info/refs?service=git-upload-pack": internal,
+    });
+    await expect(lsRemote("https://evil.example.com/app.git")).rejects.toThrow();
+    await expect(lsRemote("https://evil.example.com/b.git")).rejects.toThrow();
+    expect(seen.filter((url) => url.includes("127.0.0.1"))).toEqual([]);
+  });
+
+  test("a redirect to another public HTTPS repository is followed for the rest of the lookup, like git", async () => {
+    const seen = redirecting({
+      "https://old.example.com/app/info/refs?service=git-upload-pack": () =>
+        new Response("", { status: 301, headers: { location: "https://new.example.com/app.git/info/refs?service=git-upload-pack" } }),
+      "https://new.example.com/app.git/info/refs?service=git-upload-pack": v0Refs,
+    });
+    expect(await lsRemote("https://old.example.com/app")).toMatchObject({ names: ["main"], defaultBranch: "main" });
+    expect(seen).toEqual(["https://old.example.com/app/info/refs?service=git-upload-pack", "https://new.example.com/app.git/info/refs?service=git-upload-pack"]);
+  });
+
+  test("redirect loops stop after a few hops", async () => {
+    const seen = redirecting({
+      "https://loop.example.com/app.git/info/refs?service=git-upload-pack": () =>
+        new Response("", { status: 302, headers: { location: "https://loop.example.com/app.git/info/refs?service=git-upload-pack" } }),
+    });
+    await expect(lsRemote("https://loop.example.com/app.git")).rejects.toThrow();
+    expect(seen.length).toBeLessThanOrEqual(4);
+  });
+
+  test("private, loopback, link-local and tailnet addresses are refused without a request", async () => {
+    const seen = gitHost();
+    const hosts = ["127.0.0.1", "[::1]", "10.1.2.3", "172.16.0.9", "192.168.1.1", "100.100.1.1", "169.254.169.254", "0.0.0.0", "[fd7a:115c:a1e0::1]", "[fe80::1]", "[::ffff:127.0.0.1]", "[::]", "localhost", "git.localhost", "2130706433"];
+    for (const host of hosts) {
+      await expect(lsRemote(`https://${host}/app.git`)).rejects.toThrow("public");
+      expect(() => normalizeRemote(`https://${host}/acme/app.git`)).toThrow();
+    }
+    expect(seen).toEqual([]);
+  });
+
+  test("a name that resolves to a private address is refused, a public one is read", async () => {
+    const seen = gitHost();
+    const resolve = async (host: string) => (host === "inside.example.com" ? ["203.0.113.7", "10.0.0.4"] : ["203.0.113.8"]);
+    await expect(lsRemote("https://inside.example.com/app.git", { resolve })).rejects.toThrow("public");
+    expect(seen).toEqual([]);
+    expect(await lsRemote("https://outside.example.com/app.git", { resolve })).toMatchObject({ names: ["dev", "main"] });
+    // Each redirect hop is checked again.
+    redirecting({
+      "https://outside.example.com/app.git/info/refs?service=git-upload-pack": () =>
+        new Response("", { status: 302, headers: { location: "https://inside.example.com/app.git/info/refs?service=git-upload-pack" } }),
+    });
+    await expect(lsRemote("https://outside.example.com/app.git", { resolve })).rejects.toThrow("public");
+  });
+
+  test("identical lookups share one request, and one host gets a few at a time", async () => {
+    let running = 0;
+    let most = 0;
+    let requests = 0;
+    globalThis.fetch = (async (_input: string | URL | Request) => {
+      requests++;
+      running++;
+      most = Math.max(most, running);
+      await Bun.sleep(5);
+      running--;
+      return v0Refs();
+    }) as typeof fetch;
+    const remote = new RemoteBranches(() => undefined);
+    await Promise.all([remote.branches("https://git.example.com/a.git", true), remote.branches("https://git.example.com/a.git", true)]);
+    expect(requests).toBe(1);
+    const urls = Array.from({ length: 12 }, (_, index) => `https://git.example.com/r${index}.git`);
+    const lists = await Promise.all(urls.map((url) => remote.branches(url)));
+    expect(lists.every((list) => list.names[0] === "main")).toBe(true);
+    expect(most).toBeLessThanOrEqual(4);
   });
 });

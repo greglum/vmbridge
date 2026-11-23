@@ -32,7 +32,7 @@ export function repositoryIdentity(project: Pick<ProjectRow, "url">, workspaceRo
   };
 }
 
-/** Accepts only plain HTTPS remotes, so nothing odd reaches `git clone` on a VM. */
+/** Accepts only plain HTTPS remotes on public hosts, so nothing odd reaches `git clone` on a VM. */
 export function normalizeRemote(reference: string): string {
   const github = githubName(reference);
   if (github) return `https://github.com/${github}.git`;
@@ -40,8 +40,79 @@ export function normalizeRemote(reference: string): string {
   if (!url || url.protocol !== "https:" || url.username || url.password || url.search || url.hash || !/^\/[\w./-]+$/.test(url.pathname)) {
     throw new Error("Use an HTTPS repository URL, such as https://github.com/owner/repo.");
   }
+  if (!publicHost(url.hostname)) throw notPublic();
   return url.href;
 }
+
+const notPublic = () => new Error("VM Bridge reads repositories on public HTTPS hosts only.");
+
+/**
+ * IPv4 ranges that are not the public internet: this network, private, CGNAT (Tailscale), loopback, link-local,
+ * protocol assignments, benchmarking, multicast and reserved.
+ */
+const privateIpv4: [number, number][] = [
+  [0x00000000, 8],
+  [0x0a000000, 8],
+  [0x64400000, 10],
+  [0x7f000000, 8],
+  [0xa9fe0000, 16],
+  [0xac100000, 12],
+  [0xc0000000, 24],
+  [0xc0a80000, 16],
+  [0xc6120000, 15],
+  [0xe0000000, 3],
+];
+
+function publicIpv4(value: number): boolean {
+  return !privateIpv4.some(([start, bits]) => value >>> (32 - bits) === start >>> (32 - bits));
+}
+
+/** The eight groups of an IPv6 address as the URL parser writes it: compressed, lowercase, no dotted IPv4. */
+function ipv6Groups(address: string): number[] {
+  const [head = "", tail] = address.split("::");
+  const left = head ? head.split(":") : [];
+  const right = tail ? tail.split(":") : [];
+  const gap = tail === undefined ? [] : Array<string>(8 - left.length - right.length).fill("0");
+  return [...left, ...gap, ...right].map((group) => Number.parseInt(group, 16));
+}
+
+function publicIpv6(address: string): boolean {
+  const groups = ipv6Groups(address);
+  const [first = 0] = groups;
+  const embedded = (high: number, low: number) => publicIpv4(((high << 16) | low) >>> 0);
+  // Mapped (::ffff:a.b.c.d) and compatible (::a.b.c.d) IPv4 count as the IPv4 address, which covers :: and ::1 too.
+  if (groups.slice(0, 5).every((group) => group === 0) && (groups[5] === 0 || groups[5] === 0xffff)) return embedded(groups[6]!, groups[7]!);
+  // NAT64 and 6to4 also carry an IPv4 address.
+  if (first === 0x64 && groups[1] === 0xff9b) return embedded(groups[6]!, groups[7]!);
+  if (first === 0x2002) return embedded(groups[1]!, groups[2]!);
+  // Unique local (Tailscale's too), link-local, site-local and multicast.
+  return (first & 0xfe00) !== 0xfc00 && (first & 0xffc0) !== 0xfe80 && (first & 0xffc0) !== 0xfec0 && (first & 0xff00) !== 0xff00;
+}
+
+/** Whether an IP address, as `URL` or DNS gives it, is on the public internet. Anything unparsable is not. */
+export function publicAddress(address: string): boolean {
+  const hostname = URL.parse(`https://${address.includes(":") ? `[${address}]` : address}/`)?.hostname;
+  if (!hostname) return false;
+  if (hostname.startsWith("[")) return publicIpv6(hostname.slice(1, -1));
+  const parts = hostname.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) return false;
+  return publicIpv4(((parts[0]! << 24) | (parts[1]! << 16) | (parts[2]! << 8) | parts[3]!) >>> 0);
+}
+
+/**
+ * Whether a `URL.hostname` can be a public host. The URL parser has already turned every IPv4 spelling (decimal,
+ * octal, shortened) into dotted form. A name passes unless it is local by definition; what it resolves to is
+ * checked separately, where the runtime can resolve names.
+ */
+function publicHost(hostname: string): boolean {
+  const name = hostname.replace(/\.$/, "").toLowerCase();
+  if (name.startsWith("[") || /^[\d.]+$/.test(name)) return publicAddress(name.replace(/^\[|\]$/g, ""));
+  // A single label resolves through the search domains of this machine's network, never to a public git host.
+  return name.includes(".") && !name.endsWith(".localhost");
+}
+
+/** Every IP address a host name resolves to. Bun resolves before fetching; on Workers, fetch cannot reach private addresses. */
+export type Resolve = (hostname: string) => Promise<string[]>;
 
 interface Branches {
   names: string[];
@@ -52,8 +123,15 @@ interface Branches {
 /** Remote branches for projects whose VM is asleep or not created yet. */
 export class RemoteBranches {
   private readonly cache = new Map<string, Branches>();
+  /** Lookups in flight by URL, so repeated refreshes share one. */
+  private readonly pending = new Map<string, Promise<Branches>>();
+  /** Lookups running per host, and the ones waiting for a turn. */
+  private readonly hosts = new Map<string, { running: number; waiting: (() => void)[] }>();
 
-  constructor(private readonly githubToken: () => string | undefined) {}
+  constructor(
+    private readonly githubToken: () => string | undefined,
+    private readonly resolve?: Resolve,
+  ) {}
 
   async check(url: string) {
     await this.branches(url, true);
@@ -62,16 +140,43 @@ export class RemoteBranches {
   async branches(url: string, refresh = false): Promise<Branches> {
     const cached = this.cache.get(url);
     if (!refresh && cached && Date.now() - cached.at < 60_000) return cached;
-    const github = githubName(url);
-    let branches: Branches;
-    if (github) {
-      // Git's own protocol lists every branch in one request and has no API rate limit. The REST API is the fallback,
-      // and explains a private or missing repository better.
-      const token = this.githubToken();
-      branches = await lsRemote(`https://github.com/${github}.git`, token).catch(() => this.github(github, token));
-    } else branches = await lsRemote(url);
+    let lookup = this.pending.get(url);
+    if (!lookup) {
+      lookup = this.perHost(url, () => this.lookup(url)).finally(() => this.pending.delete(url));
+      this.pending.set(url, lookup);
+    }
+    const branches = await lookup;
     this.cache.set(url, branches);
     return branches;
+  }
+
+  private lookup(url: string): Promise<Branches> {
+    const github = githubName(url);
+    if (!github) return lsRemote(url, { resolve: this.resolve });
+    // Git's own protocol lists every branch in one request and has no API rate limit. The REST API is the fallback,
+    // and explains a private or missing repository better.
+    const token = this.githubToken();
+    return lsRemote(`https://github.com/${github}.git`, { token, resolve: this.resolve }).catch(() => this.github(github, token));
+  }
+
+  /** Runs `lookup` once fewer than a few lookups are running against the URL's host, so one slow host cannot pile them up. */
+  private async perHost<T>(url: string, lookup: () => Promise<T>): Promise<T> {
+    const host = URL.parse(url)?.host ?? url;
+    let slot = this.hosts.get(host);
+    if (!slot) {
+      slot = { running: 0, waiting: [] };
+      this.hosts.set(host, slot);
+    }
+    // A finished lookup hands its turn straight to the next waiting one.
+    if (slot.running < lookupsPerHost) slot.running++;
+    else await new Promise<void>((resolve) => slot.waiting.push(resolve));
+    try {
+      return await lookup();
+    } finally {
+      const next = slot.waiting.shift();
+      if (next) next();
+      else if (--slot.running === 0) this.hosts.delete(host);
+    }
   }
 
   private async github(name: string, token: string | undefined): Promise<Branches> {
@@ -190,30 +295,91 @@ export function parseRefs(lines: (string | null)[]): Omit<Branches, "at"> {
 }
 
 /**
+ * The largest answer read from a git host. Version 2 lists only branches, about 60 bytes each, so this fits over
+ * 100,000 of them; a version 0 list of every tag and pull request ref of a very large repository is a few MB.
+ */
+const maxResponseBytes = 8 * 1024 * 1024;
+const maxRedirects = 3;
+const lookupsPerHost = 4;
+
+const tooLarge = () => new Error("The repository's answer is too large to read.");
+
+/** The body, read as it arrives and cancelled once it passes the cap, so a hostile host cannot fill memory. */
+async function readCapped(response: Response): Promise<Uint8Array> {
+  if (Number(response.headers.get("content-length")) > maxResponseBytes) {
+    await response.body?.cancel();
+    throw tooLarge();
+  }
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  // Throwing out of the loop cancels the stream.
+  for await (const chunk of response.body ?? []) {
+    size += chunk.byteLength;
+    if (size > maxResponseBytes) throw tooLarge();
+    chunks.push(chunk);
+  }
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return bytes;
+}
+
+/** Refuses a URL that is not HTTPS to a public host, or whose name resolves to any address that is not public. */
+async function checkPublic(target: string, resolve: Resolve | undefined) {
+  const url = URL.parse(target);
+  if (url?.protocol !== "https:" || url.username || url.password || !publicHost(url.hostname)) throw notPublic();
+  if (!resolve || url.hostname.startsWith("[") || /^[\d.]+$/.test(url.hostname)) return;
+  const addresses = await resolve(url.hostname).catch(() => []);
+  if (addresses.length === 0) throw new Error("Could not read the repository's branches.");
+  if (!addresses.every(publicAddress)) throw notPublic();
+}
+
+/**
  * What `git ls-remote --symref <url> HEAD refs/heads/*` prints, read over git's HTTP protocol with fetch, so it runs
  * wherever VM Bridge does. HTTPS only and never prompts. Like git, it asks for protocol version 2, which lists only
  * branches, reads version 0's full list from servers without it, and reads a static ("dumb") server's refs file when
- * the answer is not the smart protocol's. `token` goes to github.com only.
+ * the answer is not the smart protocol's. `token` goes to github.com only. Every host it talks to must be public, and
+ * with `resolve`, so must every address the host's name resolves to.
  */
-export async function lsRemote(url: string, token?: string): Promise<Branches> {
+export async function lsRemote(url: string, options: { token?: string; resolve?: Resolve } = {}): Promise<Branches> {
   const parsed = URL.parse(url);
   if (parsed?.protocol !== "https:" || parsed.username || parsed.password) throw new Error("Only HTTPS repositories can be read.");
-  const base = parsed.href.replace(/\/+$/, "");
+  let base = parsed.href.replace(/\/+$/, "");
   const headers: Record<string, string> = { "git-protocol": "version=2", "user-agent": "git/vmbridge" };
-  if (token && parsed.hostname === "github.com") headers.authorization = `Basic ${btoa(`x-access-token:${token}`)}`;
-  const request = async (path: string, init: RequestInit = {}) => {
-    const response = await fetch(`${base}${path}`, {
-      ...init,
-      headers: { ...headers, ...init.headers },
-      // A redirect must not carry the token to another host.
-      redirect: headers.authorization ? "error" : "follow",
-      signal: AbortSignal.timeout(10_000),
-    }).catch(() => null);
-    if (!response?.ok) throw new Error("Could not read the repository's branches.");
-    return { type: response.headers.get("content-type") ?? "", bytes: new Uint8Array(await response.arrayBuffer()) };
+  if (options.token && parsed.hostname === "github.com") headers.authorization = `Basic ${btoa(`x-access-token:${options.token}`)}`;
+  const request = async (path: string, init: RequestInit = {}, initial = false) => {
+    let target = `${base}${path}`;
+    for (let hop = 0; ; hop++) {
+      await checkPublic(target, options.resolve);
+      const response = await fetch(target, {
+        ...init,
+        headers: { ...headers, ...init.headers },
+        // Redirects are followed here, so each hop's host is checked before it is requested.
+        redirect: "manual",
+        signal: AbortSignal.timeout(10_000),
+      }).catch(() => null);
+      const location = response && response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
+      // Like git, only the first request follows redirects, and later ones go where it ended up. A request carrying
+      // the token follows none, so the token cannot leave github.com.
+      if (location && initial && hop < maxRedirects && !headers.authorization) {
+        await response?.body?.cancel();
+        // An unparsable location fails the public check on the next hop.
+        target = URL.parse(location, target)?.href ?? "";
+        continue;
+      }
+      if (!response?.ok) throw new Error("Could not read the repository's branches.");
+      if (initial) {
+        if (!target.endsWith(path)) throw new Error("The repository redirected somewhere that is not a repository.");
+        base = target.slice(0, -path.length);
+      }
+      return { type: response.headers.get("content-type") ?? "", bytes: await readCapped(response) };
+    }
   };
 
-  const info = await request("/info/refs?service=git-upload-pack");
+  const info = await request("/info/refs?service=git-upload-pack", {}, true);
   // Git tells the two apart the same way: only smart servers answer with this type.
   if (!info.type.startsWith("application/x-git-upload-pack-advertisement")) return dumbRefs(info.bytes, () => request("/HEAD"));
   let advertised = pktLines(info.bytes);
