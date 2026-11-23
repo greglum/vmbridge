@@ -178,7 +178,7 @@ describe("lifecycle", () => {
       PATH: fakeCloudflared(dir, script),
       fallbacks: [],
       checkAddress,
-      listen: (port) => {
+      listen: async (port) => {
         const server = Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("ok") });
         listeners.push(server);
         return server;
