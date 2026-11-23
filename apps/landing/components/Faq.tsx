@@ -1,8 +1,13 @@
-import { faq } from "@/lib/data";
-import { FaqItem } from "./FaqItem";
+import Link from "next/link";
+import { copy } from "@/lib/copy";
+import { faq, featuredFaq } from "@/lib/data";
+import { secondaryButton } from "@/lib/styles";
+import { Reveal } from "./Reveal";
+import { Section } from "./Section";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "./ui/accordion";
 
-/** Plain text with `backticks` shown as code. */
-function Text({ text }: { text: string }) {
+/** Plain text with `backticks` shown as code. Shared by the home FAQ and /faq. */
+export function Text({ text }: { text: string }) {
   return text.split("`").map((part, i) =>
     i % 2 ? (
       <code key={i} className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em] text-foreground">
@@ -14,17 +19,35 @@ function Text({ text }: { text: string }) {
   );
 }
 
+/**
+ * The five featured questions, one open at a time with the first open. `keepMounted`
+ * keeps closed answers in the server HTML for search engines, and the accordion
+ * panel's no-JS rule shows them all when JavaScript is off.
+ */
 export function Faq() {
   return (
-    <section id="faq" className="mx-auto grid max-w-6xl scroll-mt-20 gap-10 px-4 py-24 sm:px-6 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] md:gap-12">
-      <h2 className="self-start text-3xl font-semibold tracking-tight sm:text-4xl md:sticky md:top-24">Questions</h2>
-      <div>
-        {faq.map(({ question, answer }, i) => (
-          <FaqItem key={question} number={i + 1} question={question} defaultOpen={i === 0}>
-            <Text text={answer} />
-          </FaqItem>
+    <Section
+      id="faq"
+      title={copy.faq.title}
+      splitAt="lg"
+      side={
+        <Link href="/faq" className={secondaryButton}>
+          {copy.faq.all.replace("{n}", String(faq.length))}
+        </Link>
+      }
+    >
+      <Accordion defaultValue={[featuredFaq[0].question]} keepMounted>
+        {featuredFaq.map(({ question, answer }, i) => (
+          <Reveal key={question} delay={Math.min(i, 8) * 60}>
+            <AccordionItem value={question}>
+              <AccordionTrigger>{question}</AccordionTrigger>
+              <AccordionContent>
+                <Text text={answer} />
+              </AccordionContent>
+            </AccordionItem>
+          </Reveal>
         ))}
-      </div>
-    </section>
+      </Accordion>
+    </Section>
   );
 }

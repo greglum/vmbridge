@@ -150,6 +150,74 @@ export const agents = [
 ] as const;
 export type Agent = (typeof agents)[number];
 
+/** Real terminal output beside each step, index-matched to copy.steps.items. */
+export const stepLogs: string[][] = [
+  ["$ vmbridge", "VM Bridge 1.0.0 is running.", "  This machine         http://127.0.0.1:3774/dashboard"],
+  ["Provider boxd connected", "Size: 2 vCPU, 8 GB", "Sleep after 5 idle minutes"],
+  ['Pairing link "MacBook" created', "MacBook paired", "iPhone paired"],
+  ["Creating a VM for Hello-World", "Installing T3, Codex and Claude", "vm-df9bca ready on boxd", "Cloned Hello-World"],
+];
+
+/**
+ * What each command in `commands` really prints, index-matched. Every output line is copied from
+ * apps/cli/src/index.ts and apps/cli/src/service.ts, on macOS with home /Users/you.
+ */
+export const cliScripts: string[][] = [
+  [
+    "$ vmbridge",
+    "VM Bridge 1.0.0 is running.",
+    "",
+    "  This machine         http://127.0.0.1:3774/dashboard",
+    "  Local network (en0)  http://192.168.1.20:3774/dashboard",
+    "  Tailscale IP         http://100.101.102.103:3774/dashboard",
+    "  Tailscale name       http://your-mac.your-tailnet.ts.net:3774/dashboard",
+    "",
+    "  Turn on Tailscale HTTPS in the dashboard settings for an https:// address.",
+    "",
+    "Open the dashboard to set up providers and pair devices. Press Ctrl+C to stop.",
+  ],
+  [
+    "$ vmbridge stop",
+    "VM Bridge stopped.",
+    "The background service starts again at next login, or now with `vmbridge service install`.",
+  ],
+  ["$ vmbridge service install", "VM Bridge now runs in the background on port 3774. Logs: /Users/you/.vmbridge/vmbridge.log"],
+  ["$ vmbridge service uninstall", "Background service removed."],
+  [
+    "$ vmbridge password",
+    "Choose a dashboard password (at least 8 characters): ********",
+    "Type it again: ********",
+    "Password saved.",
+  ],
+];
+
+/** The hero terminal plays the full `vmbridge` startup output. */
+export const heroScript = cliScripts[0];
+
+/** Bridge-side calls answer in about a millisecond. */
+export const bridgeLatency = "1 ms";
+
+const measuredMs = providers.flatMap((p) => (p.measured ? [p.measured.browseMs] : []));
+
+/** Round trip bounds across the measured providers: "156 to 229 ms". */
+export const vmLatency = `${Math.min(...measuredMs)} to ${Math.max(...measuredMs)} ms`;
+
+export interface Route {
+  /** Real RPC names from apps/server/src/gateway/rpc.ts. */
+  call: string;
+  target: string;
+  time: string;
+  kind: "bridge" | "vm";
+}
+
+/** A short request log showing what the bridge answers itself and what goes to a VM. */
+export const routes: Route[] = [
+  { call: "server.getConfig", target: "bridge", time: "1 ms", kind: "bridge" },
+  { call: "orchestration.getThreadProjection", target: "bridge, saved copy", time: "< 1 ms", kind: "bridge" },
+  { call: "filesystem.browse", target: "vm-df9bca", time: "160 ms", kind: "vm" },
+  { call: "orchestration.dispatchCommand", target: "vm-df9bca", time: "streaming", kind: "vm" },
+];
+
 /**
  * Questions people ask, shown on the home page and repeated in its structured data and llms.txt.
  * Each answer stands alone when quoted. Text in backticks is code.
@@ -220,3 +288,20 @@ export const faq = [
     answer: `On macOS or Linux, run \`${install}\`. Then run \`vmbridge\` and open the setup link it prints to choose a password, add a provider and sign in your agents. Pair T3 Code from the dashboard.`,
   },
 ];
+
+/**
+ * The five questions shown on the home page, picked from `faq` by text so they
+ * cannot drift from the full list on /faq. Throws at module load if a question
+ * is renamed or dropped from `faq`.
+ */
+export const featuredFaq = [
+  "What is VM Bridge?",
+  "Which cloud providers does VM Bridge support?",
+  "How much does VM Bridge cost?",
+  "How do sleep and wake work?",
+  "Where are my data and keys stored?",
+].map((question) => {
+  const entry = faq.find((item) => item.question === question);
+  if (!entry) throw new Error(`featuredFaq: no faq entry for "${question}"`);
+  return entry;
+});

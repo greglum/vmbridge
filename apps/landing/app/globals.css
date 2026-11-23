@@ -1,22 +1,22 @@
 @import "tailwindcss";
 
-/* Same palette as the dashboard: dark only, on pure black. */
+/* Dark only, near black with white text and one violet tint. */
 :root {
-  --background: #000;
-  --foreground: #ededed;
-  --card: #0a0a0a;
-  --muted: #141414;
-  --muted-foreground: #8f8f8f;
-  --faint: #5c5c5c;
-  --border: #1f1f1f;
+  --background: #070708;
+  --foreground: #ffffff;
+  --card: #0e0e10;
+  --muted: #18181b;
+  --muted-foreground: rgb(255 255 255 / 0.74);
+  --faint: rgb(255 255 255 / 0.52);
+  --border: rgb(255 255 255 / 0.08);
   --primary: #8b5cf6;
-  --success: #3ecf8e;
-  --warning: #f5b74e;
+  --radius: 6px;
 }
 
 @theme inline {
-  --font-sans: var(--font-mona), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-fragment), ui-monospace, "SF Mono", Menlo, monospace;
+  --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  --radius: var(--radius);
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -26,8 +26,6 @@
   --color-faint: var(--faint);
   --color-border: var(--border);
   --color-primary: var(--primary);
-  --color-success: var(--success);
-  --color-warning: var(--warning);
 }
 
 @layer base {
@@ -41,11 +39,35 @@
   body {
     @apply bg-background text-foreground antialiased;
     font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.65;
+    overflow-x: clip;
+  }
+  code,
+  kbd,
+  pre,
+  samp {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    letter-spacing: 0;
+  }
+  :focus-visible {
+    outline: 1px solid var(--primary);
+    outline-offset: 0;
   }
   ::selection {
-    background: color-mix(in oklab, var(--primary) 45%, transparent);
+    background: color-mix(in oklab, var(--primary) 35%, transparent);
+  }
+  /* With JavaScript off, every accordion answer shows open. The !important is
+     required: preflight's [hidden] rule is important too, and important rules
+     prefer the earlier base layer over utilities. */
+  html:not(.js) [data-slot="accordion-content"][hidden] {
+    display: block !important;
   }
 }
+
+/* Short viewports: at xl and up, tighten sections so a split still fits one screen. */
+@custom-variant short (@media (max-height: 700px));
 
 @media (prefers-reduced-motion: reduce) {
   html {
@@ -55,39 +77,46 @@
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }
 
-/* A faint dot grid, like the dashboard canvas. */
-.dots {
-  background-image: radial-gradient(circle at 1px 1px, #262626 1px, transparent 0);
-  background-size: 22px 22px;
+/* Page headline. */
+@utility display {
+  font-size: clamp(2.5rem, 4.2vw, 4rem);
+  line-height: 1.04;
+  letter-spacing: -0.035em;
+  font-weight: 500;
+  text-wrap: balance;
 }
 
-/* A dot crossing its track. Transform only, so it stays on the compositor. */
-@keyframes travel {
-  from {
-    transform: translateX(-100%);
-  }
-  to {
-    transform: translateX(0);
-  }
+/* Section headings. */
+@utility title {
+  font-size: clamp(1.75rem, 2.2vw, 2.25rem);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  font-weight: 500;
+  text-wrap: balance;
 }
 
-@keyframes fill {
-  from {
-    transform: scaleX(0);
-  }
-  to {
-    transform: scaleX(1);
-  }
+/* Reveal-on-scroll. Content stays visible without JS: the inline head script adds
+   `js` to <html>, and only then do un-revealed blocks start hidden until `reveal-in`. */
+.reveal {
+  transition:
+    opacity 600ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 600ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.js .reveal:not(.reveal-in) {
+  opacity: 0;
+  transform: translateY(0.75rem);
 }
 
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(4px);
   }
   to {
     opacity: 1;
@@ -95,16 +124,140 @@
   }
 }
 
-/* A sleeping VM shrugging off a poke. Runs once per click. */
-@keyframes poke {
-  0%,
-  100% {
-    transform: rotate(0);
+/* Terminal block cursor. Used as `blink 1s steps(1) infinite`. */
+@keyframes blink {
+  50% {
+    opacity: 0;
   }
-  25% {
-    transform: rotate(-8deg);
+}
+
+/* The idle bar draining toward sleep. Used as `drain 8s linear forwards`. */
+@keyframes drain {
+  from {
+    transform: scaleX(1);
   }
-  75% {
-    transform: rotate(8deg);
+  to {
+    transform: scaleX(0);
+  }
+}
+
+/* One white flash on a race lane's time as it finishes, settling back to its class colour. */
+@keyframes finish-flash {
+  from {
+    color: rgb(255 255 255);
+  }
+}
+
+/* Lenis smooth scroll: keep native scroll-behavior out of the way while Lenis
+   smooths, and let nested scrollers opt out with `data-lenis-prevent`. */
+html.lenis,
+html.lenis body {
+  height: auto;
+}
+.lenis.lenis-smooth {
+  scroll-behavior: auto !important;
+}
+.lenis.lenis-smooth [data-lenis-prevent] {
+  overscroll-behavior: contain;
+}
+.lenis.lenis-stopped {
+  overflow: hidden;
+}
+
+/* Section dividers draw left to right the first time they enter view. The hidden
+   state only exists under `.js`, so the lines are present without JavaScript. */
+.draw {
+  transform-origin: left;
+}
+.js .draw:not(.draw-in) {
+  transform: scaleX(0);
+}
+.js .draw-in {
+  transition: transform 700ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Fade-and-grow variant of `.reveal` for positioned children such as the provider
+   ring nodes; `scale` composes with the translate transforms on those nodes. */
+.reveal-scale {
+  transition:
+    opacity 500ms cubic-bezier(0.22, 1, 0.36, 1),
+    scale 500ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.js .reveal-scale:not(.reveal-in) {
+  opacity: 0;
+  scale: 0.9;
+}
+
+/* Tabs panels crossfade on switch: inactive panels stay mounted and rendered
+   (the display override) so the outgoing shot can fade. `[hidden]` doubles as the
+   inactive marker — it keeps panels off screen, unclickable and out of the a11y
+   tree — while `data-ending-style` keeps the closing panel visible just long
+   enough to fade, and `data-starting-style` gives the opening panel its start
+   pose. Without JS `hidden` hides panels as usual. */
+.js [data-slot="tabs-content"] {
+  transition:
+    opacity 220ms ease-out,
+    translate 220ms ease-out;
+}
+.js [data-slot="tabs-content"][hidden] {
+  display: block !important;
+  visibility: hidden;
+  opacity: 0;
+  translate: 0 6px;
+}
+.js [data-slot="tabs-content"][hidden][data-ending-style] {
+  visibility: visible;
+}
+.js [data-slot="tabs-content"][data-starting-style] {
+  opacity: 0;
+  translate: 0 6px;
+}
+
+/* Diagram wires draw (solid wires, via dashoffset) or fade (dashed wires) in on
+   first entry, then packets start. Without JavaScript every wire renders drawn. */
+.js .wire-draw:not(.wire-drawn) {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+.js .wire-draw.wire-drawn {
+  stroke-dashoffset: 0;
+  transition: stroke-dashoffset 700ms ease-out;
+}
+.js .wire-fade:not(.wire-drawn) {
+  stroke-opacity: 0;
+}
+.js .wire-fade.wire-drawn {
+  transition: stroke-opacity 500ms ease-out;
+}
+
+/* Fade to the element's natural opacity; paired with `backwards` fill so entrance
+   delays hold the hidden state without pinning the final value after it ends. */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Hairlines scaling in along their axis, for the hero's line system on load. */
+@keyframes draw-x {
+  from {
+    transform: scaleX(0);
+  }
+}
+@keyframes draw-y {
+  from {
+    transform: scaleY(0);
+  }
+}
+
+/* One violet ring expanding slowly behind the hero diagram's bridge tile. */
+@keyframes pulse-ring {
+  from {
+    transform: scale(0.7);
+    opacity: 0.45;
+  }
+  to {
+    transform: scale(1.45);
+    opacity: 0;
   }
 }

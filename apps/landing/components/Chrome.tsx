@@ -1,28 +1,39 @@
 import { GithubIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import Link from "next/link";
+import { copy } from "@/lib/copy";
 import { github } from "@/lib/data";
+import { site } from "@/lib/site";
+import { innerPad, railShell, rails } from "@/lib/styles";
+import { Reveal } from "./Reveal";
 import { Logo } from "./brand";
 
+const linkClass = "font-mono text-[13px] text-muted-foreground transition-colors duration-150 hover:text-foreground";
+/** A 1px underline that grows in from the left on hover, for the text nav links. */
+const underline = "relative after:absolute after:-bottom-0.5 after:left-0 after:h-px after:w-full after:origin-left after:scale-x-0 after:bg-foreground after:transition-transform after:duration-200 hover:after:scale-x-100";
+
+/** The site header: a solid bar, brand on the left, mono links and GitHub on the right. The page rails run through it. */
 export function Nav() {
   return (
-    <header className="sticky top-0 z-40 border-b bg-black/70 backdrop-blur-md">
-      <div className="mx-auto flex h-14 max-w-6xl items-center gap-6 px-4 sm:px-6">
-        <Link href="/" className="flex items-center gap-2.5 font-semibold">
-          <Logo className="size-7" />
+    <header className="sticky top-0 z-40 border-b border-white/10 bg-background">
+      {/* A soft fade so scrolling content does not cut hard against the bar. */}
+      <div aria-hidden className="pointer-events-none absolute inset-x-0 top-full h-5 bg-gradient-to-b from-background to-transparent" />
+      <div className={`${rails} flex h-14 items-center gap-6`}>
+        <Link href="/" className="flex items-center gap-2.5 font-medium">
+          <Logo className="size-6" />
           VM Bridge
         </Link>
-        <nav className="ml-auto flex items-center gap-1 text-sm text-muted-foreground sm:gap-2">
-          <Link href="/#how" className="hidden rounded-md px-2.5 py-1.5 transition hover:text-foreground sm:block">
-            How it works
+        <nav className="ml-auto flex items-center gap-5">
+          <Link href="/#how" className={`hidden sm:block ${linkClass} ${underline}`}>
+            {copy.nav.how}
           </Link>
-          <Link href="/#providers" className="hidden rounded-md px-2.5 py-1.5 transition hover:text-foreground sm:block">
-            Providers
+          <Link href="/#providers" className={`hidden sm:block ${linkClass} ${underline}`}>
+            {copy.nav.providers}
           </Link>
-          <Link href="/docs" className="rounded-md px-2.5 py-1.5 transition hover:text-foreground">
-            Docs
+          <Link href="/docs" className={`${linkClass} ${underline}`}>
+            {copy.nav.docs}
           </Link>
-          <a href={github} aria-label="GitHub" className="grid size-8 place-items-center rounded-md transition hover:text-foreground">
+          <a href={github} aria-label={copy.nav.github} className={linkClass}>
             <HugeiconsIcon icon={GithubIcon} size={18} />
           </a>
         </nav>
@@ -31,19 +42,82 @@ export function Nav() {
   );
 }
 
-export function Footer() {
+/** One footer link column: a small label over a stack of mono links. */
+function FooterColumn({ label, links }: { label: string; links: { label: string; href: string }[] }) {
   return (
-    <footer className="border-t">
-      <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-4 px-4 py-8 text-sm text-muted-foreground sm:px-6">
-        <Logo className="size-6" />
-        <span>VM Bridge</span>
-        <div className="ml-auto flex gap-5">
-          <Link href="/docs" className="transition hover:text-foreground">
-            Docs
-          </Link>
-          <a href={github} className="transition hover:text-foreground">
-            GitHub
-          </a>
+    <div>
+      <div className="text-sm font-medium text-foreground">{label}</div>
+      <ul className="mt-3 space-y-2">
+        {links.map((link) => (
+          <li key={link.href}>
+            {link.href.startsWith("/") ? (
+              <Link href={link.href} className={linkClass}>
+                {link.label}
+              </Link>
+            ) : (
+              <a href={link.href} className={linkClass}>
+                {link.label}
+              </a>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * The site footer inside the page rails, as one block: brand, line and license on the
+ * left, the Site and Project link columns on the right, and from xl the giant faint
+ * wordmark between them, pinned to the bottom edge and clipped by it. Below xl the
+ * wordmark sits under the columns. Columns and the wordmark rise in as they enter
+ * view. Ends 2rem above the viewport bottom so the fixed status line never covers it.
+ */
+export function Footer() {
+  const siteLinks = [
+    { label: copy.footer.links.setup, href: "/#how" },
+    { label: copy.footer.links.sleepWake, href: "/#lifecycle" },
+    { label: copy.footer.links.providers, href: "/#providers" },
+    { label: copy.footer.links.dashboard, href: "/#dashboard" },
+    { label: copy.footer.links.commands, href: "/#cli" },
+    { label: copy.footer.links.faq, href: "/faq" },
+  ];
+  const projectLinks = [
+    { label: copy.footer.links.docs, href: "/docs" },
+    { label: copy.footer.links.install, href: "/docs#install" },
+    { label: copy.footer.links.github, href: github },
+    { label: copy.footer.links.releases, href: `${github}/releases/latest` },
+    { label: copy.footer.links.license, href: `${github}/blob/main/LICENSE` },
+  ];
+  return (
+    <footer className={`${railShell} border-t border-white/10 pb-8`}>
+      <div className="relative overflow-hidden">
+        <div className={`relative z-10 flex flex-col gap-10 ${innerPad} py-12 sm:flex-row sm:items-start sm:justify-between`}>
+          <Reveal>
+            <Link href="/" className="flex items-center gap-2.5 font-medium">
+              <Logo className="size-6" />
+              VM Bridge
+            </Link>
+            <p className="mt-3 max-w-xs text-sm text-muted-foreground">{copy.footer.line}</p>
+            <p className="mt-2 font-mono text-[13px] text-faint">
+              {copy.footer.license} · v{site.version}
+            </p>
+          </Reveal>
+          <div className="flex gap-16 sm:gap-20">
+            <Reveal delay={60}>
+              <FooterColumn label={copy.footer.site} links={siteLinks} />
+            </Reveal>
+            <Reveal delay={120}>
+              <FooterColumn label={copy.footer.project} links={projectLinks} />
+            </Reveal>
+          </div>
+        </div>
+        <div aria-hidden className="pointer-events-none xl:absolute xl:inset-x-0 xl:bottom-0">
+          <Reveal>
+            <div className="translate-y-[0.14em] text-center font-medium text-[clamp(4rem,10vw,11rem)] leading-none tracking-tight whitespace-nowrap text-white/[0.06] select-none">
+              VM Bridge
+            </div>
+          </Reveal>
         </div>
       </div>
     </footer>

@@ -1,10 +1,11 @@
 import type { Metadata, Viewport } from "next";
-import { Fragment_Mono, Mona_Sans } from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
+import { SmoothScroll } from "@/components/SmoothScroll";
 import { openGraph, site } from "@/lib/site";
 import "./globals.css";
 
-const mona = Mona_Sans({ subsets: ["latin"], variable: "--font-mona" });
-const fragment = Fragment_Mono({ subsets: ["latin"], weight: "400", variable: "--font-fragment" });
+const geist = Geist({ subsets: ["latin"], variable: "--font-geist" });
+const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono" });
 
 export const metadata: Metadata = {
   metadataBase: new URL(site.url),
@@ -16,12 +17,19 @@ export const metadata: Metadata = {
   icons: { icon: "/logo.svg", apple: "/apple-icon.png" },
 };
 
-export const viewport: Viewport = { themeColor: "#000000" };
+export const viewport: Viewport = { themeColor: "#070708" };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${mona.variable} ${fragment.variable}`}>
-      <body>{children}</body>
+    <html lang="en" className={`${geist.variable} ${geistMono.variable}`} suppressHydrationWarning>
+      <head>
+        {/* Flags JS availability before paint so `.reveal` blocks only hide when they can be revealed. */}
+        <script dangerouslySetInnerHTML={{ __html: "document.documentElement.classList.add('js')" }} />
+      </head>
+      <body>
+        {children}
+        <SmoothScroll />
+      </body>
     </html>
   );
 }

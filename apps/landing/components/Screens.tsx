@@ -1,92 +1,118 @@
 "use client";
 
 import Image from "next/image";
-import { useRef, useState } from "react";
-import { useReducedMotion } from "@/lib/hooks";
+import { useState } from "react";
+import { copy } from "@/lib/copy";
+import { useMedia } from "@/lib/hooks";
+import { Section } from "./Section";
+import { Tabs, TabsContent, TabsIndicator, TabsList, TabsTrigger } from "./ui/tabs";
 
 const shots = [
-  { id: "canvas", label: "Canvas", src: "/shots/desktop-canvas.png", alt: "Dashboard canvas: a paired device, VM Bridge, one boxd VM online and one Boat VM asleep" },
-  { id: "logs", label: "Logs", src: "/shots/desktop-logs.png", alt: "Dashboard logs: each request with where it went and how long it took" },
-  { id: "setup", label: "Setup", src: "/shots/desktop-setup-provider.png", alt: "Dashboard setup: choosing a provider and entering its key" },
-  { id: "devices", label: "Devices", src: "/shots/desktop-devices.png", alt: "Dashboard devices: pairing links and paired devices" },
-];
+  { id: "canvas", src: "/shots/desktop-canvas.png" },
+  { id: "logs", src: "/shots/desktop-logs.png" },
+  { id: "setup", src: "/shots/desktop-setup-provider.png" },
+  { id: "devices", src: "/shots/desktop-devices.png" },
+] as const;
 
-/** Tilts toward the pointer. Pure CSS transform, set on pointer move only. */
-function Tilt({ children, className = "", strength = 8 }: { children: React.ReactNode; className?: string; strength?: number }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const reduced = useReducedMotion();
-  return (
-    <div className={`[perspective:1400px] ${className}`}>
-      <div
-        ref={ref}
-        className="transition-transform duration-300 ease-out will-change-transform"
-        style={{ transform: "none" }}
-        onPointerMove={(event) => {
-          if (reduced || event.pointerType !== "mouse" || !ref.current) return;
-          const box = ref.current.getBoundingClientRect();
-          const x = (event.clientX - box.left) / box.width - 0.5;
-          const y = (event.clientY - box.top) / box.height - 0.5;
-          ref.current.style.transform = `rotateX(${-y * strength}deg) rotateY(${x * strength}deg)`;
-        }}
-        onPointerLeave={() => {
-          if (ref.current) ref.current.style.transform = "none";
-        }}
-      >
-        {children}
-      </div>
-    </div>
-  );
-}
+const phoneShots: Partial<Record<ShotId, string>> = {
+  canvas: "/shots/phone-canvas.png",
+  logs: "/shots/phone-logs.png",
+};
 
+type ShotId = (typeof shots)[number]["id"];
+
+const isShotId = (value: unknown): value is ShotId => shots.some((shot) => shot.id === value);
+
+const tabs = copy.dashboard.tabs;
+
+/**
+ * Dashboard screenshots behind Base UI tabs: a vertical list in the section's left
+ * column at lg, a horizontal pill row below it. The active tab's caption rides under
+ * its label at lg and under the pill row below lg. The tab root wraps the whole
+ * section so the list in the left column and the panels in the right share state.
+ * Panels stack absolutely inside one fixed frame and crossfade on switch (opacity
+ * plus a small rise, ~220ms), so the section height never moves. Phones get the
+ * phone shot when one exists, else a side-scrolling look at the desktop shot.
+ */
 export function Screens() {
-  const [active, setActive] = useState(shots[0].id);
+  const [active, setActive] = useState<ShotId>("canvas");
+  const vertical = useMedia("(min-width: 1024px)");
   return (
-    <section id="dashboard" className="relative scroll-mt-20 overflow-hidden py-24">
-      <div className="mx-auto max-w-6xl px-4 sm:px-6">
-        <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">See every device, VM and request</h2>
-
-        <div className="mt-8 flex gap-1 overflow-x-auto rounded-lg border bg-card p-1 sm:inline-flex" role="tablist">
-          {shots.map((shot) => (
-            <button
-              key={shot.id}
-              type="button"
-              role="tab"
-              aria-selected={shot.id === active}
-              onClick={() => setActive(shot.id)}
-              className={`shrink-0 rounded-md px-3 py-1.5 text-sm transition ${shot.id === active ? "bg-muted" : "text-muted-foreground hover:text-foreground"}`}
+    <Tabs
+      value={active}
+      onValueChange={(value) => {
+        if (isShotId(value)) setActive(value);
+      }}
+      orientation={vertical ? "vertical" : "horizontal"}
+    >
+      <Section
+        id="dashboard"
+        title={copy.dashboard.title}
+        body={copy.dashboard.body}
+        splitAt="lg"
+        side={
+          <>
+            <TabsList
+              aria-label={copy.dashboard.title}
+              className="max-w-full flex-row flex-wrap data-[orientation=vertical]:flex-col data-[orientation=vertical]:items-stretch data-[orientation=vertical]:gap-0.5"
             >
-              {shot.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="mt-8 grid grid-cols-1 items-start gap-8 lg:grid-cols-[1fr_auto]">
-          <Tilt>
-            <div className="relative aspect-[16/10] overflow-hidden rounded-xl border bg-black shadow-[0_40px_120px_-30px_rgba(139,92,246,0.45)]">
+              <TabsIndicator renderBeforeHydration />
               {shots.map((shot) => (
-                <Image
+                <TabsTrigger
                   key={shot.id}
-                  src={shot.src}
-                  alt={shot.alt}
-                  fill
-                  sizes="(min-width: 1024px) 860px, 100vw"
-                  className={`object-cover object-top transition-opacity duration-500 ${shot.id === active ? "opacity-100" : "opacity-0"}`}
-                  priority={shot.id === "canvas"}
-                />
+                  value={shot.id}
+                  className="data-[orientation=vertical]:w-full data-[orientation=vertical]:flex-col data-[orientation=vertical]:items-start data-[orientation=vertical]:px-4 data-[orientation=vertical]:py-2.5"
+                >
+                  <span>{tabs[shot.id].label}</span>
+                  {/* Fixed three-line box: the section height must not move between tabs. */}
+                  <span className="mt-1 hidden h-[4.75rem] text-left font-sans text-[15px] leading-relaxed font-normal whitespace-normal text-muted-foreground lg:group-data-active/tab:block">
+                    {tabs[shot.id].caption}
+                  </span>
+                </TabsTrigger>
               ))}
-            </div>
-          </Tilt>
-          <div className="hidden gap-4 lg:flex lg:flex-col">
-            {["/shots/phone-canvas.png", "/shots/phone-logs.png"].map((src, i) => (
-              <Tilt key={src} strength={14}>
-                <div className="relative h-[268px] w-[124px] overflow-hidden rounded-[22px] border-4 border-[#1c1c1f] bg-black">
-                  <Image src={src} alt={i ? "Logs on a phone" : "Canvas on a phone"} fill sizes="124px" className="object-cover object-top" />
-                </div>
-              </Tilt>
-            ))}
+            </TabsList>
+            <div className="mt-4 min-h-[3.25rem] text-base leading-relaxed text-muted-foreground lg:hidden">{tabs[active].caption}</div>
+          </>
+        }
+      >
+        {/* One fixed frame for every panel: portrait below sm, 16/10 above. Panels
+            stack absolutely and crossfade on switch — inactive panels keep `hidden`
+            semantics for screen readers while `invisible` handles paint and input;
+            the visibility delay lets the outgoing shot fade before it drops. */}
+        <div data-tabs-stage className="mx-auto w-full max-w-80 rounded-xl bg-card p-1.5 sm:max-w-[min(100%,calc((100svh-12rem)*1.6))]">
+          <div className="relative aspect-[780/1688] overflow-hidden rounded-lg sm:aspect-[16/10]">
+            {shots.map((shot) => {
+              const phone = phoneShots[shot.id];
+              return (
+                <TabsContent key={shot.id} value={shot.id} keepMounted className="absolute inset-0">
+                  {phone ? (
+                    <Image
+                      src={phone}
+                      alt={tabs[shot.id].caption}
+                      fill
+                      sizes="320px"
+                      className="object-cover sm:hidden"
+                      priority={shot.id === "canvas"}
+                    />
+                  ) : (
+                    <div data-lenis-prevent className="h-full overflow-x-auto sm:hidden">
+                      <Image src={shot.src} alt={tabs[shot.id].caption} width={2880} height={1800} className="h-full w-auto max-w-none" />
+                    </div>
+                  )}
+                  <Image
+                    src={shot.src}
+                    alt={tabs[shot.id].caption}
+                    fill
+                    sizes="(min-width: 1280px) 912px, 100vw"
+                    className="hidden object-contain sm:block"
+                    priority={shot.id === "canvas"}
+                  />
+                </TabsContent>
+              );
+            })}
           </div>
         </div>
-      </div>
-    </section>
+      </Section>
+    </Tabs>
   );
 }
