@@ -441,9 +441,25 @@ function LocalSkills({ overview }: { overview: Overview }) {
 
 function Instructions({ overview }: { overview: Overview }) {
   const [saved, setSaved] = useState<Partial<Record<InstructionName, string>> | null>(null);
-  useEffect(() => void api<Partial<Record<InstructionName, string>>>("/instructions").then(setSaved, () => setSaved({})), []);
+  // A failed load must not look like nothing saved, or saving would overwrite files the user could not see.
+  const [loadFailed, setLoadFailed] = useState(false);
+  const load = () => {
+    setLoadFailed(false);
+    void api<Partial<Record<InstructionName, string>>>("/instructions").then(setSaved, () => setLoadFailed(true));
+  };
+  useEffect(load, []);
   return (
     <>
+      {loadFailed && (
+        <Section title="Pasted files">
+          <FieldError>Could not load your pasted files.</FieldError>
+          <div className="flex justify-end">
+            <Button variant="outline" onClick={load}>
+              Try again
+            </Button>
+          </div>
+        </Section>
+      )}
       {saved &&
         instructionNames.map((name) => <PastedFile key={name} name={name} saved={saved[name] ?? ""} onSaved={setSaved} />)}
       {overview.machine && <MachineInstructions overview={overview} />}
@@ -481,6 +497,7 @@ function PastedFile({ name, saved, onSaved }: { name: InstructionName; saved: st
         aria-label={name}
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
+        disabled={action.busy}
         placeholder={`Paste your ${name}`}
         spellCheck={false}
         className="max-h-[60vh] min-h-40 font-mono text-xs md:text-xs"

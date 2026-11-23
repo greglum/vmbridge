@@ -256,6 +256,8 @@ export const uploadLimits = { instructionBytes: 256 * 1024, skillBytes: 1024 * 1
 /** A usable skill folder name, which is also its name on the VMs. */
 export const skillNamePattern = /^[A-Za-z0-9][\w.-]{0,99}$/;
 
+const utf8 = new TextEncoder();
+
 /**
  * What is wrong with an uploaded skill's files, by path and decoded size, or null when nothing is. The dashboard checks
  * before sending, and the server again, since anyone can call its API.
@@ -268,7 +270,11 @@ export function skillUploadProblem(name: string, files: { path: string; size: nu
   for (const file of files) {
     const parts = file.path.split("/");
     // Relative, inside the skill's folder, and nothing a shell or the VM's file system would read differently.
-    const unsafe = file.path.length > 500 || /[\x00-\x1f\\]/.test(file.path) || parts.some((part) => !part || part === "." || part === ".." || part.length > 255);
+    // File systems limit names in bytes, so lengths are UTF-8 bytes.
+    const unsafe =
+      utf8.encode(file.path).length > 500 ||
+      /[\x00-\x1f\\]/.test(file.path) ||
+      parts.some((part) => !part || part === "." || part === ".." || utf8.encode(part).length > 255);
     if (unsafe) return `${name} has a file outside its folder or with an unusable name: ${file.path.slice(0, 100)}`;
     if (paths.has(file.path)) return `${name} has ${file.path} twice.`;
     paths.add(file.path);
