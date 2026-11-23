@@ -31,6 +31,7 @@ import type { Traffic } from "./traffic.ts";
 import { normalizeHostname, requestOrigin, tunnelTokenSecret, type CloudflareTunnel } from "./bun/tunnel.ts";
 import type { Usage } from "./usage.ts";
 import { envNameProblem, envValueProblem } from "./vm/runtime.ts";
+import { AllowedHosts } from "./hosts.ts";
 import type { Stats } from "./vm/stats.ts";
 
 export interface AdminDeps {
@@ -62,6 +63,19 @@ const loggedIn = (cookie: string) => new Response(JSON.stringify({ ok: true }), 
 const isProvider = (id: unknown): id is ProviderId => (providerIds as readonly unknown[]).includes(id);
 const isSize = (size: unknown): size is VmSize => (vmSizes as readonly unknown[]).includes(size);
 
+/** Whether a browser sent this from a page on the address it was sent to. Browsers send Origin with every POST. */
+function sameOrigin(request: Request) {
+  const origin = request.headers.get("origin");
+  const host = request.headers.get("host");
+  if (!origin) return request.headers.get("sec-fetch-site") === "same-origin";
+  try {
+    const url = new URL(origin);
+    return host !== null && new URL(`${url.protocol}//${host}`).host === url.host;
+  } catch {
+    return false;
+  }
+}
+
 async function body(request: Request): Promise<Record<string, unknown>> {
   const value: unknown = await request.json().catch(() => null);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new BadRequest("Send a JSON object.");
@@ -87,11 +101,17 @@ function timeRange(request: Request) {
  * Secret values go in and never come out: responses only say whether each one is set.
  */
 export class Admin {
-  constructor(private readonly deps: AdminDeps) {}
+  private readonly hosts: AllowedHosts;
+
+  constructor(private readonly deps: AdminDeps) {
+    this.hosts = new AllowedHosts(() => this.network(), () => deps.tunnel().info());
+  }
 
   async fetch(request: Request, server: Server<unknown>, viaTunnel = false): Promise<Response> {
     const path = new URL(request.url).pathname.slice("/admin/api".length);
     const { auth } = this.deps;
+    if (!(await this.hosts.allows(request.headers.get("host")))) return new Response("Unknown host", { status: 421 });
+    if (request.method !== "GET" && request.method !== "HEAD" && !sameOrigin(request)) return json({ error: "Send this from the dashboard." }, 403);
     // A JSON body forces a CORS preflight, which VM Bridge never answers, so other sites cannot post here.
     if (request.method !== "GET" && !request.headers.get("content-type")?.startsWith("application/json")) {
       return json({ error: "Send JSON." }, 415);
@@ -641,8 +661,10 @@ export class Admin {
   }
 
   /** Server-sent events: every traffic event, and a fresh overview whenever the fleet changes. */
-  private network() {
-    return networkInfo(this.deps.served(), this.deps.tunnel().info());
+  private async network() {
+    const info = await networkInfo(this.deps.served(), this.deps.tunnel().info());
+    this.hosts.learn(info);
+    return info;
   }
 
   private events(request: Request) {

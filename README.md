@@ -179,6 +179,12 @@ vmbridge password                                 Set a new dashboard password
 Your data lives in `~/.vmbridge`. Set `VMBRIDGE_HOME` to keep it somewhere else. On a machine with
 no terminal, set `VMBRIDGE_PASSWORD` for the first start, or run `vmbridge password`.
 
+The dashboard only answers on this machine's own addresses: IP addresses, `localhost`, its hostname,
+its Tailscale names and the Cloudflare Tunnel's hostname, so another website can't point a name of
+its own at VM Bridge and talk to it from your browser. To open the dashboard on another name, such as
+a reverse proxy's domain, list it in `VMBRIDGE_ALLOWED_HOSTS`, separated by commas. T3 apps connect
+on any name.
+
 Sizes, sleep behaviour and notes for each provider: [docs/PROVIDERS.md](docs/PROVIDERS.md).
 
 ## License
