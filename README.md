@@ -20,7 +20,7 @@ Website and docs: [vmbridge.ordinity.com](https://vmbridge.ordinity.com)
 - Agent skills from [skills.sh](https://skills.sh) or from this machine reach every VM, for Claude
   Code and Codex.
 - Your global `AGENTS.md` (and Claude Code's `CLAUDE.md`) on this machine can follow you to every VM.
-- Works over your local network and Tailscale.
+- Works over your local network, Tailscale and Cloudflare Tunnel.
 
 ## Install
 

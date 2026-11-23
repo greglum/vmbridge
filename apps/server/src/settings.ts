@@ -42,6 +42,12 @@ interface SettingValues {
   syncLocalSkills: boolean;
   /** T3's config from the last VM removed, kept while no VM has one (see `Hub.forget`). */
   fallbackConfig: { vmId: string; config: ServerConfig } | null;
+  /**
+   * Cloudflare Tunnel. Off until the user turns it on, since it puts VM Bridge on the public internet. `port` is the
+   * loopback listener cloudflared forwards to, kept so a dashboard-made tunnel's hostname keeps pointing at it.
+   * A dashboard tunnel's token is the `cloudflare.tunnelToken` secret.
+   */
+  cloudflareTunnel: { enabled: boolean; hostname: string | null; port: number | null };
 }
 
 const defaultMachineName = "VM Bridge";
@@ -71,6 +77,7 @@ const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
   instructionSync: () => ({}),
   syncLocalSkills: () => false,
   fallbackConfig: () => null,
+  cloudflareTunnel: () => ({ enabled: false, hostname: null, port: null }),
 };
 
 export class Settings {
