@@ -438,7 +438,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
     watch.lap("prepare VM, preview URL");
     if (prepared.codexAuth) {
       await this.agents.adoptCodex(prepared.codexAuth, vm.id);
-      // Adopting retired the VM's refresh token, and a file VM Bridge did not adopt, such as another account's, must go too.
+      // A file VM Bridge did not adopt, such as another account's, is replaced after all.
       const ours = (await this.credentials()).codexAuthJson;
       if (ours && ours !== prepared.codexAuth) await writeCodexAuth(box, ours);
       watch.lap("adopt Codex sign-in");
@@ -1003,7 +1003,7 @@ fi`,
       const current = await readCodexAuth(box);
       if (current && (await this.agents.adoptCodex(current, vmId))) adopted = true;
     }
-    // Adopting refreshed the tokens, which retired the refresh token every VM holds, so they all need the new file.
+    // The VM's own refresh retired the refresh token the other VMs hold, so they all need the adopted file.
     const authJson = await this.agents.refreshCodex(!adopted);
     if (!authJson) return;
     await Promise.all(boxes.map(([, box]) => writeCodexAuth(box, authJson).catch(() => {})));
