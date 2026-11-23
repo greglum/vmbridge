@@ -66,7 +66,10 @@ export class T3Gateway {
       response.headers.set("vary", "Origin");
     }
     response.headers.set("cache-control", "no-store");
-    if (path !== "/api/auth/session") {
+    if (!seen.clientId) {
+      // Anyone can send these, so failures are only counted. Pairing logs itself; discovery and preflights are not worth a line.
+      if (!response.ok) this.hub.traffic.refused();
+    } else if (path !== "/api/auth/session") {
       this.hub.traffic.record({
         kind: "http",
         operation: `${request.method} ${path.replace(/\/threads\/[^/]+/, "/threads/:id")}`,
