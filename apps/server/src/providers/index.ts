@@ -16,7 +16,7 @@ import { kubiProvider } from "./kubi.ts";
 import { notFound, retryNotFound, sdkDriver } from "./sdk.ts";
 import { required, type ProviderDefinition } from "./types.ts";
 
-export type { Box, Driver, ProviderDefinition, ProviderState } from "./types.ts";
+export type { Box, Driver, ProviderDefinition, ProviderState, ScreenStream } from "./types.ts";
 
 const minutes = (count: number) => count * 60_000;
 
@@ -256,3 +256,6 @@ export const providers: Record<ProviderId, ProviderDefinition> = {
   railway: railwayProvider,
   superserve: superserveProvider,
 };
+
+/** Whether VMs on this provider have a screen to watch (see watch/). */
+export const hasScreen = (provider: ProviderId) => providers[provider].screen === true;

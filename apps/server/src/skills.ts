@@ -5,6 +5,7 @@ import { Encryption } from "./encryption.ts";
 import { Instructions } from "./instructions.ts";
 import { Settings, type Plaintext } from "./settings.ts";
 import { skillHash, skillsFingerprint, type SkillFile, type SkillsState } from "./vm/skills.ts";
+import { screenSkill } from "./watch/skill.ts";
 
 export class SkillError extends Error {}
 
@@ -128,14 +129,20 @@ export class Skills extends EventEmitter<{ changed: [] }> {
     }));
   }
 
-  state(): SkillsState {
+  /**
+   * What a VM should have. One with a screen also gets the skill that shows it (see watch/skill.ts), unless an
+   * installed skill has its name: like on the VM, the user's skill wins.
+   */
+  state(screen = false): SkillsState {
     const skills = this.db.all<{ name: string; hash: string }>("SELECT name, hash FROM skills ORDER BY name");
+    if (screen && !skills.some((skill) => skill.name === screenSkill.name)) skills.push({ name: screenSkill.name, hash: screenSkill.hash });
     const instructions = this.instructions.state();
     return { fingerprint: skillsFingerprint(skills, instructions), skills, instructions };
   }
 
   files(name: string): SkillFile[] {
     const row = this.row(name);
+    if (!row && name === screenSkill.name) return screenSkill.files;
     if (!row) throw new Error(`The skill ${name} is no longer installed.`);
     return JSON.parse(this.encryption.open(row.files, `skill:${name}`)) as SkillFile[];
   }

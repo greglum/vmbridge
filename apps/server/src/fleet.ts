@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { SandboxError, type Preview } from "@opencoredev/sandbox-sdk";
 import type { ProviderId, ProviderSetup, VmSize, VmState } from "@vmbridge/contracts";
-import { providers, type Box, type Driver } from "./providers/index.ts";
+import { hasScreen, providers, type Box, type Driver } from "./providers/index.ts";
 import type { CreateVm } from "./providers/types.ts";
 import { envVars, type Settings, type Secrets } from "./settings.ts";
 import { busyNotice, choose, maxVmsPerProject, overflowRetryMs, type VmLoad } from "./placement.ts";
@@ -547,8 +547,9 @@ export class Fleet extends EventEmitter<FleetEvents> {
    * `manifest` is the VM's skills manifest when the caller read it already. Returns whether anything changed on the VM.
    */
   private async syncSkills(vmId: string, box: Box, manifest?: string | null) {
-    const state = this.skills.state();
-    if (!state.skills.length && !state.instructions.length && !this.store.vm(vmId)?.skills) return false;
+    const vm = this.store.vm(vmId);
+    const state = this.skills.state(Boolean(vm && hasScreen(vm.provider)));
+    if (!state.skills.length && !state.instructions.length && !vm?.skills) return false;
     const started = performance.now();
     let changed: boolean;
     try {
@@ -571,7 +572,8 @@ export class Fleet extends EventEmitter<FleetEvents> {
       [...this.boxes.keys()].map((vmId) =>
         this.exclusive(vmId, async () => {
           const box = this.boxes.get(vmId);
-          if (!box || !this.backend(vmId) || this.store.vm(vmId)?.skills === this.skills.state().fingerprint) return;
+          const vm = this.store.vm(vmId);
+          if (!box || !vm || !this.backend(vmId) || vm.skills === this.skills.state(hasScreen(vm.provider)).fingerprint) return;
           await this.syncSkills(vmId, box);
         }).catch(() => {}),
       ),

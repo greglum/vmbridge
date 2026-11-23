@@ -1,16 +1,18 @@
 import type { ClientSocket, T3Gateway, Upgrade } from "../gateway/http.ts";
 import type { OpenSocket } from "../runtime.ts";
+import type { WatchUpgrade } from "../watch/watch.ts";
 
 /**
  * `OpenSocket` on Workers, whose `new WebSocket` cannot send headers: the upgrade is a `fetch` with them, over
  * http(s). Errors never include the URL, which can hold preview credentials.
  */
-export const openSocket: OpenSocket = async (url, headers, timeoutMs) => {
+export const openSocket: OpenSocket = async (url, headers, timeoutMs, protocols) => {
   const target = new URL(url);
   target.protocol = target.protocol === "wss:" ? "https:" : "http:";
+  const asked: Record<string, string> = protocols?.length ? { "sec-websocket-protocol": protocols.join(", ") } : {};
   // A timer, not an AbortSignal: workerd keeps a fetch's signal tied to the socket it upgrades to, so the signal's
   // timeout would close a working socket later.
-  const opening = fetch(target, { headers: { ...headers, upgrade: "websocket" } }) as Promise<Response & { webSocket: WorkersWebSocket | null }>;
+  const opening = fetch(target, { headers: { ...headers, ...asked, upgrade: "websocket" } }) as Promise<Response & { webSocket: WorkersWebSocket | null }>;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), timeoutMs)));
   let response: Awaited<typeof opening> | null;
@@ -70,6 +72,35 @@ export function upgrader(gateway: T3Gateway): Upgrade {
     server.addEventListener("close", close);
     server.addEventListener("error", close);
     gateway.opened(socket);
+    const init: WorkersResponseInit = { status: 101, webSocket: client };
+    return new Response(null, init);
+  };
+}
+
+/** Accepts watch pages' sockets in the Durable Object, the same way as T3 clients'. */
+export function watchUpgrader(): WatchUpgrade {
+  return (request, viewer) => {
+    if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return null;
+    const { 0: client, 1: server } = new WebSocketPair();
+    server.accept();
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      viewer.closed();
+    };
+    server.addEventListener("message", (event) => viewer.received(event.data as string | ArrayBuffer));
+    server.addEventListener("close", close);
+    server.addEventListener("error", close);
+    viewer.opened({
+      send: (data) => server.send(data),
+      close: (code, reason) => {
+        // Closing a socket the page already closed throws.
+        try {
+          server.close(code, reason);
+        } catch {}
+      },
+    });
     const init: WorkersResponseInit = { status: 101, webSocket: client };
     return new Response(null, init);
   };

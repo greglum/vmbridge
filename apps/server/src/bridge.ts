@@ -1,4 +1,5 @@
 // VM Bridge's parts, wired together the same way on every runtime. Bun's entry is index.ts, a Worker's is workers/.
+import type { Address } from "@vmbridge/contracts";
 import { AgentAuth } from "./agent-auth/profiles.ts";
 import { Clients } from "./auth/clients.ts";
 import { DashboardAuth } from "./auth/dashboard.ts";
@@ -18,6 +19,8 @@ import { Store } from "./store.ts";
 import { Traffic } from "./traffic.ts";
 import { Usage } from "./usage.ts";
 import { Stats } from "./vm/stats.ts";
+import { WatchLinks } from "./watch/links.ts";
+import { Watch } from "./watch/watch.ts";
 
 export interface BridgeRuntime {
   db: Sql;
@@ -28,6 +31,10 @@ export interface BridgeRuntime {
   resolve?: (hostname: string) => Promise<string[]>;
   /** Skills and instructions files on the machine VM Bridge runs on. Absent where there is none, such as on Workers. */
   machine?: Machine;
+  /** Where VM Bridge can be reached now, for the watch links it gives out. Called only once the bridge is open. */
+  addresses: () => Promise<Address[]>;
+  /** The watch page (see watch/). */
+  watchPage: () => Promise<Response>;
   /** Runs once encryption is open, before the fleet reads any saved value: moves older data in, seals or drops plain values. */
   prepare(parts: { encryption: Encryption; migrated: boolean; markMigrated: () => void; secrets: Secrets; store: Store; skills: Skills }): void;
 }
@@ -63,7 +70,16 @@ export function openBridge(runtime: BridgeRuntime) {
   const rpc = new Rpc(hub, clones, branches, traffic, () => secrets.has("github.token"));
   const gateway = new T3Gateway(hub, rpc, clients);
   const auth = new DashboardAuth(db, secrets, runtime.passwords);
-  return { settings, encryption, key, secrets, store, traffic, agents, skills, fleet, stats, usage, hub, gateway, clients, auth };
+  const watch = new Watch({
+    links: new WatchLinks(db, encryption),
+    store,
+    fleet,
+    traffic,
+    openSocket: runtime.openSocket,
+    addresses: runtime.addresses,
+    page: runtime.watchPage,
+  });
+  return { settings, encryption, key, secrets, store, traffic, agents, skills, fleet, stats, usage, hub, gateway, clients, auth, watch };
 }
 
 export type Bridge = ReturnType<typeof openBridge>;

@@ -161,6 +161,27 @@ describe("Kubi commands", () => {
     expect(JSON.parse(start!.body).command).toBe(`exec sh '${path}'`);
   });
 
+  test("a live view ticket is a view-only one, taken from the link's fragment", async () => {
+    const { calls, provider } = fakeKubi(() => ({ json: { url: "https://trykubi.com/view/scr_1#t=vt_abc-123" } }));
+    expect(await provider.viewerTicket("scr_1")).toBe("vt_abc-123");
+    expect(calls[0]!.method).toBe("POST");
+    expect(calls[0]!.path).toBe("/screens/scr_1/viewer");
+    expect(JSON.parse(calls[0]!.body)).toEqual({ mode: "view" });
+  });
+
+  test("a screen that is not running has no ticket, and is not started for one", async () => {
+    const { calls, provider } = fakeKubi(() => kubiError(409, "SCREEN_NOT_RUNNING"));
+    expect(await provider.viewerTicket("scr_1")).toBeNull();
+    expect(calls.map((call) => call.path)).toEqual(["/screens/scr_1/viewer"]);
+  });
+
+  test("a link without a ticket fails without quoting it", async () => {
+    const { provider } = fakeKubi(() => ({ json: { url: "https://trykubi.com/view/scr_1#t=<script>" } }));
+    const error = await provider.viewerTicket("scr_1").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(SandboxError);
+    expect((error as Error).message).not.toContain("script");
+  });
+
   test("a missing file is file_not_found", async () => {
     const { provider } = fakeKubi(() => kubiError(404, "FILE_NOT_FOUND"));
     const error = await provider.files.read("scr_1", "/nope").catch((caught: unknown) => caught);

@@ -213,6 +213,8 @@ export interface VmInfo {
   skillsPending: boolean;
   /** The latest background failure on this VM not since put right, such as a failed sleep that may leave it running. */
   problem: string | null;
+  /** The link to watch the VM's screen live. Null for VMs without a screen; `url` is null while the link is off. */
+  watchLink: { url: string | null } | null;
 }
 
 /** Where an installed skill comes from: skills.sh, a folder on the machine running VM Bridge, or the dashboard. */

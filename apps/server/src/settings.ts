@@ -49,6 +49,8 @@ interface SettingValues {
   cloudflareTunnel: { enabled: boolean; hostname: string | null; port: number | null };
   /** Listen on the local network too. Off by default, for existing installs as well: it is plain HTTP. */
   localNetwork: boolean;
+  /** On Workers, the origin requests last came in on: the address watch links use (see watch/watch.ts). */
+  workerOrigin: string | null;
 }
 
 /** The dashboard password's hash. Older versions kept it unencrypted, as the `dashboardKeyHash` setting. */
@@ -83,6 +85,7 @@ const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
   fallbackConfig: () => null,
   cloudflareTunnel: () => ({ enabled: false, hostname: null, port: null }),
   localNetwork: () => false,
+  workerOrigin: () => null,
 };
 
 export class Settings {

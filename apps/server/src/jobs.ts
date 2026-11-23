@@ -3,6 +3,7 @@ import type { Hub } from "./gateway/hub.ts";
 import type { Traffic } from "./traffic.ts";
 import { heartbeatMs, type Usage } from "./usage.ts";
 import type { Stats } from "./vm/stats.ts";
+import type { Watch } from "./watch/watch.ts";
 
 /** Work repeated on a schedule. Bun runs each on a timer (bun/jobs.ts); a Durable Object would run them from alarms. */
 export interface Job {
@@ -12,8 +13,8 @@ export interface Job {
 }
 
 /** VM Bridge's periodic work. Each run handles its own failures. */
-export function bridgeJobs(deps: { hub: Hub; fleet: Fleet; stats: Stats; usage: Usage; traffic: Traffic }): Job[] {
-  const { hub, fleet, stats, usage, traffic } = deps;
+export function bridgeJobs(deps: { hub: Hub; fleet: Fleet; stats: Stats; usage: Usage; traffic: Traffic; watch: Watch }): Job[] {
+  const { hub, fleet, stats, usage, traffic, watch } = deps;
   return [
     {
       name: "idle sweep",
@@ -27,5 +28,7 @@ export function bridgeJobs(deps: { hub: Hub; fleet: Fleet; stats: Stats; usage: 
     // Often enough for the dashboard's high memory warning; opening a VM's details reads it right away.
     { name: "VM stats", everyMs: 30_000, run: () => stats.sampleAll().catch(() => {}) },
     { name: "usage heartbeat", everyMs: heartbeatMs, run: async () => usage.sync(Date.now(), true) },
+    // Follows VM Bridge's address, such as a quick tunnel's new one, into the watch links VMs have.
+    { name: "watch links", everyMs: 30_000, run: () => watch.refresh() },
   ];
 }

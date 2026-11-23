@@ -2,7 +2,7 @@
 // can run elsewhere too.
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { WebSocketHandler } from "bun";
+import type { ServerWebSocket, WebSocketHandler } from "bun";
 import { version } from "../../../package.json" with { type: "json" };
 import { Admin } from "./admin.ts";
 import { DashboardAuth } from "./auth/dashboard.ts";
@@ -26,6 +26,10 @@ import { networkInfo, wantedHosts } from "./bun/network.ts";
 import { Secrets, type Plaintext } from "./settings.ts";
 import type { Sql } from "./sql.ts";
 import { CloudflareTunnel, requestOrigin } from "./bun/tunnel.ts";
+import { isWatchPath, type Viewer } from "./watch/watch.ts";
+
+/** A T3 client's socket, or a watch page's. */
+type Socket = SocketData | { viewer: Viewer };
 
 export { version };
 export { childEnv } from "./bun/env.ts";
@@ -77,6 +81,10 @@ export async function start(options: StartOptions = {}) {
   const host = options.host;
   const dir = options.dir ?? dataDir();
   const db = openDatabase(databasePath(dir));
+  const development = process.env.VMBRIDGE_DEV === "1";
+  const dashboard = await openDashboard(development);
+  // Set before the bridge calls it, once listening.
+  let network: BunNetwork;
   const bridge = openBridge({
     db,
     key: (create) => localKey(dir, create),
@@ -84,31 +92,41 @@ export async function start(options: StartOptions = {}) {
     openSocket,
     resolve: async (hostname) => (await Bun.dns.lookup(hostname)).map((entry) => entry.address),
     machine: bunMachine(dir),
+    addresses: async () => (await network.info()).addresses,
+    watchPage: dashboard.watchPage,
     prepare: ({ encryption, migrated, markMigrated, secrets, store, skills }) => {
       importAuthFiles(join(dir, "auths"), db, encryption);
       plaintext(db, dir, migrated, [secrets, store, skills]);
       if (!migrated) markMigrated();
     },
   });
-  const { settings, key: encryptionKey, secrets, traffic, skills, fleet, stats, usage, hub, gateway, auth } = bridge;
+  const { settings, key: encryptionKey, secrets, traffic, skills, fleet, stats, usage, hub, gateway, auth, watch } = bridge;
   // Defined before the server starts listening; its listener only opens once the tunnel is on.
   let tunnel: CloudflareTunnel;
-  let listeners: Listeners<SocketData>;
+  let listeners: Listeners<Socket>;
   const served = () => ({ hosts: listeners.hosts(), port: listeners.port, fixed: host !== undefined, localNetwork: settings.get("localNetwork") });
-  const development = process.env.VMBRIDGE_DEV === "1";
-  const dashboard = await openDashboard(development);
-  const network = new BunNetwork({ served, applyAddresses: () => listeners.apply(), settings, secrets, tunnel: () => tunnel });
+  network = new BunNetwork({ served, applyAddresses: () => listeners.apply(), settings, secrets, tunnel: () => tunnel });
   const admin = new Admin({ ...bridge, version, startedAt: Date.now(), network, passwordSource: null });
-  const websocket: WebSocketHandler<SocketData> = {
+  // A watch page's socket carries its viewer; any other is a T3 client's, so the casts only drop the viewer case.
+  const websocket: WebSocketHandler<Socket> = {
     maxPayloadLength: 16 * 1024 * 1024,
-    open: (socket) => gateway.opened(socket),
-    message: (socket, raw) => gateway.received(socket, String(raw)),
-    close: (socket) => gateway.closed(socket),
+    open(socket) {
+      if ("viewer" in socket.data) socket.data.viewer.opened(socket);
+      else gateway.opened(socket as ServerWebSocket<SocketData>);
+    },
+    message(socket, raw) {
+      if ("viewer" in socket.data) socket.data.viewer.received(raw);
+      else gateway.received(socket as ServerWebSocket<SocketData>, String(raw));
+    },
+    close(socket) {
+      if ("viewer" in socket.data) socket.data.viewer.closed();
+      else gateway.closed(socket as ServerWebSocket<SocketData>);
+    },
   };
 
   /** `viaTunnel` marks the loopback listener only cloudflared forwards to, whose proxy headers can be trusted. */
   const serve = (hostname: string, port: number, viaTunnel: boolean) =>
-    Bun.serve<SocketData>({
+    Bun.serve<Socket>({
       hostname,
       port,
       maxRequestBodySize: 2 * 1024 * 1024,
@@ -129,6 +147,8 @@ export async function start(options: StartOptions = {}) {
           return admin.fetch(request, requestOrigin(request, server.requestIP(request)?.address, viaTunnel)).then(withSecurityHeaders);
         }
         if (isT3Path(path)) return gateway.fetch(request, (upgrade, data) => (server.upgrade(upgrade, { data }) ? undefined : null));
+        // Before the dashboard's files, which would otherwise answer for any path.
+        if (isWatchPath(path)) return watch.fetch(request, (upgrade, viewer) => (server.upgrade(upgrade, { data: { viewer } }) ? undefined : null));
         // The dashboard lives under /dashboard, a path T3 clients never request, and its files at the root.
         if (dashboard.fetch && (request.method === "GET" || request.method === "HEAD")) return dashboard.fetch(request);
         return new Response("Not found", { status: 404 });
@@ -154,6 +174,7 @@ export async function start(options: StartOptions = {}) {
   await listeners.start();
   tunnel = new CloudflareTunnel({ settings, secrets, traffic, dir, listen: (tunnelPort) => listen("127.0.0.1", tunnelPort, true) });
   void tunnel.apply();
+  void watch.refresh();
 
   // Installed local skills and instructions files follow edits on this machine. Reading a few small files is cheaper than watching them reliably.
   skills.instructions.refresh();
@@ -169,7 +190,7 @@ export async function start(options: StartOptions = {}) {
   };
   // Follows Tailscale coming up or changing address, and the local network appearing or changing.
   const addresses = { name: "addresses", everyMs: 5_000, run: () => listeners.apply() };
-  const stopJobs = runJobs([...bridgeJobs({ hub, fleet, stats, usage, traffic }), localSkills, ...(host ? [] : [addresses])]);
+  const stopJobs = runJobs([...bridgeJobs({ hub, fleet, stats, usage, traffic, watch }), localSkills, ...(host ? [] : [addresses])]);
   void fleet.resume();
   // Accounts saved by older versions lack the details the dashboard shows.
   const githubToken = secrets.get("github.token");

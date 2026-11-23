@@ -8,11 +8,12 @@ import { keyFromText, keyVariable } from "../encryption.ts";
 import { message } from "../fleet.ts";
 import type { Upgrade } from "../gateway/http.ts";
 import { bridgeJobs } from "../jobs.ts";
+import { isWatchPath, type WatchUpgrade } from "../watch/watch.ts";
 import { workersFetchCompat } from "../providers/workers-fetch.ts";
 import { withSecurityHeaders } from "../security-headers.ts";
 import { passwordVariable, secretProblems, setupPage, type Env } from "./env.ts";
 import { AlarmJobs } from "./jobs.ts";
-import { openSocket, upgrader } from "./socket.ts";
+import { openSocket, upgrader, watchUpgrader } from "./socket.ts";
 import { openDoDatabase } from "./sql.ts";
 
 /** An HMAC of the password the dashboard hash was made from, so a new VMBRIDGE_PASSWORD replaces it. */
@@ -31,6 +32,7 @@ interface Running {
   bridge: Bridge;
   admin: Admin;
   upgrade: Upgrade;
+  watchUpgrade: WatchUpgrade;
   jobs: AlarmJobs;
 }
 
@@ -67,6 +69,12 @@ export class BridgeObject extends DurableObject<Env> {
       key: () => ({ key, location: keyVariable, created: false }),
       passwords: webPasswords,
       openSocket,
+      // The Durable Object learns its address from the requests it gets: see `fetch`.
+      addresses: async () => {
+        const url = bridge.settings.get("workerOrigin");
+        return url ? [{ kind: "worker", label: "This Worker", url }] : [];
+      },
+      watchPage: () => env.ASSETS.fetch(new Request(new URL("/dashboard/watch.html", bridge.settings.get("workerOrigin") ?? "https://localhost").href)),
       // Left out: Workers' fetch cannot reach private addresses, which the lookup keeps branch reads away from on Bun.
       resolve: undefined,
       prepare: ({ migrated, markMigrated, secrets, store, skills }) => {
@@ -77,7 +85,7 @@ export class BridgeObject extends DurableObject<Env> {
         if (!migrated) markMigrated();
       },
     });
-    const { secrets, encryption, auth, hub, fleet, stats, usage, traffic, gateway } = bridge;
+    const { secrets, encryption, auth, hub, fleet, stats, usage, traffic, gateway, watch } = bridge;
 
     // The password is a Worker secret. Its hash is made again only when it changes, which also ends every session.
     const password = env.VMBRIDGE_PASSWORD ?? "";
@@ -88,16 +96,22 @@ export class BridgeObject extends DurableObject<Env> {
     }
 
     const admin = new Admin({ ...bridge, version: packageJson.version, startedAt: Date.now(), network: workerNetwork, passwordSource: `the Worker's ${passwordVariable} secret` });
-    const jobs = new AlarmJobs(this.ctx.storage, bridgeJobs({ hub, fleet, stats, usage, traffic }));
+    const jobs = new AlarmJobs(this.ctx.storage, bridgeJobs({ hub, fleet, stats, usage, traffic, watch }));
     void fleet.resume();
     traffic.record({ kind: "system", operation: "VM Bridge started" });
-    return { bridge, admin, upgrade: upgrader(gateway), jobs };
+    return { bridge, admin, upgrade: upgrader(gateway), watchUpgrade: watchUpgrader(), jobs };
   }
 
   async fetch(request: Request): Promise<Response> {
     const running = this.running;
     if (!running) return setupPage(this.failure ? [this.failure] : secretProblems(this.env));
     const url = new URL(request.url);
+    const { settings, watch } = running.bridge;
+    if (settings.get("workerOrigin") !== url.origin) {
+      settings.set("workerOrigin", url.origin);
+      void watch.refresh();
+    }
+    if (isWatchPath(url.pathname)) return (await watch.fetch(request, running.watchUpgrade)) ?? new Response("Not found", { status: 404 });
     if (url.pathname.startsWith("/admin/api/")) {
       // Cloudflare sets cf-connecting-ip itself, replacing any a client sent.
       const origin = { address: request.headers.get("cf-connecting-ip") ?? "unknown", secure: url.protocol === "https:" };
