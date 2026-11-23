@@ -6,6 +6,7 @@ import { Admin } from "./admin.ts";
 import { AgentAuth } from "./agent-auth/profiles.ts";
 import { Clients } from "./auth/clients.ts";
 import { DashboardAuth } from "./auth/dashboard.ts";
+import { importAuthFiles } from "./bun/auth-files.ts";
 import { openDatabase } from "./bun/sqlite.ts";
 import { localKey, openEncryption } from "./encryption.ts";
 import { Fleet } from "./fleet.ts";
@@ -58,15 +59,16 @@ export async function start(options: StartOptions = {}) {
   const store = new Store(db, encryption);
   const traffic = new Traffic(db);
 
-  const agents = new AgentAuth(join(dir, "auths"), settings, encryption);
+  importAuthFiles(join(dir, "auths"), db, encryption);
+  const agents = new AgentAuth(db, settings, encryption);
   const skills = new Skills(db, encryption);
-  // Data saved before encryption existed. Each table moves in one transaction and each file by rename, so a start
-  // cut short finishes the rest next time.
-  const sealed = secrets.sealPlaintext() + store.sealPlaintext() + skills.sealPlaintext() + agents.sealPlaintext();
+  // Data saved before encryption existed. Each table moves in one transaction, so a start cut short finishes the rest
+  // next time.
+  const sealed = secrets.sealPlaintext() + store.sealPlaintext() + skills.sealPlaintext();
   if (sealed > 0) {
     // Rewrites the database so the replaced plain text is not left behind in free pages or the write-ahead log.
-    db.run("VACUUM");
-    db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+    db.exec("VACUUM");
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   }
   const fleet = new Fleet(store, settings, secrets, traffic, agents, skills);
   skills.on("changed", () => {

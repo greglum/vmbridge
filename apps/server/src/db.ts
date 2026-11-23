@@ -220,6 +220,15 @@ export const migrations = [
   );
   CREATE INDEX turns_at ON turns (at);
   `,
+  // Agent sign-ins, which used to be files under `<data dir>/auths` (see bun/auth-files.ts). Both values are sealed
+  // with the contexts the files used, `auths/<id>/profile.json` and `auths/<id>/auth.json`, so they move unchanged.
+  `
+  CREATE TABLE agent_profiles (
+    id TEXT PRIMARY KEY,
+    profile TEXT NOT NULL,
+    codex_auth TEXT
+  );
+  `,
 ];
 
 /**

@@ -1,11 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AgentAuth } from "../src/agent-auth/profiles.ts";
 import { openDatabase } from "../src/bun/sqlite.ts";
 import { Encryption, EncryptionKeyError, keyPath, keyVariable, localKey, openEncryption } from "../src/encryption.ts";
-import { Secrets, Settings } from "../src/settings.ts";
+import { Secrets } from "../src/settings.ts";
 import { Skills } from "../src/skills.ts";
 import { Store } from "../src/store.ts";
 
@@ -93,38 +92,30 @@ describe("the local key", () => {
 
 describe("encrypting data saved in plain text", () => {
   test("seals every kind once, and reads it back", () => {
-    const dir = tempDir();
     const db = openDatabase(":memory:");
     const encryption = new Encryption(key(6));
     db.run("INSERT INTO secrets (name, value) VALUES ('provider.e2b.apiKey', 'e2b-plain'), ('env', '{\"FOO\":\"env-plain\"}')");
     db.run("INSERT INTO vms (id, provider, name, size, state, created_at, t3_token) VALUES ('vm1', 'e2b', 'one', 'medium', 'ready', 0, 't3-plain')");
     const files = JSON.stringify([{ path: "SKILL.md", data: Buffer.from("skill-plain").toString("base64") }]);
     db.run("INSERT INTO skills (name, source, ref, hash, files, installed_at, updated_at) VALUES ('mine', 'local', '/x', 'h', ?, 0, 0)", files);
-    mkdirSync(join(dir, "auths", "opencode-work"), { recursive: true });
-    const profile = { id: "opencode-work", agent: "opencode", method: "api-key", name: "Work", detail: null, createdAt: 0, error: null, token: "oc-plain" };
-    writeFileSync(join(dir, "auths", "opencode-work", "profile.json"), JSON.stringify(profile));
-    writeFileSync(join(dir, "auths", "opencode-work", "profile.json.123.tmp"), JSON.stringify(profile));
 
     const secrets = new Secrets(db, encryption);
     const store = new Store(db, encryption);
     const skills = new Skills(db, encryption, () => []);
-    const agents = new AgentAuth(join(dir, "auths"), new Settings(db), encryption);
-    const seal = () => secrets.sealPlaintext() + store.sealPlaintext() + skills.sealPlaintext() + agents.sealPlaintext();
-    expect(seal()).toBe(5);
+    const seal = () => secrets.sealPlaintext() + store.sealPlaintext() + skills.sealPlaintext();
+    expect(seal()).toBe(4);
     expect(seal()).toBe(0);
 
-    const raw = [
-      ...db.all<{ value: string }>("SELECT value FROM secrets UNION ALL SELECT t3_token FROM vms UNION ALL SELECT files FROM skills").map((row) => row.value),
-      readFileSync(join(dir, "auths", "opencode-work", "profile.json"), "utf8"),
-    ].join("\n");
-    for (const plain of ["e2b-plain", "env-plain", "t3-plain", Buffer.from("skill-plain").toString("base64"), "oc-plain"]) expect(raw).not.toContain(plain);
-    expect(existsSync(join(dir, "auths", "opencode-work", "profile.json.123.tmp"))).toBe(false);
+    const raw = db
+      .all<{ value: string }>("SELECT value FROM secrets UNION ALL SELECT t3_token FROM vms UNION ALL SELECT files FROM skills")
+      .map((row) => row.value)
+      .join("\n");
+    for (const plain of ["e2b-plain", "env-plain", "t3-plain", Buffer.from("skill-plain").toString("base64")]) expect(raw).not.toContain(plain);
 
     expect(secrets.get("provider.e2b.apiKey")).toBe("e2b-plain");
     expect(secrets.get("env")).toBe('{"FOO":"env-plain"}');
     expect(store.vm("vm1")?.t3Token).toBe("t3-plain");
     expect(skills.files("mine")).toEqual(JSON.parse(files));
-    expect(agents.list()).toMatchObject([{ id: "opencode-work", name: "Work" }]);
   });
 
   test("a value moved to another record does not open", () => {

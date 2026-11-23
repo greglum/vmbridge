@@ -1,7 +1,4 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { AgentAuth, InvalidSignIn } from "../src/agent-auth/profiles.ts";
 import type { CodexAuthFile } from "../src/agent-auth/codex.ts";
 import { openDatabase } from "../src/bun/sqlite.ts";
@@ -27,11 +24,13 @@ function fakeFetch(answer: (url: string, init?: RequestInit) => Response) {
 }
 
 function setup() {
-  const dir = mkdtempSync(join(tmpdir(), "vmbridge-auths-"));
   const db = openDatabase(":memory:");
   const settings = new Settings(db);
-  return { dir, settings, auth: new AgentAuth(join(dir, "auths"), settings, testEncryption) };
+  return { db, settings, auth: new AgentAuth(db, settings, testEncryption) };
 }
+
+const stored = (db: ReturnType<typeof openDatabase>, id: string) =>
+  db.one<{ profile: string; codexAuth: string | null }>("SELECT profile, codex_auth AS codexAuth FROM agent_profiles WHERE id = ?", id)!;
 
 const jwt = (claims: Record<string, unknown>) => `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
 
@@ -64,17 +63,14 @@ async function signInCodex(auth: AgentAuth, file: CodexAuthFile) {
 }
 
 describe("agent sign-in profiles", () => {
-  test("keeps tokens in private files and never lists them", async () => {
-    const { dir, auth } = setup();
+  test("keeps tokens encrypted and never lists them", async () => {
+    const { db, auth } = setup();
     fakeFetch(() => Response.json({ data: [] }));
     const profile = await auth.addToken({ agent: "opencode", method: "api-key", name: "Work", token: "oc-secret" });
 
     expect(profile).toMatchObject({ id: "opencode-work", agent: "opencode", inUse: true, error: null });
     expect(JSON.stringify(auth.list())).not.toContain("oc-secret");
-    expect(statSync(join(dir, "auths")).mode & 0o777).toBe(0o700);
-    expect(statSync(join(dir, "auths", "opencode-work")).mode & 0o777).toBe(0o700);
-    expect(statSync(join(dir, "auths", "opencode-work", "profile.json")).mode & 0o777).toBe(0o600);
-    expect(readFileSync(join(dir, "auths", "opencode-work", "profile.json"), "utf8")).not.toContain("oc-secret");
+    expect(stored(db, "opencode-work").profile).not.toContain("oc-secret");
     expect(await auth.vmSecrets()).toEqual({ opencodeApiKey: "oc-secret" });
   });
 
@@ -137,13 +133,13 @@ describe("Claude sign-in", () => {
 
 describe("Codex sign-in", () => {
   test("device sign-in saves a Codex auth.json", async () => {
-    const { dir, auth } = setup();
+    const { db, auth } = setup();
     await signInCodex(auth, codexFile("acct-1", "refresh-1", 10 * day));
     const [profile] = auth.list();
     expect(profile).toMatchObject({ id: "codex-chatgpt-account", agent: "codex", method: "chatgpt", name: "ChatGPT account", detail: "acct-1@example.com", inUse: true });
-    const stored = readFileSync(join(dir, "auths", profile!.id, "auth.json"), "utf8");
-    expect(stored).not.toContain("refresh-1");
-    const saved = JSON.parse(testEncryption.open(stored, `auths/${profile!.id}/auth.json`)) as CodexAuthFile;
+    const { codexAuth } = stored(db, profile!.id);
+    expect(codexAuth).not.toContain("refresh-1");
+    const saved = JSON.parse(testEncryption.open(codexAuth!, `auths/${profile!.id}/auth.json`)) as CodexAuthFile;
     expect(saved).toMatchObject({ auth_mode: "chatgpt", OPENAI_API_KEY: null, tokens: { refresh_token: "refresh-1", account_id: "acct-1" } });
   });
 
