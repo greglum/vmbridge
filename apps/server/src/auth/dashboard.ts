@@ -1,7 +1,7 @@
 import type { Sql } from "../sql.ts";
 import { timingSafeEqual } from "node:crypto";
-import type { Settings } from "../settings.ts";
-import { hashPassword, verifyPassword } from "./password.ts";
+import { passwordHashSecret, type Secrets } from "../settings.ts";
+import type { Passwords } from "./password.ts";
 import { hashToken, newToken } from "./tokens.ts";
 
 const sessionMs = 30 * 86_400_000;
@@ -38,16 +38,17 @@ export class DashboardAuth {
 
   constructor(
     private readonly db: Sql,
-    private readonly settings: Settings,
+    private readonly secrets: Secrets,
+    private readonly passwords: Passwords,
   ) {}
 
   hasKey(): boolean {
-    return this.settings.get("dashboardKeyHash") !== null;
+    return this.secrets.has(passwordHashSecret);
   }
 
   async setKey(key: string): Promise<void> {
     checkKey(key);
-    this.settings.set("dashboardKeyHash", await hashPassword(key));
+    this.secrets.set(passwordHashSecret, await this.passwords.hash(key));
     // A new key ends every existing dashboard session.
     this.db.run("DELETE FROM admin_sessions");
     this.checkWatched();
@@ -177,15 +178,15 @@ export class DashboardAuth {
   /** Checks a key against the one in use, throttling failed attempts. */
   private async verify(key: string, address: string): Promise<boolean> {
     const succeeded = this.throttle(address);
-    const hash = this.settings.get("dashboardKeyHash");
-    const { ok, outdated } = hash ? await verifyPassword(key, hash) : { ok: false, outdated: false };
+    const hash = this.secrets.get(passwordHashSecret);
+    const { ok, outdated } = hash ? await this.passwords.verify(key, hash) : { ok: false, outdated: false };
     if (!ok) return false;
     succeeded();
     // Swaps a hash from an older version for the current kind, keeping every session. Checked again after hashing,
     // with no await before the write, so a password changed meanwhile is never put back.
     if (outdated) {
-      const replacement = await hashPassword(key);
-      if (this.settings.get("dashboardKeyHash") === hash) this.settings.set("dashboardKeyHash", replacement);
+      const replacement = await this.passwords.hash(key);
+      if (this.secrets.get(passwordHashSecret) === hash) this.secrets.set(passwordHashSecret, replacement);
     }
     return true;
   }
