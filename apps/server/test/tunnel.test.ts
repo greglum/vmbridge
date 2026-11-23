@@ -7,7 +7,9 @@ import { Secrets, Settings } from "../src/settings.ts";
 import { Traffic } from "../src/traffic.ts";
 import { testEncryption } from "./key.ts";
 import {
+  addressWorks,
   CloudflareTunnel,
+  type Fetcher,
   findCloudflared,
   isLoggedIn,
   namedTunnelConfig,
@@ -16,6 +18,7 @@ import {
   redact,
   requestOrigin,
   tunnelTokenSecret,
+  waitForAddress,
 } from "../src/bun/tunnel.ts";
 
 const dirs: string[] = [];
@@ -109,8 +112,58 @@ test("redacts tunnel tokens and credentials from log lines", () => {
   expect(redact("INF Registered tunnel connection connIndex=0")).toBe("INF Registered tunnel connection connIndex=0");
 });
 
+describe("address check", () => {
+  const url = "https://fake-quick-tunnel.trycloudflare.com";
+  const found = { Status: 0, Answer: [{ type: 5 }, { type: 1 }] };
+
+  /** Answers DNS over HTTPS with `dns` and the tunnel with `origin`, and records every request. */
+  function network(dns: object, origin: () => Response) {
+    const requests: { url: string; accept: string | null }[] = [];
+    const fetcher: Fetcher = async (target, init) => {
+      requests.push({ url: target, accept: new Headers(init?.headers).get("accept") });
+      return target.startsWith("https://cloudflare-dns.com/") ? Response.json(dns) : origin();
+    };
+    return { fetcher, requests };
+  }
+
+  test("asks public DNS first, and never requests an address that does not resolve yet", async () => {
+    const { fetcher, requests } = network({ Status: 3 }, () => Response.json({ hasPassword: true }));
+    expect(await addressWorks(url, fetcher)).toBe(false);
+    expect(requests).toEqual([{ url: "https://cloudflare-dns.com/dns-query?name=fake-quick-tunnel.trycloudflare.com&type=A", accept: "application/dns-json" }]);
+  });
+
+  test("works only when the request reaches VM Bridge", async () => {
+    expect(await addressWorks(url, network(found, () => new Response("error code: 1033", { status: 530 })).fetcher)).toBe(false);
+    expect(await addressWorks(url, network(found, () => new Response("<html>", { status: 200 })).fetcher)).toBe(false);
+    expect(await addressWorks(url, network(found, () => { throw new TypeError("fetch failed"); }).fetcher)).toBe(false);
+    const { fetcher, requests } = network(found, () => Response.json({ authenticated: false, hasPassword: true }));
+    expect(await addressWorks(url, fetcher)).toBe(true);
+    expect(requests.at(-1)?.url).toBe(`${url}/admin/api/auth`);
+  });
+
+  test("checks again until the address works", async () => {
+    let lookups = 0;
+    const { fetcher } = network({}, () => Response.json({ hasPassword: false }));
+    const resolvesThirdTime: Fetcher = (target, init) => {
+      if (target.startsWith("https://cloudflare-dns.com/") && ++lookups < 3) return Promise.resolve(Response.json({ Status: 3 }));
+      return target.startsWith("https://cloudflare-dns.com/") ? Promise.resolve(Response.json(found)) : fetcher(target, init);
+    };
+    expect(await waitForAddress(url, () => true, { fetcher: resolvesThirdTime, delays: [1] })).toBe(true);
+    expect(lookups).toBe(3);
+  });
+
+  test("gives up at the time limit, or as soon as the address is not wanted", async () => {
+    const { fetcher, requests } = network({ Status: 3 }, () => Response.json({ hasPassword: true }));
+    expect(await waitForAddress(url, () => true, { fetcher, delays: [5], limitMs: 30 })).toBe(false);
+    expect(requests.length).toBeGreaterThan(1);
+    requests.length = 0;
+    expect(await waitForAddress(url, () => false, { fetcher, delays: [1] })).toBe(false);
+    expect(requests).toHaveLength(0);
+  });
+});
+
 describe("lifecycle", () => {
-  function setup(script: string) {
+  function setup(script: string, checkAddress: (url: string, wanted: () => boolean) => Promise<boolean> = async () => true) {
     const dir = tempDir();
     const db = openDatabase(":memory:");
     const settings = new Settings(db);
@@ -124,6 +177,7 @@ describe("lifecycle", () => {
       home: dir,
       PATH: fakeCloudflared(dir, script),
       fallbacks: [],
+      checkAddress,
       listen: (port) => {
         const server = Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("ok") });
         listeners.push(server);
@@ -178,6 +232,38 @@ exec sleep 30`;
     await tunnel.apply();
     expect(tunnel.info()).toMatchObject({ mode: "named", state: "failed", url: null });
     expect(tunnel.info().error).toContain("cloudflared tunnel login");
+    await tunnel.stop();
+  });
+
+  test("shows a quick tunnel's address only once it works", async () => {
+    let works = (_: boolean) => {};
+    const checked: string[] = [];
+    const { settings, tunnel } = setup(quick, (url) => {
+      checked.push(url);
+      return new Promise((resolve) => (works = resolve));
+    });
+    settings.set("cloudflareTunnel", { enabled: true, hostname: null, port: null });
+    await tunnel.apply();
+    await Bun.sleep(300);
+    expect(checked).toEqual(["https://fake-quick-tunnel.trycloudflare.com"]);
+    expect(tunnel.info()).toMatchObject({ state: "starting", url: null });
+    works(true);
+    await tunnel.ready(1_000);
+    expect(tunnel.info()).toMatchObject({ state: "running", url: "https://fake-quick-tunnel.trycloudflare.com", error: null });
+    await tunnel.stop();
+  });
+
+  test("stops a quick tunnel whose address never works, and says so", async () => {
+    const { dir, settings, tunnel } = setup(quick, async () => false);
+    settings.set("cloudflareTunnel", { enabled: true, hostname: null, port: null });
+    await tunnel.apply();
+    await tunnel.ready(5_000);
+    await Bun.sleep(1_500);
+    expect(tunnel.info()).toMatchObject({ state: "failed", url: null });
+    expect(tunnel.info().error).toContain("did not start working");
+    // Stopped for good, not restarted as if it had crashed.
+    const pid = Number(await Bun.file(join(dir, "bin", "pid")).text());
+    expect(() => process.kill(pid, 0)).toThrow();
     await tunnel.stop();
   });
 

@@ -98,7 +98,7 @@ export interface CloudflareInfo {
   hasToken: boolean;
   mode: TunnelMode;
   state: "off" | "starting" | "running" | "failed";
-  /** The public address once the tunnel is running. */
+  /** The public address, once the tunnel is running and it works. */
   url: string | null;
   error: string | null;
   /** The loopback port cloudflared forwards to. A token tunnel's hostname must point at it. */

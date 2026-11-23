@@ -195,9 +195,8 @@ export class Admin {
         if (token) secrets.set(tunnelTokenSecret, token);
       }
       settings.set("cloudflareTunnel", next);
-      const tunnel = this.deps.tunnel();
-      await tunnel.apply();
-      await tunnel.ready(30_000);
+      // Setup mistakes fail within apply. The address can take a minute to work, which the dashboard shows while it waits.
+      await this.deps.tunnel().apply();
       return json(await this.network());
     }
 

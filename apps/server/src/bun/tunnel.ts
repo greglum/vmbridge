@@ -11,6 +11,53 @@ const knownPaths = ["/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared
 const maxBackoffMs = 60_000;
 // A tunnel that ran this long before stopping starts again right away, not after the last crash's delay.
 const stableMs = 60_000;
+/**
+ * Waits before each check of a quick tunnel's address. The first wait gives Cloudflare time to publish the DNS
+ * record, since a lookup that comes too early is remembered as "no such name" for a minute or more.
+ */
+const checkDelays = [3_000, 3_000, 5_000, 5_000, 10_000];
+const checkLimitMs = 180_000;
+
+export type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
+
+/**
+ * Whether the address resolves in public DNS and an HTTPS request to it reaches this VM Bridge. DNS is asked over
+ * HTTPS, so a lookup before the record exists is never remembered by this machine's own resolver.
+ */
+export async function addressWorks(url: string, fetcher: Fetcher = fetch): Promise<boolean> {
+  try {
+    const name = new URL(url).hostname;
+    const dns = await fetcher(`https://cloudflare-dns.com/dns-query?name=${name}&type=A`, {
+      headers: { accept: "application/dns-json" },
+      signal: AbortSignal.timeout(5_000),
+    });
+    const lookup = (await dns.json()) as { Status?: number; Answer?: { type: number }[] };
+    // Status 0 is NOERROR, and type 1 an A record.
+    if (lookup.Status !== 0 || !lookup.Answer?.some((record) => record.type === 1)) return false;
+    // The login check is public and only VM Bridge answers it with this shape.
+    const response = await fetcher(`${url}/admin/api/auth`, { redirect: "manual", signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) return false;
+    const auth = (await response.json()) as { hasPassword?: unknown };
+    return typeof auth.hasPassword === "boolean";
+  } catch {
+    return false;
+  }
+}
+
+/** Checks the address until it works, it is no longer wanted, or the time limit passes. */
+export async function waitForAddress(
+  url: string,
+  wanted: () => boolean,
+  { fetcher = fetch, delays = checkDelays, limitMs = checkLimitMs }: { fetcher?: Fetcher; delays?: number[]; limitMs?: number } = {},
+): Promise<boolean> {
+  const deadline = Date.now() + limitMs;
+  for (let attempt = 0; ; attempt++) {
+    await Bun.sleep(delays[Math.min(attempt, delays.length - 1)] ?? 0);
+    if (!wanted()) return false;
+    if (await addressWorks(url, fetcher)) return true;
+    if (Date.now() >= deadline || !wanted()) return false;
+  }
+}
 
 export function findCloudflared(PATH = process.env.PATH ?? "", fallbacks = knownPaths): string | null {
   return Bun.which("cloudflared", { PATH }) ?? fallbacks.find((path) => existsSync(path)) ?? null;
@@ -90,6 +137,8 @@ interface TunnelDeps {
   home?: string;
   PATH?: string;
   fallbacks?: string[];
+  /** Resolves true once a quick tunnel's address works. Tests replace the real network check. */
+  checkAddress?: (url: string, wanted: () => boolean) => Promise<boolean>;
 }
 
 class TunnelSetupError extends Error {}
@@ -98,7 +147,8 @@ class TunnelSetupError extends Error {}
  * Runs `cloudflared` as a child process while the tunnel is on: a quick tunnel without an account, a named tunnel
  * on the user's hostname when cloudflared is logged in, or a dashboard-made tunnel from its token. cloudflared
  * forwards to its own loopback listener, so requests through it are told apart from local ones. Restarts it with
- * backoff when it stops, and logs its output with tokens hidden.
+ * backoff when it stops, and logs its output with tokens hidden. A quick tunnel's address is only shown once it
+ * works, since devices that look it up too early cannot reach it for minutes.
  */
 export class CloudflareTunnel {
   private child: Subprocess<"ignore", "pipe", "pipe"> | null = null;
@@ -139,7 +189,7 @@ export class CloudflareTunnel {
     };
   }
 
-  /** Resolves once the address is known or the tunnel failed or is off, or after `ms`. */
+  /** Resolves once the address works or the tunnel failed or is off, or after `ms`. */
   async ready(ms: number): Promise<void> {
     if (this.state !== "starting" || this.url) return;
     let done = () => {};
@@ -201,6 +251,8 @@ export class CloudflareTunnel {
       });
       this.child = child;
       let lastError: string | null = null;
+      let address: string | null = null;
+      let connected = false;
       const onLine = (line: string) => {
         const safe = redact(line, token ? [token] : []);
         // Its routine info lines would bury VM Bridge's own output. Warnings, errors and connections stay.
@@ -208,12 +260,11 @@ export class CloudflareTunnel {
         if (generation !== this.generation) return;
         const error = /(?:^|\s)(?:ERR|FTL)\s+(.*)$/.exec(safe)?.[1];
         if (error) lastError = error;
-        const quick = mode === "quick" ? quickTunnelUrl(safe) : null;
-        if (quick) this.update(this.state, quick, null);
-        if (safe.includes("Registered tunnel connection") && this.state !== "running") {
-          const url = mode === "quick" ? this.url : `https://${hostname}`;
-          this.update("running", url, null);
-          this.deps.traffic.record({ kind: "system", operation: "Cloudflare Tunnel connected", status: "ok" });
+        if (mode === "quick") address = quickTunnelUrl(safe) ?? address;
+        if (safe.includes("Registered tunnel connection") && !connected) {
+          connected = true;
+          if (mode !== "quick") this.running(`https://${hostname}`);
+          else if (address) void this.check(generation, child, address);
         }
       };
       // The reason it stopped is in its last lines, so read them all before handling the exit.
@@ -229,6 +280,28 @@ export class CloudflareTunnel {
       if (error instanceof TunnelSetupError) return this.update("failed", null, reason);
       this.failed(generation, reason, false);
     }
+  }
+
+  private running(url: string) {
+    this.update("running", url, null);
+    this.deps.traffic.record({ kind: "system", operation: "Cloudflare Tunnel connected", status: "ok" });
+  }
+
+  /** Shows a quick tunnel's address once it works. One that never does is a fresh start's to replace, not a retry's. */
+  private async check(generation: number, child: Subprocess, url: string) {
+    const wanted = () => generation === this.generation && this.child === child;
+    const works = await (this.deps.checkAddress ?? waitForAddress)(url, wanted);
+    if (!wanted()) return;
+    if (works) {
+      console.log(`Cloudflare Tunnel address works: ${url}`);
+      return this.running(url);
+    }
+    const reason = "The tunnel address did not start working. Turn the tunnel off and on to try a new one.";
+    this.deps.traffic.record({ kind: "system", operation: "Cloudflare Tunnel", status: "error", reason });
+    // A new generation, so cloudflared exiting below does not count as a crash to restart.
+    const stopped = ++this.generation;
+    await this.halt();
+    if (stopped === this.generation) this.update("failed", null, reason);
   }
 
   /** Records the failure and tries again later, waiting longer after each failure in a row. */
