@@ -102,6 +102,13 @@ describe("proxy headers", () => {
     // A local proxy such as tailscale serve on the main listener: its HTTPS is real, a cf-connecting-ip is not.
     expect(requestOrigin(request(proxied), "127.0.0.1", false)).toEqual({ address: "127.0.0.1", secure: true });
   });
+
+  test("tailscale serve's user header gives each tailnet user their own address, only from tailscale serve", () => {
+    const tailnet = { "tailscale-user-login": "alice@example.com", "x-forwarded-proto": "https" };
+    expect(requestOrigin(request(tailnet), "127.0.0.1", false)).toEqual({ address: "tailscale:alice@example.com", secure: true });
+    expect(requestOrigin(request(tailnet), "192.0.2.4", false).address).toBe("192.0.2.4");
+    expect(requestOrigin(request({ ...tailnet, ...proxied }), "127.0.0.1", true).address).toBe("203.0.113.9");
+  });
 });
 
 test("redacts tunnel tokens and credentials from log lines", () => {
