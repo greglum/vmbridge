@@ -1,5 +1,5 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
-import { openDatabase } from "../src/db.ts";
+import { openDatabase } from "../src/bun/sqlite.ts";
 import { Settings } from "../src/settings.ts";
 import { DashboardAuth, TooManyAttempts } from "../src/auth/dashboard.ts";
 import { Clients, clientSessionMs, pairingLinkMs } from "../src/auth/clients.ts";
@@ -146,7 +146,10 @@ describe("first password setup", () => {
 describe("onboarding", () => {
   test("existing installs with a password and a provider count as onboarded", async () => {
     const db = openDatabase(":memory:");
-    db.query("INSERT INTO settings (key, value) VALUES ('dashboardKeyHash', ?), ('providers', ?)").run(JSON.stringify(await Bun.password.hash("old key!")), JSON.stringify(["boxd"]));
+    db.run(
+      "INSERT INTO settings (key, value) VALUES ('dashboardKeyHash', ?), ('providers', ?)",
+      JSON.stringify(await Bun.password.hash("old key!")), JSON.stringify(["boxd"]),
+    );
     expect(new Settings(db).get("onboarded")).toBe(true);
   });
 
@@ -154,7 +157,7 @@ describe("onboarding", () => {
     const db = openDatabase(":memory:");
     expect(new Settings(db).get("onboarded")).toBe(false);
     const withKey = openDatabase(":memory:");
-    withKey.query("INSERT INTO settings (key, value) VALUES ('dashboardKeyHash', '\"hash\"')").run();
+    withKey.run("INSERT INTO settings (key, value) VALUES ('dashboardKeyHash', '\"hash\"')");
     const settings = new Settings(withKey);
     expect(settings.get("onboarded")).toBe(false);
     settings.set("providers", ["boxd"]);

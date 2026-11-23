@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import type { Sql } from "../sql.ts";
 import { timingSafeEqual } from "node:crypto";
 import type { Settings } from "../settings.ts";
 import { hashToken, newToken } from "./tokens.ts";
@@ -22,7 +22,7 @@ export class DashboardAuth {
   private setupCode: string | null = null;
 
   constructor(
-    private readonly db: Database,
+    private readonly db: Sql,
     private readonly settings: Settings,
   ) {}
 
@@ -34,7 +34,7 @@ export class DashboardAuth {
     checkKey(key);
     this.settings.set("dashboardKeyHash", await Bun.password.hash(key));
     // A new key ends every existing dashboard session.
-    this.db.query("DELETE FROM admin_sessions").run();
+    this.db.run("DELETE FROM admin_sessions");
     this.checkWatched();
   }
 
@@ -83,25 +83,21 @@ export class DashboardAuth {
   private session(secure: boolean): string {
     const now = Date.now();
     const token = newToken();
-    this.db
-      .query("INSERT INTO admin_sessions (token_hash, created_at, expires_at) VALUES (?, ?, ?)")
-      .run(hashToken(token), now, now + sessionMs);
-    this.db.query("DELETE FROM admin_sessions WHERE expires_at < ?").run(now);
+    this.db.run("INSERT INTO admin_sessions (token_hash, created_at, expires_at) VALUES (?, ?, ?)", hashToken(token), now, now + sessionMs);
+    this.db.run("DELETE FROM admin_sessions WHERE expires_at < ?", now);
     return cookie(token, sessionMs / 1000, secure);
   }
 
   authenticated(request: Request): boolean {
     const token = readCookie(request, cookieName);
     if (!token) return false;
-    const row = this.db
-      .query<{ expires_at: number }, [string]>("SELECT expires_at FROM admin_sessions WHERE token_hash = ?")
-      .get(hashToken(token));
-    return row !== null && row.expires_at > Date.now();
+    const row = this.db.one<{ expires_at: number }>("SELECT expires_at FROM admin_sessions WHERE token_hash = ?", hashToken(token));
+    return row !== undefined && row.expires_at > Date.now();
   }
 
   logout(request: Request): string {
     const token = readCookie(request, cookieName);
-    if (token) this.db.query("DELETE FROM admin_sessions WHERE token_hash = ?").run(hashToken(token));
+    if (token) this.db.run("DELETE FROM admin_sessions WHERE token_hash = ?", hashToken(token));
     this.checkWatched();
     return cookie("", 0, false);
   }

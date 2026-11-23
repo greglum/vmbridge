@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDatabase } from "../src/db.ts";
+import { openDatabase } from "../src/bun/sqlite.ts";
 import { skillDescription, Skills } from "../src/skills.ts";
 import { applyScript, instructionHash, skillHash, type InstructionsState, type SkillFile } from "../src/vm/skills.ts";
 import { testEncryption } from "./key.ts";

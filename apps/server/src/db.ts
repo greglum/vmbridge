@@ -1,9 +1,7 @@
-import { Database } from "bun:sqlite";
-import { chmodSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import type { Sql } from "./sql.ts";
 
-// Append only. Each entry runs once, in order, tracked by PRAGMA user_version.
-const migrations = [
+// Append only. Entry N (from 1) runs once, in its own transaction, and is then recorded in the migrations table.
+export const migrations = [
   `
   CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE secrets (name TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -224,18 +222,24 @@ const migrations = [
   `,
 ];
 
-export function openDatabase(path: string): Database {
-  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const db = new Database(path, { create: true, strict: true });
-  // The database holds provider keys and tokens: owner-only. WAL side files share the 0700 directory.
-  if (path !== ":memory:") chmodSync(path, 0o600);
-  db.run("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
-  const { user_version: version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get()!;
-  for (let next = version; next < migrations.length; next++) {
+/**
+ * Brings the schema up to date. `legacyVersion` is the `PRAGMA user_version` older versions tracked migrations with:
+ * on the first start with a migrations table, the ones it counts are recorded as done instead of run again.
+ */
+export function migrate(db: Sql, legacyVersion = 0) {
+  db.exec("CREATE TABLE IF NOT EXISTS migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)");
+  const done = () => db.one<{ version: number | null }>("SELECT MAX(version) AS version FROM migrations")?.version ?? 0;
+  if (done() === 0 && legacyVersion > 0) {
     db.transaction(() => {
-      db.run(migrations[next]!);
-      db.run(`PRAGMA user_version = ${next + 1}`);
-    })();
+      for (let version = 1; version <= Math.min(legacyVersion, migrations.length); version++) {
+        db.run("INSERT INTO migrations (version, applied_at) VALUES (?, ?)", version, Date.now());
+      }
+    });
   }
-  return db;
+  for (let next = done(); next < migrations.length; next++) {
+    db.transaction(() => {
+      db.exec(migrations[next]!);
+      db.run("INSERT INTO migrations (version, applied_at) VALUES (?, ?)", next + 1, Date.now());
+    });
+  }
 }

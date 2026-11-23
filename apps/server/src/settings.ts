@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import type { Sql } from "./sql.ts";
 import { machineNameMaxLength, type AgentKind, type GitHubAccount, type ProviderId, type RepoRule, type VmSize } from "@vmbridge/contracts";
 import { Encryption } from "./encryption.ts";
 import type { ServerConfig } from "./gateway/types.ts";
@@ -81,59 +81,58 @@ const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
 };
 
 export class Settings {
-  constructor(private readonly db: Database) {
+  constructor(private readonly db: Sql) {
     // Persist the identity on first start so pairings survive restarts.
-    if (!this.db.query("SELECT 1 FROM settings WHERE key = 'bridgeId'").get()) this.set("bridgeId", defaults.bridgeId());
+    if (!this.db.one("SELECT 1 FROM settings WHERE key = 'bridgeId'")) this.set("bridgeId", defaults.bridgeId());
     // Installs from before onboarding existed that already have a password and a provider never need it.
-    if (!this.db.query("SELECT 1 FROM settings WHERE key = 'onboarded'").get()) {
-      this.set("onboarded", this.get("dashboardKeyHash") !== null && this.get("providers").length > 0);
+    if (!this.db.one("SELECT 1 FROM settings WHERE key = 'onboarded'")) {
+      this.set("onboarded", this.get("dashboardKeyHash") !== undefined && this.get("providers").length > 0);
     }
   }
 
   get<K extends keyof SettingValues>(key: K): SettingValues[K] {
-    const row = this.db.query<{ value: string }, [string]>("SELECT value FROM settings WHERE key = ?").get(key);
+    const row = this.db.one<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
     return row ? (JSON.parse(row.value) as SettingValues[K]) : defaults[key]();
   }
 
   set<K extends keyof SettingValues>(key: K, value: SettingValues[K]): void {
-    this.db
-      .query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
-      .run(key, JSON.stringify(value));
+    this.db.run("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", key, JSON.stringify(value));
   }
 }
 
 /** Secret values never leave the server through the admin API; only their presence does. Stored encrypted. */
 export class Secrets {
   constructor(
-    private readonly db: Database,
+    private readonly db: Sql,
     private readonly encryption: Encryption,
   ) {}
 
   get(name: string): string | undefined {
-    const value = this.db.query<{ value: string }, [string]>("SELECT value FROM secrets WHERE name = ?").get(name)?.value;
+    const value = this.db.one<{ value: string }>("SELECT value FROM secrets WHERE name = ?", name)?.value;
     return value === undefined ? undefined : this.encryption.open(value, `secret:${name}`);
   }
 
   has(name: string): boolean {
-    return this.db.query("SELECT 1 FROM secrets WHERE name = ?").get(name) !== null;
+    return this.db.one("SELECT 1 FROM secrets WHERE name = ?", name) !== undefined;
   }
 
   set(name: string, value: string | null): void {
-    if (value === null || value === "") this.db.query("DELETE FROM secrets WHERE name = ?").run(name);
+    if (value === null || value === "") this.db.run("DELETE FROM secrets WHERE name = ?", name);
     else {
-      this.db
-        .query("INSERT INTO secrets (name, value) VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value")
-        .run(name, this.encryption.seal(value, `secret:${name}`));
+      this.db.run(
+        "INSERT INTO secrets (name, value) VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value",
+        name, this.encryption.seal(value, `secret:${name}`),
+      );
     }
   }
 
   /** Encrypts values saved before secrets were encrypted. Returns how many. */
   sealPlaintext(): number {
-    const rows = this.db.query<{ name: string; value: string }, []>("SELECT name, value FROM secrets").all();
+    const rows = this.db.all<{ name: string; value: string }>("SELECT name, value FROM secrets");
     const plain = rows.filter((row) => !Encryption.isSealed(row.value));
     this.db.transaction(() => {
       for (const row of plain) this.set(row.name, row.value);
-    })();
+    });
     return plain.length;
   }
 }
