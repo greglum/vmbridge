@@ -205,8 +205,10 @@ function ProviderForm({ provider, onSaved }: { provider: ProviderInfo; onSaved: 
           {provider.fields.map((field) => {
             const id = `field-${provider.id}-${field.key}`;
             if (field.kind === "select") {
-              const choices = options[field.key] ?? [];
-              const current = values[field.key] || defaultOption;
+              // Fixed choices need no Load, and the first stands for an unset value.
+              const fixed = field.options;
+              const choices = fixed ?? options[field.key] ?? [];
+              const current = values[field.key] || (fixed?.[0]?.value ?? defaultOption);
               return (
                 <Field key={field.key}>
                   <FieldLabel htmlFor={id}>{field.label}</FieldLabel>
@@ -216,7 +218,7 @@ function ProviderForm({ provider, onSaved }: { provider: ProviderInfo; onSaved: 
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value={defaultOption}>{field.required ? "Choose one" : "Default"}</SelectItem>
+                        {!fixed && <SelectItem value={defaultOption}>{field.required ? "Choose one" : "Default"}</SelectItem>}
                         {current !== defaultOption && !choices.some((choice) => choice.value === current) && <SelectItem value={current}>{current}</SelectItem>}
                         {choices.map((choice) => (
                           <SelectItem key={choice.value} value={choice.value}>
@@ -226,9 +228,11 @@ function ProviderForm({ provider, onSaved }: { provider: ProviderInfo; onSaved: 
                         ))}
                       </SelectContent>
                     </Select>
-                    <Button type="button" variant="outline" size="lg" className="px-4" disabled={save.busy} onClick={() => void loadOptions(field.key)}>
-                      Load
-                    </Button>
+                    {!fixed && (
+                      <Button type="button" variant="outline" size="lg" className="px-4" disabled={save.busy} onClick={() => void loadOptions(field.key)}>
+                        Load
+                      </Button>
+                    )}
                   </div>
                   {field.help && <FieldDescription>{field.help}</FieldDescription>}
                 </Field>
