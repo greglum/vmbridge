@@ -208,7 +208,7 @@ function setup(skillRoots?: string[]) {
     return fleet;
   };
   const fleet = newFleet();
-  return { t3, db, store, settings, secrets, fleet, newFleet, driver, box, events, traffic, recorded, signIns, files, server, skills, synced, order, calls };
+  return { t3, db, store, settings, secrets, fleet, newFleet, driver, box, events, traffic, recorded, signIns, agents, files, server, skills, synced, order, calls };
 }
 
 describe("creating and deleting VMs", () => {
@@ -713,6 +713,26 @@ describe("sign-in changes", () => {
     Object.assign(signIns, { codexAuthJson: '{"account":"b","refresh":1}', codexSignIn: "codex-b@2" });
     await hub.credentialsChanged();
     expect(server.restarts).toBe(1);
+  });
+
+  test("adopting a VM's Codex tokens gives every VM the new file, since it retired theirs", async () => {
+    const { fleet, files, signIns, agents } = setup();
+    signIns.codexAuthJson = "bridge-tokens";
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    const codexPath = "/workspace/.vmbridge/codex/auth.json";
+    files[codexPath] = "refreshed-on-vm";
+    // As AgentAuth does: adopting refreshes, so nothing is due afterwards.
+    Object.assign(agents, {
+      codexDue: () => true,
+      adoptCodex: async (text: string) => {
+        signIns.codexAuthJson = `openai-tokens-for:${text}`;
+        return true;
+      },
+      refreshCodex: async (onlyChanged: boolean) => (onlyChanged ? undefined : signIns.codexAuthJson),
+    });
+    await fleet.syncCodexAuth();
+    expect(files[codexPath]).toBe("openai-tokens-for:refreshed-on-vm");
   });
 
   test("after VM Bridge restarts, an idle VM with older sign-ins restarts T3 before it is used", async () => {
