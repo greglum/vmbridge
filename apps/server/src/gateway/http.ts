@@ -163,7 +163,7 @@ export class T3Gateway {
     const vmId = await this.hub.routeSoon({ threadId });
     const backend = this.hub.fleet.backend(vmId);
     if (!backend) {
-      const cached = this.hub.sleepingProjection(threadId);
+      const cached = this.hub.sleepingProjection(threadId, vmId);
       if (!cached) return json({ error: "vm_sleeping_no_snapshot" }, 503);
       const projection = this.hub.out(cached, vmId) as Projection;
       const snapshotSequence = this.hub.shellSequence(vmId);

@@ -305,8 +305,15 @@ export class Store {
     );
   }
 
+  /** Places a thread on a VM. Only VM Bridge's own placement calls this: a VM's report goes through `claimThread`. */
   setThreadVm(threadId: string, vmId: string) {
     this.db.run("INSERT INTO threads (id, vm_id) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET vm_id = excluded.vm_id", threadId, vmId);
+  }
+
+  /** A VM reporting a thread: it gets the thread when no VM has it yet. Returns whether the thread is that VM's. */
+  claimThread(threadId: string, vmId: string): boolean {
+    this.db.run("INSERT OR IGNORE INTO threads (id, vm_id) VALUES (?, ?)", threadId, vmId);
+    return this.threadVm(threadId) === vmId;
   }
 
   command(id: string) {
@@ -320,21 +327,23 @@ export class Store {
     this.db.run("INSERT OR IGNORE INTO commands (id, vm_id, fingerprint, thread_id) VALUES (?, ?, ?, ?)", id, vmId, fingerprint, threadId);
   }
 
-  projection<T>(threadId: string): T | null {
-    const row = this.db.one<{ data: string }>("SELECT data FROM projections WHERE thread_id = ?", threadId);
+  /** The cached projection of a thread, as the VM holding it reported it. */
+  projection<T>(threadId: string, vmId: string): T | null {
+    const row = this.db.one<{ data: string }>("SELECT data FROM projections WHERE thread_id = ? AND vm_id = ?", threadId, vmId);
     return row ? (JSON.parse(row.data) as T) : null;
   }
 
-  hasProjection(threadId: string) {
-    return this.db.one("SELECT 1 FROM projections WHERE thread_id = ?", threadId) !== undefined;
+  hasProjection(threadId: string, vmId: string) {
+    return this.db.one("SELECT 1 FROM projections WHERE thread_id = ? AND vm_id = ?", threadId, vmId) !== undefined;
   }
 
-  /** Keeps the newest projection: a late, older response never replaces a newer one. */
+  /** Keeps the newest projection: a late, older response never replaces a newer one from the same VM. */
   saveProjection(threadId: string, vmId: string, updatedAt: string | null, data: unknown) {
     this.db.run(
       `INSERT INTO projections (thread_id, vm_id, updated_at, data) VALUES (?, ?, ?, ?)
          ON CONFLICT (thread_id) DO UPDATE SET vm_id = excluded.vm_id, updated_at = excluded.updated_at, data = excluded.data
-         WHERE projections.updated_at IS NULL OR excluded.updated_at IS NULL OR excluded.updated_at >= projections.updated_at`,
+         WHERE projections.vm_id != excluded.vm_id OR projections.updated_at IS NULL OR excluded.updated_at IS NULL
+           OR excluded.updated_at >= projections.updated_at`,
       threadId, vmId, updatedAt, JSON.stringify(data),
     );
   }
