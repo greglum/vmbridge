@@ -101,14 +101,15 @@ export class Backend {
       throw new Error(`The T3 socket on VM ${this.vmId} closed while connecting.`);
     }
     this.socket = socket;
-    socket.onmessage = (event) => this.receive(String(event.data));
-    socket.onclose = () => {
+    // Listeners, not onmessage and onclose, which Workers' WebSocket lacks.
+    socket.addEventListener("message", (event) => this.receive(String(event.data)));
+    socket.addEventListener("close", () => {
       clearInterval(this.heartbeat);
       // First, so the streams this ends see the VM reconnecting rather than a dropped connection.
       if (!this.closing) this.onClose?.();
       for (const [requestId, handler] of this.handlers) handler(disconnected(requestId));
       this.handlers.clear();
-    };
+    });
     this.heartbeat = setInterval(() => this.open && this.socket?.send('{"_tag":"Ping"}'), 5_000);
   }
 

@@ -126,7 +126,8 @@ user. That file sits next to the database, so anyone with a copy of the whole fo
 backup, can decrypt everything in it. To keep the key apart from your data, set
 `VMBRIDGE_ENCRYPTION_KEY` to the key (the file's contents) and move the file out of the folder. On a
 new install you can instead set the variable to 32 random bytes in base64
-(`openssl rand -base64 32`) before the first start.
+(`openssl rand -base64 32`), or to a passphrase of at least 32 characters, before the first start.
+VM Bridge turns a passphrase into a key the same way every time, here and on Cloudflare.
 
 Back up the key somewhere apart from your data, such as a password manager. VM Bridge will not start
 with the wrong key or without its key, so it never overwrites what you saved. If the key is lost, no

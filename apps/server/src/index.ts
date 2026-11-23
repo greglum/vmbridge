@@ -2,37 +2,30 @@
 // can run elsewhere too.
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { WebSocketHandler } from "bun";
 import { version } from "../../../package.json" with { type: "json" };
 import { Admin } from "./admin.ts";
-import { AgentAuth } from "./agent-auth/profiles.ts";
-import { Clients } from "./auth/clients.ts";
 import { DashboardAuth } from "./auth/dashboard.ts";
 import { importAuthFiles } from "./bun/auth-files.ts";
 import { bunMachine } from "./bun/machine.ts";
-import { openDashboard, withSecurityHeaders } from "./bun/dashboard.ts";
+import { openDashboard } from "./bun/dashboard.ts";
+import { withSecurityHeaders } from "./security-headers.ts";
 import { runJobs } from "./bun/jobs.ts";
 import { bunPasswords } from "./bun/password.ts";
 import { openSocket } from "./bun/socket.ts";
 import { openDatabase } from "./bun/sqlite.ts";
-import { localKey, openEncryption } from "./encryption.ts";
-import { Fleet } from "./fleet.ts";
+import { openEncryption } from "./encryption.ts";
+import { openBridge } from "./bridge.ts";
+import { BunNetwork } from "./bun/bridge-network.ts";
+import { localKey } from "./bun/key.ts";
 import { bridgeJobs } from "./jobs.ts";
 import { fetchGitHubAccount } from "./github.ts";
-import { Clones } from "./gateway/clones.ts";
-import { isT3Path, T3Gateway, type SocketData } from "./gateway/http.ts";
-import { Hub } from "./gateway/hub.ts";
-import { RemoteBranches } from "./gateway/repos.ts";
-import { Rpc } from "./gateway/rpc.ts";
+import { isT3Path, type SocketData } from "./gateway/http.ts";
 import { Listeners } from "./bun/listeners.ts";
 import { networkInfo, wantedHosts } from "./bun/network.ts";
-import { Secrets, Settings, type Plaintext } from "./settings.ts";
-import { Skills } from "./skills.ts";
+import { Secrets, type Plaintext } from "./settings.ts";
 import type { Sql } from "./sql.ts";
-import { Store } from "./store.ts";
-import { Traffic } from "./traffic.ts";
-import { CloudflareTunnel } from "./bun/tunnel.ts";
-import { Usage } from "./usage.ts";
-import { Stats } from "./vm/stats.ts";
+import { CloudflareTunnel, requestOrigin } from "./bun/tunnel.ts";
 
 export { version };
 export { childEnv } from "./bun/env.ts";
@@ -84,46 +77,34 @@ export async function start(options: StartOptions = {}) {
   const host = options.host;
   const dir = options.dir ?? dataDir();
   const db = openDatabase(databasePath(dir));
-  const settings = new Settings(db);
-  const { encryption, key: encryptionKey, migrated, markMigrated } = openEncryption(db, (create) => localKey(dir, create));
-  const secrets = new Secrets(db, encryption);
-  const store = new Store(db, encryption);
-  const traffic = new Traffic(db);
-
-  importAuthFiles(join(dir, "auths"), db, encryption);
-  const agents = new AgentAuth(db, settings, encryption);
-  const skills = new Skills(db, encryption, bunMachine(dir));
-  plaintext(db, dir, migrated, [secrets, store, skills]);
-  if (!migrated) markMigrated();
-  const fleet = new Fleet(store, settings, secrets, traffic, agents, skills, openSocket);
-  skills.on("changed", () => {
-    fleet.emit("changed");
-    void fleet.shareSkills();
+  const bridge = openBridge({
+    db,
+    key: (create) => localKey(dir, create),
+    passwords: bunPasswords,
+    openSocket,
+    resolve: async (hostname) => (await Bun.dns.lookup(hostname)).map((entry) => entry.address),
+    machine: bunMachine(dir),
+    prepare: ({ encryption, migrated, markMigrated, secrets, store, skills }) => {
+      importAuthFiles(join(dir, "auths"), db, encryption);
+      plaintext(db, dir, migrated, [secrets, store, skills]);
+      if (!migrated) markMigrated();
+    },
   });
-  const stats = new Stats(fleet);
-  const usage = new Usage(store, () => fleet.connected());
-  for (const event of ["changed", "awake", "offline"] as const) fleet.on(event, () => usage.sync());
-  const hub = new Hub(store, settings, fleet, traffic, stats);
-  agents.onChange = () => {
-    fleet.emit("changed");
-    void hub.credentialsChanged().catch(() => {});
-  };
-  const clones = new Clones(hub);
-  const branches = new RemoteBranches(
-    () => secrets.get("github.token"),
-    async (hostname) => (await Bun.dns.lookup(hostname)).map((entry) => entry.address),
-  );
-  const clients = new Clients(db);
-  const rpc = new Rpc(hub, clones, branches, traffic, () => secrets.has("github.token"));
-  const gateway = new T3Gateway(hub, rpc, clients);
-  const auth = new DashboardAuth(db, secrets, bunPasswords);
+  const { settings, key: encryptionKey, secrets, traffic, skills, fleet, stats, usage, hub, gateway, auth } = bridge;
   // Defined before the server starts listening; its listener only opens once the tunnel is on.
   let tunnel: CloudflareTunnel;
   let listeners: Listeners<SocketData>;
   const served = () => ({ hosts: listeners.hosts(), port: listeners.port, fixed: host !== undefined, localNetwork: settings.get("localNetwork") });
   const development = process.env.VMBRIDGE_DEV === "1";
   const dashboard = await openDashboard(development);
-  const admin = new Admin({ version, startedAt: Date.now(), served, applyAddresses: () => listeners.apply(), settings, secrets, store, fleet, hub, traffic, clients, auth, gateway, agents, stats, skills, usage, tunnel: () => tunnel });
+  const network = new BunNetwork({ served, applyAddresses: () => listeners.apply(), settings, secrets, tunnel: () => tunnel });
+  const admin = new Admin({ ...bridge, version, startedAt: Date.now(), network, passwordSource: null });
+  const websocket: WebSocketHandler<SocketData> = {
+    maxPayloadLength: 16 * 1024 * 1024,
+    open: (socket) => gateway.opened(socket),
+    message: (socket, raw) => gateway.received(socket, String(raw)),
+    close: (socket) => gateway.closed(socket),
+  };
 
   /** `viaTunnel` marks the loopback listener only cloudflared forwards to, whose proxy headers can be trusted. */
   const serve = (hostname: string, port: number, viaTunnel: boolean) =>
@@ -144,13 +125,15 @@ export async function start(options: StartOptions = {}) {
         if (path.startsWith("/dashboard/") && path.endsWith("/")) {
           return new Response(null, { status: 302, headers: { location: `${path.replace(/\/+$/, "")}${search}` } });
         }
-        if (path.startsWith("/admin/api/")) return admin.fetch(request, server, viaTunnel).then(withSecurityHeaders);
-        if (isT3Path(path)) return gateway.fetch(request, server);
+        if (path.startsWith("/admin/api/")) {
+          return admin.fetch(request, requestOrigin(request, server.requestIP(request)?.address, viaTunnel)).then(withSecurityHeaders);
+        }
+        if (isT3Path(path)) return gateway.fetch(request, (upgrade, data) => (server.upgrade(upgrade, { data }) ? undefined : null));
         // The dashboard lives under /dashboard, a path T3 clients never request, and its files at the root.
         if (dashboard.fetch && (request.method === "GET" || request.method === "HEAD")) return dashboard.fetch(request);
         return new Response("Not found", { status: 404 });
       },
-      websocket: gateway.websocket,
+      websocket,
     });
   /**
    * In development each listener serves the dashboard itself, and Bun adds its bundled files (script, styles, icons) to

@@ -1,10 +1,10 @@
-import type { Server } from "bun";
 import {
   agentKinds,
   machineNameMaxLength,
   providerIds,
   vmSizes,
   type LiveMessage,
+  type BridgeNetworkInfo,
   type Overview,
   type ProviderId,
   type ProviderInfo,
@@ -22,25 +22,41 @@ import type { Hub } from "./gateway/hub.ts";
 import type { T3Gateway } from "./gateway/http.ts";
 import { githubName } from "./gateway/repos.ts";
 import { isWorking } from "./gateway/types.ts";
-import { disableTailscaleHttps, enableTailscaleHttps, networkInfo, type Served } from "./bun/network.ts";
 import { providers } from "./providers/index.ts";
 import { envVars, machineName, saveEnvVars, type Secrets, type Settings } from "./settings.ts";
 import { InstructionsError, isInstructionName } from "./instructions.ts";
 import { SkillError, type Skills } from "./skills.ts";
 import type { Store } from "./store.ts";
 import type { Traffic } from "./traffic.ts";
-import { normalizeHostname, requestOrigin, tunnelTokenSecret, type CloudflareTunnel } from "./bun/tunnel.ts";
 import type { Usage } from "./usage.ts";
 import { envNameProblem, envValueProblem } from "./vm/runtime.ts";
-import { AllowedHosts } from "./hosts.ts";
 import type { Stats } from "./vm/stats.ts";
+
+/**
+ * Where VM Bridge is reached, and the settings for it. Bun's covers loopback, Tailscale, the local network and
+ * Cloudflare Tunnel (bun/bridge-network.ts). A Worker has only the address it was reached on.
+ */
+export interface BridgeNetwork {
+  /** `request` is the one asking, whose address a Worker shows as its own. */
+  info(request: Request): Promise<BridgeNetworkInfo>;
+  /** Whether the dashboard's API answers on this Host header, against DNS rebinding. */
+  allows(host: string | null): Promise<boolean>;
+  /** A POST to /network/<setting>, such as the Tailscale HTTPS switch. Null when this runtime has no such setting. */
+  change(setting: string, input: Record<string, unknown>): Promise<BridgeNetworkInfo | null>;
+}
+
+/** Who sent a request, for login throttling, and whether it arrived over HTTPS, for the cookie's Secure flag. */
+export interface RequestOrigin {
+  address: string;
+  secure: boolean;
+}
 
 export interface AdminDeps {
   version: string;
   startedAt: number;
-  served: () => Served;
-  /** Opens or closes listeners to match the local network switch. */
-  applyAddresses: () => Promise<void>;
+  network: BridgeNetwork;
+  /** Where the dashboard password is set instead of the dashboard, such as a Worker's secret. Null when it can be changed here. */
+  passwordSource: string | null;
   settings: Settings;
   secrets: Secrets;
   store: Store;
@@ -54,10 +70,9 @@ export interface AdminDeps {
   stats: Stats;
   skills: Skills;
   usage: Usage;
-  tunnel: () => CloudflareTunnel;
 }
 
-class BadRequest extends Error {}
+export class BadRequest extends Error {}
 
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } });
 const loggedIn = (cookie: string) => new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": cookie } });
@@ -102,16 +117,12 @@ function timeRange(request: Request) {
  * Secret values go in and never come out: responses only say whether each one is set.
  */
 export class Admin {
-  private readonly hosts: AllowedHosts;
+  constructor(private readonly deps: AdminDeps) {}
 
-  constructor(private readonly deps: AdminDeps) {
-    this.hosts = new AllowedHosts(() => this.network(), () => deps.tunnel().info());
-  }
-
-  async fetch(request: Request, server: Server<unknown>, viaTunnel = false): Promise<Response> {
+  async fetch(request: Request, origin: RequestOrigin): Promise<Response> {
     const path = new URL(request.url).pathname.slice("/admin/api".length);
     const { auth } = this.deps;
-    if (!(await this.hosts.allows(request.headers.get("host")))) return new Response("Unknown host", { status: 421 });
+    if (!(await this.deps.network.allows(request.headers.get("host")))) return new Response("Unknown host", { status: 421 });
     if (request.method !== "GET" && request.method !== "HEAD" && !sameOrigin(request)) return json({ error: "Send this from the dashboard." }, 403);
     // A JSON body forces a CORS preflight, which VM Bridge never answers, so other sites cannot post here.
     if (request.method !== "GET" && !request.headers.get("content-type")?.startsWith("application/json")) {
@@ -121,7 +132,7 @@ export class Admin {
       if (path === "/auth" && request.method === "GET") {
         return json({ authenticated: auth.authenticated(request), hasPassword: auth.hasKey(), onboarded: this.deps.settings.get("onboarded") });
       }
-      const { address, secure } = requestOrigin(request, server.requestIP(request)?.address, viaTunnel);
+      const { address, secure } = origin;
       if (path === "/login" && request.method === "POST") {
         const { key } = await body(request);
         const cookie = await auth.login(typeof key === "string" ? key : "", address, secure);
@@ -155,6 +166,7 @@ export class Admin {
       return new Response(JSON.stringify({ ok: true }), { headers });
     }
     if (path === "/key" && method === "POST") {
+      if (this.deps.passwordSource) throw new BadRequest(`Change the password in ${this.deps.passwordSource}.`);
       const input = await body(request);
       const current = typeof input.current === "string" ? input.current : "";
       const next = text(input.key, "The password");
@@ -192,45 +204,10 @@ export class Admin {
       }
     }
 
-    if (path === "/network" && method === "GET") return json(await this.network());
-    if (path === "/network/https" && method === "POST") {
-      const { enabled } = await body(request);
-      const { port } = this.deps.served();
-      if (enabled === true) await enableTailscaleHttps(port);
-      else await disableTailscaleHttps(port);
-      return json(await this.network());
-    }
-    if (path === "/network/local" && method === "POST") {
-      const { enabled } = await body(request);
-      if (typeof enabled !== "boolean") throw new BadRequest("Say whether to turn the local network on.");
-      if (this.deps.served().fixed) throw new BadRequest("VM Bridge was started with --host, which decides this.");
-      settings.set("localNetwork", enabled);
-      await this.deps.applyAddresses();
-      return json(await this.network());
-    }
-    if (path === "/network/cloudflare" && method === "POST") {
-      const input = await body(request);
-      const current = settings.get("cloudflareTunnel");
-      const next = { ...current };
-      if (input.enabled !== undefined) {
-        if (typeof input.enabled !== "boolean") throw new BadRequest("Say whether to turn the tunnel on.");
-        next.enabled = input.enabled;
-      }
-      if (input.hostname !== undefined) {
-        const hostname = input.hostname === null ? "" : text(input.hostname, "The hostname");
-        next.hostname = hostname ? normalizeHostname(hostname) : null;
-        if (hostname && !next.hostname) throw new BadRequest("Use a hostname such as bridge.example.com.");
-      }
-      // Like provider secrets: empty leaves the token as it is, null removes it.
-      if (input.token === null) secrets.set(tunnelTokenSecret, null);
-      else if (input.token !== undefined) {
-        const token = text(input.token, "The token");
-        if (token) secrets.set(tunnelTokenSecret, token);
-      }
-      settings.set("cloudflareTunnel", next);
-      // Setup mistakes fail within apply. The address can take a minute to work, which the dashboard shows while it waits.
-      await this.deps.tunnel().apply();
-      return json(await this.network());
+    if (path === "/network" && method === "GET") return json(await this.deps.network.info(request));
+    if (section === "network" && id && !action && method === "POST") {
+      const changed = await this.deps.network.change(id, await body(request));
+      return changed ? json(changed) : json({ error: "Not found." }, 404);
     }
 
     if (section === "providers") {
@@ -462,7 +439,7 @@ export class Admin {
         } catch (error) {
           throw new BadRequest(message(error));
         }
-        const network = await this.network();
+        const network = await this.deps.network.info(request);
         const urls = network.addresses.map((address) => {
           const url = `${address.url}/pair#token=${link.token}`;
           return { kind: address.kind, label: address.label, url };
@@ -674,12 +651,6 @@ export class Admin {
   }
 
   /** Server-sent events: every traffic event, and a fresh overview whenever the fleet changes. */
-  private async network() {
-    const info = await networkInfo(this.deps.served(), this.deps.tunnel().info());
-    this.hosts.learn(info);
-    return info;
-  }
-
   private events(request: Request) {
     const { traffic, fleet, hub, auth } = this.deps;
     const encoder = new TextEncoder();

@@ -75,7 +75,8 @@ export interface SelectOption {
   detail?: string;
 }
 
-export type AddressKind = "local" | "lan" | "tailscale" | "tailscale-dns" | "tailscale-https" | "cloudflare";
+/** `worker`: the address a Cloudflare Workers deploy is reached on, its workers.dev name or a custom domain. */
+export type AddressKind = "local" | "lan" | "tailscale" | "tailscale-dns" | "tailscale-https" | "cloudflare" | "worker";
 
 export interface Address {
   kind: AddressKind;
@@ -105,7 +106,9 @@ export interface CloudflareInfo {
   port: number | null;
 }
 
+/** VM Bridge running with Bun on the user's machine. */
 export interface NetworkInfo {
+  platform: "bun";
   port: number;
   /** Whether VM Bridge answers on the local network. `fixed`: set by --host, so the switch cannot change it. */
   localNetwork: { enabled: boolean; fixed: boolean };
@@ -118,6 +121,14 @@ export interface NetworkInfo {
   };
   cloudflare: CloudflareInfo;
 }
+
+/** VM Bridge deployed to Cloudflare Workers: one HTTPS address, and no local network, Tailscale or tunnel. */
+export interface WorkerNetworkInfo {
+  platform: "workers";
+  addresses: Address[];
+}
+
+export type BridgeNetworkInfo = NetworkInfo | WorkerNetworkInfo;
 
 export interface PairingLink {
   id: string;

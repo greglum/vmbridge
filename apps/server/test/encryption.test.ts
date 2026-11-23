@@ -4,7 +4,8 @@ import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/bun/sqlite.ts";
-import { Encryption, EncryptionKeyError, keyPath, keyVariable, localKey, openEncryption } from "../src/encryption.ts";
+import { localKey, keyPath } from "../src/bun/key.ts";
+import { Encryption, EncryptionKeyError, keyFromText, keyVariable, openEncryption } from "../src/encryption.ts";
 import { Secrets } from "../src/settings.ts";
 import { Skills } from "../src/skills.ts";
 import { Store } from "../src/store.ts";
@@ -164,5 +165,39 @@ describe("encrypting data saved in plain text", () => {
     secrets.set("github.token", "gh-token");
     db.run("UPDATE secrets SET name = 'provider.e2b.apiKey' WHERE name = 'github.token'");
     expect(() => secrets.get("provider.e2b.apiKey")).toThrow(EncryptionKeyError);
+  });
+});
+
+describe("encryption key text", () => {
+  test("a base64 key is used as is and a passphrase is stretched the same way every time", () => {
+    const raw = crypto.getRandomValues(new Uint8Array(32));
+    expect(Buffer.from(keyFromText(` ${Buffer.from(raw).toString("base64")}\n`, "key"))).toEqual(Buffer.from(raw));
+    const passphrase = "correct horse battery staple and a few more words";
+    const derived = keyFromText(passphrase, "key");
+    expect(derived.length).toBe(32);
+    expect(Buffer.from(keyFromText(passphrase, "key"))).toEqual(Buffer.from(derived));
+    expect(Buffer.from(keyFromText(`${passphrase}!`, "key"))).not.toEqual(Buffer.from(derived));
+  });
+
+  test("a short passphrase is refused without showing it", () => {
+    let thrown: unknown;
+    try {
+      keyFromText("short secret words", keyVariable);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(EncryptionKeyError);
+    expect(String(thrown)).toContain(`${keyVariable} must hold`);
+    expect(String(thrown)).not.toContain("short secret words");
+  });
+
+  test("a passphrase in the key file opens the same data", () => {
+    const dir = tempDir();
+    try {
+      writeFileSync(keyPath(dir), "a long passphrase kept in the key file, not base64", { mode: 0o600 });
+      expect(Buffer.from(localKey(dir, false).key)).toEqual(Buffer.from(keyFromText("a long passphrase kept in the key file, not base64", "key")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

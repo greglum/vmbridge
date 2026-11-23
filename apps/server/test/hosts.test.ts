@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CloudflareInfo, NetworkInfo } from "@vmbridge/contracts";
-import { AllowedHosts } from "../src/hosts.ts";
+import { AllowedHosts } from "../src/bun/hosts.ts";
 import { dashboardKey, start } from "../src/index.ts";
 
 describe("the dashboard API over HTTP", () => {
@@ -63,6 +63,7 @@ describe("allowed hosts", () => {
       const addresses = [{ kind: "local" as const, label: "This machine", url: "http://127.0.0.1:3774" }];
       if (state.tailscaleHttps) addresses.push({ kind: "local", label: "Tailscale HTTPS", url: state.tailscaleHttps });
       return {
+        platform: "bun",
         localNetwork: { enabled: false, fixed: false },
         port: 3774,
         addresses,

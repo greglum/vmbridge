@@ -3,7 +3,7 @@ import { parseAsStringLiteral, useQueryState } from "nuqs";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "sonner";
 import { Add01Icon, CommandLineIcon, ComputerIcon, Delete02Icon, GitBranchIcon, GithubIcon, GlobalIcon, Key01Icon, UnfoldMoreIcon } from "@hugeicons/core-free-icons";
-import { machineNameMaxLength, vmSizes, type BridgeSettings, type CloudflareInfo, type NetworkInfo, type Overview, type ProviderId, type RepoRule, type VmSize } from "@vmbridge/contracts";
+import { machineNameMaxLength, vmSizes, type BridgeNetworkInfo, type BridgeSettings, type CloudflareInfo, type Overview, type ProviderId, type RepoRule, type VmSize } from "@vmbridge/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -293,17 +293,19 @@ function RepoRules({ overview }: { overview: Overview }) {
 }
 
 function Addresses() {
-  const [network, setNetwork] = useState<NetworkInfo | null>(null);
+  const [network, setNetwork] = useState<BridgeNetworkInfo | null>(null);
   const action = useAction();
-  useEffect(() => void action.run(async () => setNetwork(await api<NetworkInfo>("/network"))), []);
-  const cloudflare = network?.cloudflare;
+  useEffect(() => void action.run(async () => setNetwork(await api<BridgeNetworkInfo>("/network"))), []);
+  // On Cloudflare Workers the dashboard has only its own address: no local network, Tailscale or tunnel.
+  const local = network?.platform === "bun" ? network : null;
+  const cloudflare = local?.cloudflare;
   // Until the tunnel works or gives up, check again every few seconds.
   useEffect(() => {
     if (!cloudflare?.enabled || cloudflare.state === "running") return;
-    const timer = setTimeout(() => void api<NetworkInfo>("/network").then(setNetwork, () => {}), 3_000);
+    const timer = setTimeout(() => void api<BridgeNetworkInfo>("/network").then(setNetwork, () => {}), 3_000);
     return () => clearTimeout(timer);
   }, [network]);
-  const tailscale = network?.tailscale;
+  const tailscale = local?.tailscale;
   return (
     <>
       <Section title="Addresses">
@@ -337,17 +339,17 @@ function Addresses() {
           )}
         </ItemGroup>
       </Section>
-      {network && (
-        <Section title="Local network" actions={<Badge variant="secondary">{network.localNetwork.enabled ? "On" : "Off"}</Badge>}>
+      {local && (
+        <Section title="Local network" actions={<Badge variant="secondary">{local.localNetwork.enabled ? "On" : "Off"}</Badge>}>
           <Item variant="outline">
             <ItemContent>
               <ItemTitle>
                 <label htmlFor="local-network">Devices on this network</label>
               </ItemTitle>
               <ItemDescription>
-                {network.localNetwork.fixed
+                {local.localNetwork.fixed
                   ? "Set by --host when VM Bridge started."
-                  : network.localNetwork.enabled
+                  : local.localNetwork.enabled
                     ? "They can connect over plain HTTP, which others on this Wi-Fi can read."
                     : "Off, so they can't connect. Tailscale and Cloudflare Tunnel still work."}
               </ItemDescription>
@@ -355,15 +357,15 @@ function Addresses() {
             <ItemActions>
               <Switch
                 id="local-network"
-                checked={network.localNetwork.enabled}
-                disabled={action.busy || network.localNetwork.fixed}
-                onCheckedChange={(enabled) => void action.run(async () => setNetwork(await api<NetworkInfo>("/network/local", { body: { enabled } })))}
+                checked={local.localNetwork.enabled}
+                disabled={action.busy || local.localNetwork.fixed}
+                onCheckedChange={(enabled) => void action.run(async () => setNetwork(await api<BridgeNetworkInfo>("/network/local", { body: { enabled } })))}
               />
             </ItemActions>
           </Item>
         </Section>
       )}
-      {network && (
+      {local && (
         <Section title="Tailscale" actions={<Badge variant="secondary">{tailscale?.running ? "Connected" : tailscale?.installed ? "Not connected" : "Not installed"}</Badge>}>
           {tailscale?.running ? (
             <Item variant="outline">
@@ -378,7 +380,7 @@ function Addresses() {
                   id="tailscale-https"
                   checked={Boolean(tailscale.httpsUrl)}
                   disabled={action.busy}
-                  onCheckedChange={(enabled) => void action.run(async () => setNetwork(await api<NetworkInfo>("/network/https", { body: { enabled } })))}
+                  onCheckedChange={(enabled) => void action.run(async () => setNetwork(await api<BridgeNetworkInfo>("/network/https", { body: { enabled } })))}
                 />
               </ItemActions>
             </Item>
@@ -390,7 +392,7 @@ function Addresses() {
         </Section>
       )}
       {action.error && <FieldError>{action.error}</FieldError>}
-      {network && <CloudflareTunnel info={network.cloudflare} onChange={setNetwork} />}
+      {local && <CloudflareTunnel info={local.cloudflare} onChange={setNetwork} />}
     </>
   );
 }
@@ -407,13 +409,13 @@ function TunnelBadge({ state }: { state: CloudflareInfo["state"] }) {
   );
 }
 
-function CloudflareTunnel({ info, onChange }: { info: CloudflareInfo; onChange: (network: NetworkInfo) => void }) {
+function CloudflareTunnel({ info, onChange }: { info: CloudflareInfo; onChange: (network: BridgeNetworkInfo) => void }) {
   const [hostname, setHostname] = useState(info.hostname ?? "");
   const [token, setToken] = useState("");
   const action = useAction();
   const save = (body: { enabled?: boolean; hostname?: string; token?: string | null }) =>
     void action.run(async () => {
-      onChange(await api<NetworkInfo>("/network/cloudflare", { body }));
+      onChange(await api<BridgeNetworkInfo>("/network/cloudflare", { body }));
       setToken("");
     });
 

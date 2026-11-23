@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { withSecurityHeaders } from "../src/bun/dashboard.ts";
+import { withSecurityHeaders } from "../src/security-headers.ts";
 import { start } from "../src/index.ts";
 
 let dir: string;

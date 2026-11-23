@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
 import type { TrafficEvent } from "@vmbridge/contracts";
-import type { Server } from "bun";
 import { Clients } from "../src/auth/clients.ts";
 import { openDatabase } from "../src/bun/sqlite.ts";
-import { T3Gateway, type SocketData } from "../src/gateway/http.ts";
+import { T3Gateway } from "../src/gateway/http.ts";
 import type { Hub } from "../src/gateway/hub.ts";
 import type { Rpc } from "../src/gateway/rpc.ts";
 import { keptErrors, problemMs, refusedWindowMs, Traffic } from "../src/traffic.ts";
@@ -61,10 +60,10 @@ describe("request noise", () => {
     const pushed: TrafficEvent[] = [];
     traffic.subscribe((event) => pushed.push(event));
     const gateway = new T3Gateway({ traffic } as unknown as Hub, {} as Rpc, new Clients(openDatabase(":memory:")));
-    const server = {} as Server<SocketData>;
+    const upgrade = () => null;
     try {
-      for (let i = 0; i < 600; i++) await gateway.fetch(new Request(`http://bridge/api/${"x".repeat(8000)}${i}`), server);
-      await gateway.fetch(new Request("http://bridge/api/projects", { headers: { authorization: "Bearer wrong" } }), server);
+      for (let i = 0; i < 600; i++) await gateway.fetch(new Request(`http://bridge/api/${"x".repeat(8000)}${i}`), upgrade);
+      await gateway.fetch(new Request("http://bridge/api/projects", { headers: { authorization: "Bearer wrong" } }), upgrade);
       expect(pushed).toEqual([]);
       jest.advanceTimersByTime(refusedWindowMs);
       expect(pushed.map((event) => event.operation)).toEqual(["Refused 601 requests without a device session"]);
