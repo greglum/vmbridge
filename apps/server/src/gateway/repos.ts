@@ -145,18 +145,27 @@ export class RemoteBranches {
 
 const decoder = new TextDecoder();
 
-/** Git pkt-lines without their trailing newline. Flush, delimiter and response-end packets are null. */
+/**
+ * Git pkt-lines without their trailing newline. Flush, delimiter and response-end packets are null. Throws on a
+ * malformed or cut-off packet, and on an `ERR` packet, which ends the exchange.
+ */
 export function pktLines(bytes: Uint8Array): (string | null)[] {
+  const unreadable = () => new Error("The repository sent an unreadable answer.");
   const lines: (string | null)[] = [];
-  for (let at = 0; at + 4 <= bytes.length; ) {
-    const length = Number.parseInt(decoder.decode(bytes.subarray(at, at + 4)), 16);
-    if (!Number.isInteger(length) || (length > 2 && length < 4)) throw new Error("The repository sent an unreadable answer.");
+  let at = 0;
+  while (at < bytes.length) {
+    const header = decoder.decode(bytes.subarray(at, at + 4));
+    if (!/^[0-9a-f]{4}$/i.test(header)) throw unreadable();
+    const length = Number.parseInt(header, 16);
     if (length <= 2) {
       lines.push(null);
       at += 4;
       continue;
     }
-    lines.push(decoder.decode(bytes.subarray(at + 4, at + length)).replace(/\n$/, ""));
+    if (length < 4 || at + length > bytes.length) throw unreadable();
+    const line = decoder.decode(bytes.subarray(at + 4, at + length)).replace(/\n$/, "");
+    if (line.startsWith("ERR ")) throw new Error("The repository refused to list its branches.");
+    lines.push(line);
     at += length;
   }
   return lines;
@@ -181,9 +190,10 @@ export function parseRefs(lines: (string | null)[]): Omit<Branches, "at"> {
 }
 
 /**
- * What `git ls-remote --symref <url> HEAD refs/heads/*` prints, read over git's smart HTTP protocol with fetch, so it
- * runs wherever VM Bridge does. HTTPS only and never prompts. Asks for protocol version 2, which lists only branches,
- * and reads version 0's full list from servers without it. `token` goes to github.com only.
+ * What `git ls-remote --symref <url> HEAD refs/heads/*` prints, read over git's HTTP protocol with fetch, so it runs
+ * wherever VM Bridge does. HTTPS only and never prompts. Like git, it asks for protocol version 2, which lists only
+ * branches, reads version 0's full list from servers without it, and reads a static ("dumb") server's refs file when
+ * the answer is not the smart protocol's. `token` goes to github.com only.
  */
 export async function lsRemote(url: string, token?: string): Promise<Branches> {
   const parsed = URL.parse(url);
@@ -200,14 +210,36 @@ export async function lsRemote(url: string, token?: string): Promise<Branches> {
       signal: AbortSignal.timeout(10_000),
     }).catch(() => null);
     if (!response?.ok) throw new Error("Could not read the repository's branches.");
-    return pktLines(new Uint8Array(await response.arrayBuffer()));
+    return { type: response.headers.get("content-type") ?? "", bytes: new Uint8Array(await response.arrayBuffer()) };
   };
 
-  let advertised = await request("/info/refs?service=git-upload-pack");
+  const info = await request("/info/refs?service=git-upload-pack");
+  // Git tells the two apart the same way: only smart servers answer with this type.
+  if (!info.type.startsWith("application/x-git-upload-pack-advertisement")) return dumbRefs(info.bytes, () => request("/HEAD"));
+  let advertised = pktLines(info.bytes);
   // Smart HTTP may start with a service line and a flush before what the protocol itself sends.
   if (advertised[0]?.startsWith("# service=")) advertised = advertised.slice(2);
   if (advertised[0] !== "version 2") return { ...parseRefs(advertised), at: Date.now() };
-  const body = `${pkt("command=ls-refs\n")}0001${pkt("symrefs\n")}${pkt("ref-prefix HEAD\n")}${pkt("ref-prefix refs/heads/\n")}0000`;
+  // A SHA-256 repository refuses a request that does not name its object format, so echo the advertised one.
+  const objectFormat = advertised.find((line) => line?.startsWith("object-format="));
+  const capabilities = `${pkt("command=ls-refs\n")}${objectFormat ? pkt(`${objectFormat}\n`) : ""}`;
+  const body = `${capabilities}0001${pkt("symrefs\n")}${pkt("ref-prefix HEAD\n")}${pkt("ref-prefix refs/heads/\n")}0000`;
   const refs = await request("/git-upload-pack", { method: "POST", body, headers: { "content-type": "application/x-git-upload-pack-request" } });
-  return { ...parseRefs(refs), at: Date.now() };
+  return { ...parseRefs(pktLines(refs.bytes)), at: Date.now() };
+}
+
+/** A static server's `info/refs`, one `<oid>\t<ref>` per line, with the default branch from its `HEAD` file. */
+async function dumbRefs(bytes: Uint8Array, head: () => Promise<{ bytes: Uint8Array }>): Promise<Branches> {
+  const names = new Set<string>();
+  for (const line of decoder.decode(bytes).split("\n")) {
+    if (!line) continue;
+    const match = /^[0-9a-f]{40,64}\t(\S+)$/.exec(line);
+    // Anything else, such as a login page, is not a repository.
+    if (!match) throw new Error("The repository sent an unreadable answer.");
+    if (match[1]!.startsWith("refs/heads/")) names.add(match[1]!.slice("refs/heads/".length));
+  }
+  const defaultBranch = await head()
+    .then(({ bytes }) => /^ref: refs\/heads\/(\S+)/.exec(decoder.decode(bytes))?.[1] ?? null)
+    .catch(() => null);
+  return { names: [...names].sort(), defaultBranch, at: Date.now() };
 }

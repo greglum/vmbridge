@@ -17,8 +17,13 @@ interface Seen {
   body: string;
 }
 
-/** Answers like a git host speaking protocol version 2, or 0 with `v0`. Records every request. */
-function gitHost(options: { v0?: boolean; status?: number } = {}) {
+const advertisement = { "content-type": "application/x-git-upload-pack-advertisement" };
+
+/**
+ * Answers like a git host speaking protocol version 2, or 0 with `v0`. `sha256` advertises that object format, and
+ * `refs` replaces the ls-refs answer. Records every request.
+ */
+function gitHost(options: { v0?: boolean; status?: number; sha256?: boolean; refs?: string } = {}) {
   const seen: Seen[] = [];
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
@@ -30,12 +35,14 @@ function gitHost(options: { v0?: boolean; status?: number } = {}) {
         return new Response(
           `${service}${pkt(`${oid} HEAD\0multi_ack symref=HEAD:refs/heads/trunk agent=git/2\n`)}${pkt(`${oid} refs/heads/trunk\n`)}` +
             `${pkt(`${oid} refs/heads/feature/é\n`)}${pkt(`${oid} refs/tags/v1\n`)}${pkt(`${oid} refs/pull/1/head\n`)}0000`,
+          { headers: advertisement },
         );
       }
-      return new Response(`${service}${pkt("version 2\n")}${pkt("ls-refs=unborn\n")}0000`);
+      const format = options.sha256 ? pkt("object-format=sha256\n") : "";
+      return new Response(`${service}${pkt("version 2\n")}${pkt("ls-refs=unborn\n")}${format}0000`, { headers: advertisement });
     }
     if (url.endsWith("/git-upload-pack")) {
-      return new Response(`${pkt(`${oid} HEAD symref-target:refs/heads/main\n`)}${pkt(`${oid} refs/heads/main\n`)}${pkt(`${oid} refs/heads/dev\n`)}0000`);
+      return new Response(options.refs ?? `${pkt(`${oid} HEAD symref-target:refs/heads/main\n`)}${pkt(`${oid} refs/heads/main\n`)}${pkt(`${oid} refs/heads/dev\n`)}0000`);
     }
     return new Response("", { status: 404 });
   }) as typeof fetch;
@@ -46,6 +53,46 @@ describe("reading branches over git's HTTP protocol", () => {
   test("pkt-lines, with flush and delimiter packets as null", () => {
     expect(pktLines(bytes(`${pkt("one\n")}0000${pkt("two")}0001`))).toEqual(["one", null, "two", null]);
     expect(() => pktLines(bytes("zzzz"))).toThrow();
+  });
+
+  test("a cut-off or malformed packet is an error, never a shorter branch name", () => {
+    const main = pkt(`${oid} refs/heads/main\n`);
+    expect(() => pktLines(bytes(main.slice(0, -2)))).toThrow("unreadable");
+    expect(() => pktLines(bytes(`${main}00`))).toThrow("unreadable");
+    expect(() => pktLines(bytes(`00zz${main}`))).toThrow("unreadable");
+    expect(() => pktLines(bytes("0003"))).toThrow("unreadable");
+  });
+
+  test("an ERR packet fails the lookup, and an empty repository does not", async () => {
+    gitHost({ refs: `${pkt("ERR repository unavailable\n")}` });
+    await expect(lsRemote("https://codeberg.org/acme/app.git")).rejects.toThrow("refused");
+    // An empty repository is still fine.
+    gitHost({ refs: "0000" });
+    expect(await lsRemote("https://codeberg.org/acme/empty.git")).toMatchObject({ names: [], defaultBranch: null });
+  });
+
+  test("a SHA-256 repository gets its object format back in the request", async () => {
+    const seen = gitHost({ sha256: true });
+    await lsRemote("https://git.example.com/app.git");
+    expect(seen[1]!.body).toStartWith(`${pkt("command=ls-refs\n")}${pkt("object-format=sha256\n")}0001`);
+  });
+
+  test("a static (dumb) server's refs file, with the default branch from HEAD", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.endsWith("/info/refs?service=git-upload-pack")) {
+        return new Response(`${oid}\trefs/heads/trunk\n${oid}\trefs/heads/docs\n${oid}\trefs/tags/v1\n`, { headers: { "content-type": "text/plain" } });
+      }
+      if (url.endsWith("/HEAD")) return new Response("ref: refs/heads/trunk\n");
+      return new Response("", { status: 404 });
+    }) as typeof fetch;
+    expect(await lsRemote("https://static.example.com/app.git")).toMatchObject({ names: ["docs", "trunk"], defaultBranch: "trunk" });
+    expect(seen).toEqual(["https://static.example.com/app.git/info/refs?service=git-upload-pack", "https://static.example.com/app.git/HEAD"]);
+    // A page that is not a refs file, such as a login page, is an error rather than an empty repository.
+    globalThis.fetch = (async (_input: string | URL | Request) => new Response("<html>Sign in</html>", { headers: { "content-type": "text/html" } })) as typeof fetch;
+    await expect(lsRemote("https://static.example.com/app.git")).rejects.toThrow("unreadable");
   });
 
   test("version 0 refs: the default branch from the symref capability, branches only", () => {
