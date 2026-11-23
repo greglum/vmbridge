@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { SandboxError } from "@opencoredev/sandbox-sdk";
-import { kubi } from "../src/providers/kubi.ts";
+import { agentKeyProblem, kubi } from "../src/providers/kubi.ts";
 
 interface Call {
   method: string;
@@ -221,5 +221,36 @@ describe("Kubi errors and key checks", () => {
       "The Kubi API key is missing the network permission. Create a key in the Kubi dashboard with read, exec, power and network ticked.",
     );
     await expect(fakeKubi(() => me(["read"])).provider.verify()).rejects.toThrow("missing the exec and power and network permissions");
+  });
+});
+
+describe("the key for agents", () => {
+  const me = (permissions: string[], status = 200) => {
+    const seen: string[] = [];
+    const fetch = async (input: string, init: RequestInit) => {
+      seen.push(`${input} ${new Headers(init.headers).get("authorization")}`);
+      return Response.json(status === 200 ? { credential: { permissions }, screens: { count: 1, cap: 1 } } : { error: { code: "UNAUTHENTICATED" } }, { status });
+    };
+    return { seen, fetch };
+  };
+
+  test("is taken with read and control only, as Kubi reports them for that key", async () => {
+    const { seen, fetch } = me(["read", "control"]);
+    expect(await agentKeyProblem("kubi_agents", fetch)).toBeNull();
+    expect(seen).toEqual(["https://api.trykubi.com/v1/me Bearer kubi_agents"]);
+  });
+
+  test("is refused when it can run commands, power screens or open ports, naming what to untick", async () => {
+    expect(await agentKeyProblem("kubi_agents", me(["read", "control", "exec"]).fetch)).toBe(
+      "The key for agents has exec ticked. Untick it: create a key with only read and control ticked.",
+    );
+    expect(await agentKeyProblem("kubi_agents", me(["read", "control", "exec", "power", "network"]).fetch)).toBe(
+      "The key for agents has exec, power and network ticked. Untick them: create a key with only read and control ticked.",
+    );
+  });
+
+  test("is refused without control, or when Kubi refuses it", async () => {
+    expect(await agentKeyProblem("kubi_agents", me(["read"]).fetch)).toBe("The key for agents is missing control. Create a key with only read and control ticked.");
+    expect(await agentKeyProblem("kubi_agents", me([], 401).fetch)).toBe("Kubi refused the key for agents. Check it, or create a new one in the Kubi dashboard.");
   });
 });

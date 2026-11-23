@@ -221,10 +221,17 @@ export class Admin {
         const { values } = await body(request);
         if (!values || typeof values !== "object") throw new BadRequest("Send the provider's values.");
         const options = { ...settings.get("providerOptions")[id] };
+        // Every value is checked before any is saved.
         for (const field of definition.fields) {
           const value = (values as Record<string, unknown>)[field.key];
           if (value === undefined) continue;
           if (value !== null && typeof value !== "string") throw new BadRequest(`${field.label} must be text.`);
+          const problem = field.kind === "secret" && value?.trim() ? await definition.check?.(field.key, value.trim()) : null;
+          if (problem) throw new BadRequest(problem);
+        }
+        for (const field of definition.fields) {
+          const value = (values as Record<string, string | null | undefined>)[field.key];
+          if (value === undefined) continue;
           const trimmed = value?.trim() ?? "";
           if (field.kind === "secret") {
             // An empty secret field means "leave it as it is"; null clears it.
@@ -240,6 +247,8 @@ export class Admin {
           void fleet.reconcile(id);
         }
         fleet.emit("changed");
+        // Some values reach the provider's VMs, such as Kubi's key for agents.
+        void hub.credentialsChanged().catch(() => {});
         return json(this.providerInfo(id));
       }
       if (action === "verify" && method === "POST") {

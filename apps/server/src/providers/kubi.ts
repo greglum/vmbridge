@@ -75,6 +75,36 @@ export interface KubiOptions {
   fetch?: Fetch;
 }
 
+/**
+ * The key for agents goes on every Kubi VM, where agents browse the web: a page could talk one into using it. So it
+ * may look and use the mouse and keyboard, never run commands, power screens or open ports.
+ */
+const agentPermissions = ["read", "control"] as const;
+const agentForbidden = ["exec", "power", "network"] as const;
+
+/** Why `apiKey` cannot be the key for agents, or null when it can. Kubi's answer is never quoted, only its status. */
+export async function agentKeyProblem(apiKey: string, fetcher: Fetch = fetch): Promise<string | null> {
+  let response: Response;
+  try {
+    response = await fetcher("https://api.trykubi.com/v1/me", { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(15_000) });
+  } catch {
+    return "Kubi did not answer while checking the key for agents. Try again.";
+  }
+  if (response.status === 401) return "Kubi refused the key for agents. Check it, or create a new one in the Kubi dashboard.";
+  if (!response.ok) return `Kubi answered ${response.status} while checking the key for agents. Try again.`;
+  const me = (await response.json().catch(() => null)) as Me | null;
+  const permissions = me?.credential?.permissions;
+  if (!Array.isArray(permissions)) return "Kubi did not say what the key for agents may do. Try again.";
+  const extra = agentForbidden.filter((permission) => permissions.includes(permission));
+  const words = (list: readonly string[]) => (list.length > 1 ? `${list.slice(0, -1).join(", ")} and ${list.at(-1)}` : list.join(""));
+  if (extra.length) {
+    return `The key for agents has ${words(extra)} ticked. Untick ${extra.length > 1 ? "them" : "it"}: create a key with only read and control ticked.`;
+  }
+  const absent = agentPermissions.filter((permission) => !permissions.includes(permission));
+  if (absent.length) return `The key for agents is missing ${words(absent)}. Create a key with only read and control ticked.`;
+  return null;
+}
+
 const keyLabel = "sandbox-sdk-key";
 const inputDir = "/tmp/.sandbox-sdk/input";
 /** Kubi's cap on an exec's command. The SDK's background process start alone is about 15000 characters. */
@@ -513,7 +543,16 @@ export const kubiProvider: ProviderDefinition = {
       ],
       help: "A disposable VM is deleted after 7 days asleep.",
     },
+    {
+      key: "agentKey",
+      label: "Key for agents' screen control",
+      kind: "secret",
+      required: false,
+      placeholder: "kubi_...",
+      help: "Optional. Adding it turns on Kubi screen control for agents. Create a key with only read and control ticked.",
+    },
   ],
+  check: (field, value) => (field === "agentKey" ? agentKeyProblem(value) : Promise.resolve(null)),
   features: {
     // Kubi cannot pause. Stop keeps the disk; memory and processes go, and T3 starts again on wake.
     sleep: "stop",
