@@ -129,7 +129,9 @@ export class Admin {
     const [, section, id, action] = path.split("/");
 
     if (path === "/logout" && method === "POST") {
-      return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": auth.logout(request) } });
+      const headers = new Headers({ "content-type": "application/json" });
+      for (const cookie of auth.logout(request)) headers.append("set-cookie", cookie);
+      return new Response(JSON.stringify({ ok: true }), { headers });
     }
     if (path === "/key" && method === "POST") {
       const input = await body(request);

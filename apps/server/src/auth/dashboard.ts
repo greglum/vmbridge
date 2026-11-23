@@ -6,6 +6,9 @@ import { hashToken, newToken } from "./tokens.ts";
 
 const sessionMs = 30 * 86_400_000;
 const cookieName = "vmbridge_session";
+// Over HTTPS the prefix makes browsers refuse the cookie unless it is Secure and host-only, so no other site on the
+// domain and no plain HTTP page can set or replace it. Sessions issued before it keep working under the plain name.
+const secureCookieName = `__Host-${cookieName}`;
 const maxFailures = 5;
 /**
  * Failed attempts allowed from every address together, so guesses spread over many addresses (a botnet, or one IPv6
@@ -103,17 +106,18 @@ export class DashboardAuth {
   }
 
   authenticated(request: Request): boolean {
-    const token = readCookie(request, cookieName);
-    if (!token) return false;
-    const row = this.db.one<{ expires_at: number }>("SELECT expires_at FROM admin_sessions WHERE token_hash = ?", hashToken(token));
-    return row !== undefined && row.expires_at > Date.now();
+    const now = Date.now();
+    return sessionTokens(request).some((token) => {
+      const row = this.db.one<{ expires_at: number }>("SELECT expires_at FROM admin_sessions WHERE token_hash = ?", hashToken(token));
+      return row !== undefined && row.expires_at > now;
+    });
   }
 
-  logout(request: Request): string {
-    const token = readCookie(request, cookieName);
-    if (token) this.db.run("DELETE FROM admin_sessions WHERE token_hash = ?", hashToken(token));
+  /** Returns Set-Cookie values that clear the cookie under both names. */
+  logout(request: Request): string[] {
+    for (const token of sessionTokens(request)) this.db.run("DELETE FROM admin_sessions WHERE token_hash = ?", hashToken(token));
     this.checkWatched();
-    return cookie("", 0, false);
+    return [cookie("", 0, false), cookie("", 0, true)];
   }
 
   /**
@@ -207,7 +211,11 @@ export class TooManyAttempts extends Error {
 }
 
 function cookie(value: string, maxAge: number, secure: boolean): string {
-  return `${cookieName}=${value}; Path=/; Max-Age=${maxAge};${secure ? " Secure;" : ""} HttpOnly; SameSite=Strict`;
+  return `${secure ? secureCookieName : cookieName}=${value}; Path=/; Max-Age=${maxAge};${secure ? " Secure;" : ""} HttpOnly; SameSite=Strict`;
+}
+
+function sessionTokens(request: Request): string[] {
+  return [readCookie(request, secureCookieName), readCookie(request, cookieName)].filter((token) => token !== null);
 }
 
 function readCookie(request: Request, name: string): string | null {

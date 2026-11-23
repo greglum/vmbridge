@@ -209,15 +209,19 @@ function shake(element: HTMLElement | null) {
   element.animate({ transform: ["translateX(0)", "translateX(-6px)", "translateX(5px)", "translateX(-3px)", "translateX(0)"] }, { duration: 320, easing: "ease-out" });
 }
 
+// The setup code rides in the fragment, which never reaches the server or its logs. It is read once as the page loads
+// and taken out of the address right away, so a setup that fails or is left unfinished does not keep it in history.
+// A reload then asks for the terminal's link again, which works until the password is set.
+const setupCode = new URLSearchParams(location.hash.slice(1)).get("code");
+if (setupCode) history.replaceState(null, "", `${location.pathname}${location.search}`);
+
 function PasswordStep({ onDone }: { onDone: () => void }) {
-  // The fragment never reaches the server or its logs.
-  const [code] = useState(() => new URLSearchParams(location.hash.slice(1)).get("code"));
   const [key, setKey] = useState("");
   const [again, setAgain] = useState("");
   const fields = useRef<HTMLDivElement>(null);
   const action = useAction();
 
-  if (!code) {
+  if (!setupCode) {
     return (
       <StepFrame title="Open your setup link">
         <div className="overflow-hidden rounded-xl border bg-card">
@@ -244,10 +248,8 @@ function PasswordStep({ onDone }: { onDone: () => void }) {
       action.setError("The passwords do not match.");
       return shake(fields.current);
     }
-    void action.run(() => api("/setup", { body: { code, key } })).then((ok) => {
+    void action.run(() => api("/setup", { body: { code: setupCode, key } })).then((ok) => {
       if (!ok) return shake(fields.current);
-      // Used up, so it should not linger in history.
-      history.replaceState(null, "", location.pathname);
       onDone();
     });
   };
@@ -415,7 +417,7 @@ function GitHubStep({ account, back, onNext }: { account: GitHubAccount | null; 
     >
       {connected ? (
         <div key="account" className="pop-in flex items-center gap-4 rounded-xl border p-4 sm:p-5">
-          <img src={connected.avatarUrl} alt="" className="size-10 shrink-0 rounded-full bg-accent" />
+          <img src={connected.avatarUrl} alt="" referrerPolicy="no-referrer" className="size-10 shrink-0 rounded-full bg-accent" />
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="truncate font-medium">{connected.name ?? connected.login}</span>
             <span className="truncate text-muted-foreground">@{connected.login}</span>
@@ -562,7 +564,7 @@ function Done({ overview, sync, onOpen }: { overview: Overview; sync: boolean; o
       label: "GitHub",
       value: overview.github ? (
         <span className="flex min-w-0 items-center gap-2">
-          <img src={overview.github.avatarUrl} alt="" className="size-5 shrink-0 rounded-full bg-accent" />
+          <img src={overview.github.avatarUrl} alt="" referrerPolicy="no-referrer" className="size-5 shrink-0 rounded-full bg-accent" />
           <span className="truncate">@{overview.github.login}</span>
         </span>
       ) : (
