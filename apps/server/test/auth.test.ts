@@ -205,6 +205,69 @@ describe("first password setup", () => {
   });
 });
 
+describe("login throttling", () => {
+  const setup = async () => {
+    const db = openDatabase(":memory:");
+    const auth = new DashboardAuth(db, new Settings(db));
+    await auth.setKey("correct horse");
+    return auth;
+  };
+  // Wrong keys sent all at once, as a script would.
+  const guesses = (auth: DashboardAuth, addresses: string[]) => Promise.allSettled(addresses.map((address) => auth.login("nope nope", address, false)));
+  const refused = (results: PromiseSettledResult<string | null>[]) =>
+    results.filter((result) => result.status === "rejected" && result.reason instanceof TooManyAttempts).length;
+
+  test("failures at the same time all count, and the ones past the limit are refused without hashing", async () => {
+    const auth = await setup();
+    const hashes = spyOn(crypto.subtle, "deriveBits");
+    try {
+      const results = await guesses(auth, Array.from({ length: 50 }, () => "203.0.113.1"));
+      expect(refused(results)).toBe(45);
+      expect(hashes).toHaveBeenCalledTimes(5);
+    } finally {
+      hashes.mockRestore();
+    }
+    expect(auth.login("correct horse", "203.0.113.1", false)).rejects.toBeInstanceOf(TooManyAttempts);
+  });
+
+  test("every address together has a limit, which this machine is not held to and which ends a minute later", async () => {
+    const auth = await setup();
+    // Each address stays under its own limit, as when guesses come from a botnet or one IPv6 block.
+    const results = await guesses(auth, Array.from({ length: 100 }, (_, i) => `2001:db8::${i.toString(16)}`));
+    expect(refused(results)).toBe(80);
+    expect(auth.login("correct horse", "198.51.100.7", false)).rejects.toBeInstanceOf(TooManyAttempts);
+    expect(await auth.login("correct horse", "127.0.0.1", false)).not.toBeNull();
+    setSystemTime(Date.now() + 61_000);
+    try {
+      expect(await auth.login("correct horse", "198.51.100.7", false)).not.toBeNull();
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  test("tailnet users each have their own limit, and every loopback address shares one", async () => {
+    const auth = await setup();
+    for (let i = 0; i < 5; i++) await auth.login("nope nope", "tailscale:mallory@example.com", false);
+    expect(auth.login("correct horse", "tailscale:mallory@example.com", false)).rejects.toBeInstanceOf(TooManyAttempts);
+    expect(await auth.login("correct horse", "tailscale:alice@example.com", false)).not.toBeNull();
+    for (let i = 0; i < 5; i++) await auth.login("nope nope", `127.0.0.${i + 1}`, false);
+    expect(auth.login("correct horse", "::1", false)).rejects.toBeInstanceOf(TooManyAttempts);
+  });
+
+  test("addresses are forgotten once their attempts are a minute old", async () => {
+    const auth = await setup();
+    await guesses(auth, Array.from({ length: 300 }, (_, i) => `10.0.${i >> 8}.${i & 255}`));
+    expect(auth["failures"].size).toBeLessThanOrEqual(20);
+    setSystemTime(Date.now() + 61_000);
+    try {
+      expect(await auth.login("nope nope", "10.1.0.1", false)).toBeNull();
+      expect(auth["failures"].size).toBe(1);
+    } finally {
+      setSystemTime();
+    }
+  });
+});
+
 describe("onboarding", () => {
   test("existing installs with a password and a provider count as onboarded", async () => {
     const db = openDatabase(":memory:");

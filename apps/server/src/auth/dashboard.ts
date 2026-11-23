@@ -7,17 +7,31 @@ import { hashToken, newToken } from "./tokens.ts";
 const sessionMs = 30 * 86_400_000;
 const cookieName = "vmbridge_session";
 const maxFailures = 5;
+/**
+ * Failed attempts allowed from every address together, so guesses spread over many addresses (a botnet, or one IPv6
+ * block) stay this slow too. Attempts from this machine itself do not count toward it and are never refused by it,
+ * so an attack from outside can lock out everyone else for as long as it runs, plus a minute, but never someone at
+ * the machine VM Bridge runs on. Loopback keeps its own per-address limit, shared by every loopback address and by
+ * anyone `tailscale serve` cannot name (tagged devices, Funnel).
+ */
+const maxGlobalFailures = 20;
 const failureWindowMs = 60_000;
 // How often a watched session is checked, which catches one that simply expired.
 const watchEveryMs = 30_000;
 
 /**
  * The dashboard has one secret key, chosen in onboarding or from the terminal. Logging in with it
- * issues a cookie session. Failed attempts are throttled per address because the dashboard
- * listens on the LAN and tailnet.
+ * issues a cookie session. Failed attempts are throttled per address, and across all of them, because the dashboard
+ * listens on the LAN and tailnet and can be put on the internet with Cloudflare Tunnel.
  */
 export class DashboardAuth {
+  /**
+   * Recent attempts per address that failed or are still being checked. Only attempts the limits let through are added
+   * and expired ones are swept, so it never holds many more than `maxGlobalFailures` addresses.
+   */
   private readonly failures = new Map<string, number[]>();
+  /** The same for every address but loopback together, oldest first. */
+  private readonly globalFailures: number[] = [];
   private readonly watchers = new Set<() => void>();
   /** Kept only in memory: a restart makes a new one. */
   private setupCode: string | null = null;
@@ -61,16 +75,14 @@ export class DashboardAuth {
    * password is too short; a short password leaves the code usable.
    */
   async claim(code: string, key: string, address: string, secure: boolean): Promise<string | null> {
-    const failed = this.throttle(address);
+    const succeeded = this.throttle(address);
     const expected = this.setupCode;
-    if (!expected || this.hasKey() || !timingSafeEqual(Buffer.from(hashToken(code)), Buffer.from(hashToken(expected)))) {
-      failed();
-      return null;
-    }
+    if (!expected || this.hasKey() || !timingSafeEqual(Buffer.from(hashToken(code)), Buffer.from(hashToken(expected)))) return null;
+    // A right code with a short password is not a guess, so it is not counted.
+    succeeded();
     checkKey(key);
     // Spent before hashing the password, so a second request racing this one cannot use it too.
     this.setupCode = null;
-    this.failures.delete(address);
     await this.setKey(key);
     return this.session(secure);
   }
@@ -127,24 +139,48 @@ export class DashboardAuth {
     for (const check of this.watchers) check();
   }
 
-  /** Throws when the address failed too often lately. Returns a function that records one more failure. */
-  private throttle(address: string) {
+  /**
+   * Counts an attempt as failed before its key is checked, with nothing awaited in between, so attempts running at the
+   * same time all see each other and the ones past a limit are refused before any hashing. Throws when the address,
+   * or every address together, failed too often lately. Returns a function to call once the attempt succeeds, which
+   * clears the address's failures and takes this attempt back from the shared count.
+   */
+  private throttle(address: string): () => void {
     const now = Date.now();
-    const recent = (this.failures.get(address) ?? []).filter((at) => now - at < failureWindowMs);
-    if (recent.length >= maxFailures) throw new TooManyAttempts();
-    return () => void this.failures.set(address, [...recent, now]);
+    this.sweep(now);
+    const local = isLoopback(address);
+    // One bucket for every loopback address, which a local process can otherwise pick from 127.0.0.0/8 at will.
+    const bucket = local ? "loopback" : address;
+    const recent = this.failures.get(bucket) ?? [];
+    if (recent.length >= maxFailures || (!local && this.globalFailures.length >= maxGlobalFailures)) throw new TooManyAttempts();
+    recent.push(now);
+    this.failures.set(bucket, recent);
+    if (!local) this.globalFailures.push(now);
+    return () => {
+      this.failures.delete(bucket);
+      const index = local ? -1 : this.globalFailures.lastIndexOf(now);
+      if (index >= 0) this.globalFailures.splice(index, 1);
+    };
   }
 
-  /** Checks a key against the one in use, throttling failed attempts per address. */
+  /** Forgets attempts older than the window. */
+  private sweep(now: number) {
+    for (const [bucket, times] of this.failures) {
+      const recent = times.filter((at) => now - at < failureWindowMs);
+      if (recent.length) this.failures.set(bucket, recent);
+      else this.failures.delete(bucket);
+    }
+    const expired = this.globalFailures.findIndex((at) => now - at < failureWindowMs);
+    this.globalFailures.splice(0, expired === -1 ? this.globalFailures.length : expired);
+  }
+
+  /** Checks a key against the one in use, throttling failed attempts. */
   private async verify(key: string, address: string): Promise<boolean> {
-    const failed = this.throttle(address);
+    const succeeded = this.throttle(address);
     const hash = this.settings.get("dashboardKeyHash");
     const { ok, outdated } = hash ? await verifyPassword(key, hash) : { ok: false, outdated: false };
-    if (!ok) {
-      failed();
-      return false;
-    }
-    this.failures.delete(address);
+    if (!ok) return false;
+    succeeded();
     // Swaps a hash from an older version for the current kind, keeping every session. Checked again after hashing,
     // with no await before the write, so a password changed meanwhile is never put back.
     if (outdated) {
@@ -156,6 +192,8 @@ export class DashboardAuth {
 }
 
 export class InvalidPassword extends Error {}
+
+export const isLoopback = (address: string) => /^(?:127\.|::ffff:127\.)/.test(address) || address === "::1";
 
 function checkKey(key: string) {
   if (key.length < 8) throw new InvalidPassword("The password needs at least 8 characters.");

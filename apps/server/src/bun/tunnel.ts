@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import type { CloudflareInfo, TunnelMode } from "@vmbridge/contracts";
+import { isLoopback } from "../auth/dashboard.ts";
 import type { Secrets, Settings } from "../settings.ts";
 import type { Traffic } from "../traffic.ts";
 
@@ -105,20 +106,21 @@ export function namedTunnelConfig(options: { id: string; credentials: string; ho
   ].join("\n");
 }
 
-const isLoopback = (address: string) => /^(?:127\.|::ffff:127\.)/.test(address) || address === "::1";
-
 /**
  * Who sent a request, for login throttling, and whether it arrived over HTTPS, for the cookie's Secure flag.
  * Proxy headers are only believed from loopback: `cf-connecting-ip` on the listener only cloudflared is told about
- * (Cloudflare's edge sets it, replacing any the client sent), and `x-forwarded-proto` from a local proxy such as
- * `tailscale serve`. Anyone else could send either header to dodge throttling.
+ * (Cloudflare's edge sets it, replacing any the client sent), and `x-forwarded-proto` and `tailscale-user-login` from a
+ * local proxy such as `tailscale serve` on the main listener. Anyone else could send them to dodge throttling.
  */
 export function requestOrigin(request: Request, peer: string | undefined, viaTunnel: boolean): { address: string; secure: boolean } {
   const address = peer ?? "unknown";
   const local = isLoopback(address);
   const forwardedHttps = local && request.headers.get("x-forwarded-proto") === "https";
   if (viaTunnel && local) return { address: request.headers.get("cf-connecting-ip") ?? address, secure: forwardedHttps };
-  return { address, secure: new URL(request.url).protocol === "https:" || forwardedHttps };
+  // Every tailnet user arrives from loopback through `tailscale serve`, which names them (replacing any the client
+  // sent), so each gets their own throttle instead of sharing one. Tagged devices and Funnel get no name.
+  const login = local ? request.headers.get("tailscale-user-login") : null;
+  return { address: login ? `tailscale:${login}` : address, secure: new URL(request.url).protocol === "https:" || forwardedHttps };
 }
 
 export interface TunnelListener {
