@@ -12,11 +12,12 @@ description: Shows the user this machine's screen live. Use when the user asks t
 
 # Show the screen
 
-This machine's desktop can be watched live in any browser. VM Bridge keeps the link in \`${watchUrlPath}\`.
+This machine's desktop can be watched live in a browser. VM Bridge keeps the link in \`${watchUrlPath}\`.
 
 1. Run \`cat ${watchUrlPath}\`.
-2. If the file is there, give the user the link as a clickable Markdown link, for example \`[Open the screen](<link>)\`, and tell them to open it. The page shows the screen as it changes; it is view-only. Do not open it with a browser on this machine: the user would not see it.
-3. If the file is missing, tell the user the screen link is turned off in VM Bridge, and that they can turn it on in this VM's details in the VM Bridge dashboard.
+2. If the file is missing, tell the user the screen link is turned off in VM Bridge, and that they can turn it on in this VM's details in the VM Bridge dashboard. Stop there.
+3. Open the link in the user's T3 Code browser panel with T3 Code's \`preview_open\` tool (from the \`t3-code\` server), passing the link as \`url\` and \`open: true\`. Do not use the \`browser\` or \`desktop\` tools for this: they drive this machine's own screen, which is what the user wants to watch.
+4. Also give the user the link as a clickable Markdown link, for example \`[Open the screen](<link>)\`. If \`preview_open\` is not available, fails, or reports that the page did not load, say the link could not open in T3 Code and that they can open it themselves. The page shows the screen as it changes; it is view-only.
 
 The link lets anyone who has it watch the screen. Share it only with the user, and do not write it into files, commits or messages to anyone else.
 `;

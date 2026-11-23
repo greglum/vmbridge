@@ -9,13 +9,13 @@ import type { WatchLinks } from "./links.ts";
 import { ViewOnlyFilter } from "./rfb.ts";
 import { watchUrlPath } from "./skill.ts";
 
-/** A watch page's socket: Bun's ServerWebSocket, or a Worker's WebSocket. */
+/** A watch page's socket, or a T3 client's preview stream: Bun's ServerWebSocket, or a Worker's WebSocket. */
 export interface ViewerSocket {
-  send(data: Uint8Array): unknown;
+  send(data: string | Uint8Array): unknown;
   close(code?: number, reason?: string): void;
 }
 
-/** One watch page's stream. The runtime's socket reports to it. */
+/** One relayed stream, a watch page's or a preview tab's. The runtime's socket reports to it. */
 export interface Viewer {
   opened(socket: ViewerSocket): void;
   received(data: string | ArrayBuffer | Uint8Array): void;

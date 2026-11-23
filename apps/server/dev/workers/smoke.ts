@@ -1,6 +1,6 @@
 /**
  * Checks a running VM Bridge Worker the way the dashboard and a T3 client use it: logs in, pairs a device, opens the
- * T3 WebSocket and asks for the server config. Prints no secret. Used by run.ts and against a real deploy:
+ * T3 WebSocket and asks for the server config, and opens a preview stream. Prints no secret. Used by run.ts and against a real deploy:
  *
  *   VMBRIDGE_PASSWORD=... bun apps/server/dev/workers/smoke.ts https://vmbridge.example.workers.dev
  */
@@ -78,12 +78,31 @@ export async function rpc(base: string, device: Paired, frames: unknown[]) {
   return replies;
 }
 
+/** Opens a preview tab's stream for a thread no VM has, which VM Bridge accepts and closes as T3 closes a gone tab. */
+export async function previewStream(base: string, device: Paired) {
+  const ticketResponse = await fetch(`${base}/api/auth/websocket-ticket/media`, { method: "POST", headers: { authorization: `Bearer ${device.accessToken}` } });
+  const { ticket } = (await ticketResponse.json()) as { ticket: string };
+  check(ticketResponse.ok && Boolean(ticket), "the device gets a media ticket");
+  const url = new URL(`/api/preview-stream/ws?threadId=none&tabId=none&wsTicket=${encodeURIComponent(ticket)}`, base);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(url);
+  const code = await new Promise<number>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("The preview stream did not close within 20 s")), 20_000);
+    socket.onclose = (event) => {
+      clearTimeout(timer);
+      resolve(event.code);
+    };
+  });
+  check(code === 4404, "a preview stream for a tab no VM has closes as a gone tab");
+}
+
 export async function smoke(base: string, password: string) {
   const cookie = await login(base, password);
   const device = await pair(base, cookie);
   const replies = await rpc(base, device, [{ _tag: "Ping" }, { _tag: "Request", id: "1", tag: "server.probe", payload: {} }]);
   check(replies.some((reply) => reply._tag === "Pong"), "the T3 socket answers a ping");
   check(replies.some((reply) => reply._tag === "Exit" && reply.requestId === "1"), "the T3 socket answers an RPC request");
+  await previewStream(base, device);
   return { cookie, device };
 }
 

@@ -77,7 +77,7 @@ export function upgrader(gateway: T3Gateway): Upgrade {
   };
 }
 
-/** Accepts watch pages' sockets in the Durable Object, the same way as T3 clients'. */
+/** Accepts relayed streams' sockets (watch pages', preview tabs') in the Durable Object, the same way as T3 clients'. */
 export function watchUpgrader(): WatchUpgrade {
   return (request, viewer) => {
     if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") return null;
