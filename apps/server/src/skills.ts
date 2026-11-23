@@ -71,26 +71,48 @@ function describe(files: SkillFile[]) {
   return skillMd ? skillDescription(Buffer.from(skillMd.data, "base64").toString("utf8")) : null;
 }
 
-/** Every file in a local skill folder, following symlinks. */
-export function readSkillFolder(dir: string): SkillFile[] {
+const inside = (path: string, folder: string) => path === folder || path.startsWith(folder + sep);
+
+/**
+ * Every file in a local skill folder. The folder may itself be a link (a skill kept in some repository), but inside it
+ * only links that stay inside it are followed: the files go to every VM, so a link to `~/.ssh` must not carry its
+ * target along. Nothing in `exclude` (VM Bridge's data folder) is read either way. Sockets, pipes and devices are
+ * skipped. A hard link can't be told apart from an ordinary file, but git never makes one, so cloned skills have none.
+ */
+export function readSkillFolder(dir: string, exclude?: string): SkillFile[] {
+  const root = realpathSync(dir);
+  let excluded: string | undefined;
+  try {
+    excluded = exclude && realpathSync(exclude);
+  } catch {}
   const files: SkillFile[] = [];
   let bytes = 0;
-  const walk = (current: string, depth: number) => {
-    if (depth > 8) return;
+  /** `above` holds the real folders this one is in, so a link back up to one of them is not walked again and again. */
+  const walk = (current: string, above: string[]) => {
+    // The skill folder and eight levels below it.
+    if (above.length > 9) return;
     for (const name of readdirSync(current).sort()) {
       if (skipped.has(name)) continue;
       const path = join(current, name);
-      const info = statSync(path, { throwIfNoEntry: false });
-      if (info?.isDirectory()) walk(path, depth + 1);
-      else if (info?.isFile()) {
+      let real: string;
+      try {
+        real = realpathSync(path);
+      } catch {
+        continue;
+      }
+      if (!inside(real, root) || (excluded && inside(real, excluded))) continue;
+      const info = statSync(real, { throwIfNoEntry: false });
+      if (info?.isDirectory()) {
+        if (!above.includes(real)) walk(path, [...above, real]);
+      } else if (info?.isFile()) {
         bytes += info.size;
         if (bytes > maxBytes) throw new SkillError(`${tildify(dir)} is larger than 5 MB.`);
-        const data = readFileSync(path).toString("base64");
-        files.push({ path: relative(dir, path).split(sep).join("/"), data, ...(info.mode & 0o111 ? { executable: true } : {}) });
+        const data = readFileSync(real).toString("base64");
+        files.push({ path: relative(root, path).split(sep).join("/"), data, ...(info.mode & 0o111 ? { executable: true } : {}) });
       }
     }
   };
-  walk(dir, 0);
+  walk(root, [root]);
   if (!files.some((file) => file.path === "SKILL.md")) throw new SkillError(`${tildify(dir)} has no SKILL.md.`);
   return files;
 }
@@ -111,6 +133,8 @@ export class Skills extends EventEmitter<{ changed: [] }> {
     private readonly encryption: Encryption,
     /** The folders to find this machine's skills in. */
     private readonly roots = localRoots,
+    /** VM Bridge's data folder, never read as part of a skill. */
+    private readonly dataDir?: string,
   ) {
     super();
     this.settings = new Settings(db);
@@ -233,16 +257,17 @@ export class Skills extends EventEmitter<{ changed: [] }> {
     return this.installFromSkillsSh(row.ref, row.name);
   }
 
+  /** Only a skill in this machine's skill folders, so the dashboard can't be used to read any other folder. */
   installLocal(path: string) {
-    let dir: string;
+    let dir: string | undefined;
     try {
       dir = realpathSync(untildify(path));
-    } catch {
-      throw new SkillError(`${path} does not exist.`);
-    }
-    const name = basename(dir);
-    this.claim(name, "local", dir);
-    return this.save(name, "local", dir, readSkillFolder(dir));
+    } catch {}
+    // One answer for a missing folder and a forbidden one, so this can't be used to probe the disk either.
+    const skill = this.scan().find((found) => found.dir === dir);
+    if (!skill) throw new SkillError(`${path} is not a skill in this machine's skill folders.`);
+    this.claim(skill.name, "local", skill.dir);
+    return this.save(skill.name, "local", skill.dir, readSkillFolder(skill.dir, this.dataDir));
   }
 
   remove(name: string) {
@@ -294,7 +319,7 @@ export class Skills extends EventEmitter<{ changed: [] }> {
     for (const row of this.rows().filter((entry) => entry.source === "local")) {
       let files: SkillFile[];
       try {
-        files = readSkillFolder(row.ref);
+        files = readSkillFolder(row.ref, this.dataDir);
       } catch {
         if (all && !existsSync(join(row.ref, "SKILL.md"))) {
           this.remove(row.name);
@@ -310,7 +335,7 @@ export class Skills extends EventEmitter<{ changed: [] }> {
       if (names.has(name) || !validName.test(name)) continue;
       names.add(name);
       try {
-        if (this.save(name, "local", dir, readSkillFolder(dir))) changed = true;
+        if (this.save(name, "local", dir, readSkillFolder(dir, this.dataDir))) changed = true;
       } catch {}
     }
     return changed;

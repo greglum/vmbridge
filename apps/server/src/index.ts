@@ -66,7 +66,7 @@ export async function start(options: StartOptions = {}) {
 
   importAuthFiles(join(dir, "auths"), db, encryption);
   const agents = new AgentAuth(db, settings, encryption);
-  const skills = new Skills(db, encryption);
+  const skills = new Skills(db, encryption, undefined, dir);
   // Data saved before encryption existed. Each table moves in one transaction, so a start cut short finishes the rest
   // next time.
   const sealed = secrets.sealPlaintext() + store.sealPlaintext() + skills.sealPlaintext();
