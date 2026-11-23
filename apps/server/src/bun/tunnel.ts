@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
@@ -212,7 +212,10 @@ export class CloudflareTunnel {
     await this.halt();
     if (generation !== this.generation) return;
     this.killStale();
-    if (!enabled) return this.closeListener();
+    if (!enabled) {
+      this.removeNamed();
+      return this.closeListener();
+    }
     await this.launch(generation);
   }
 
@@ -326,9 +329,11 @@ export class CloudflareTunnel {
   private async command(binary: string, port: number, hostname: string | null, token: string | undefined): Promise<string[]> {
     if (token) {
       if (!hostname) throw new TunnelSetupError("Add the hostname this tunnel serves.");
+      this.removeNamed();
       return ["run"];
     }
     if (!hostname) {
+      this.removeNamed();
       // Its own config, so a config.yml the user keeps in ~/.cloudflared for other tunnels does not apply here.
       const config = join(this.folder, "quick.yml");
       writeFileSync(config, "no-autoupdate: true\n");
@@ -346,11 +351,23 @@ export class CloudflareTunnel {
     } else if (!existsSync(credentials)) {
       await cloudflared(binary, ["tunnel", "token", "--credentials-file", credentials, id]);
     }
+    chmodSync(credentials, 0o600);
     // Without --overwrite-dns: a record the user already has for this hostname is theirs to remove.
     await cloudflared(binary, ["tunnel", "route", "dns", id, hostname]);
     const config = join(this.folder, "config.yml");
     writeFileSync(config, namedTunnelConfig({ id, credentials, hostname, port }), { mode: 0o600 });
     return ["--config", config, "run"];
+  }
+
+  /**
+   * A named tunnel's credentials let whoever has them serve its hostname, so they are only kept while it is in use.
+   * Turning it on again fetches them again with `cloudflared tunnel token`.
+   */
+  private removeNamed() {
+    if (!existsSync(this.folder)) return;
+    for (const file of readdirSync(this.folder)) {
+      if (file === "config.yml" || /^vmbridge-.+\.json$/.test(file)) rmSync(join(this.folder, file), { force: true });
+    }
   }
 
   /** Opens the listener once. Launches while it opens, such as a retry, share it, so a second one is never left open. */

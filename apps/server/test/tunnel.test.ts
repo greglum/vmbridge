@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { childVariables } from "../src/bun/env.ts";
@@ -254,6 +254,31 @@ exec sleep 30`;
         else process.env[name] = value;
       }
     }
+  });
+
+  test("keeps a named tunnel's credentials private while it runs, and deletes them once it is off", async () => {
+    // Answers the commands that make a named tunnel, writing its credentials file as cloudflared does (world-readable).
+    const { dir, settings, tunnel } = setup(`case "$*" in
+  "tunnel list"*) echo "[]" ;;
+  "tunnel create"*) shift 4; umask 022; echo '{"TunnelSecret":"tunnel-secret"}' > "$2"; echo '{"id":"abc-123"}' ;;
+  "tunnel route"*) ;;
+  *) echo "INF Registered tunnel connection connIndex=0" >&2; exec sleep 30 ;;
+esac`);
+    mkdirSync(join(dir, ".cloudflared"));
+    writeFileSync(join(dir, ".cloudflared", "cert.pem"), "");
+    settings.set("cloudflareTunnel", { enabled: true, hostname: "bridge.example.com", port: null });
+    await tunnel.apply();
+    await tunnel.ready(5_000);
+    expect(tunnel.info()).toMatchObject({ mode: "named", state: "running" });
+    const folder = join(dir, "cloudflared");
+    const credentials = join(folder, `vmbridge-${settings.get("bridgeId").slice(0, 8)}.json`);
+    expect(statSync(credentials).mode & 0o777).toBe(0o600);
+    expect(existsSync(join(folder, "config.yml"))).toBe(true);
+
+    settings.set("cloudflareTunnel", { ...settings.get("cloudflareTunnel"), enabled: false });
+    await tunnel.apply();
+    expect(existsSync(credentials)).toBe(false);
+    expect(existsSync(join(folder, "config.yml"))).toBe(false);
   });
 
   test("asks for a login before making a named tunnel", async () => {
