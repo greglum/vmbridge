@@ -1,12 +1,12 @@
-// Compiles VM Bridge (server, dashboard and CLI) into one executable.
-// Usage: bun scripts/build.ts [bun-linux-x64 | bun-linux-arm64 | bun-darwin-arm64 | bun-darwin-x64]
+// Builds the dashboard into static files in dist/dashboard, for hosts that serve it as files rather than through
+// Bun.serve's HTML import. The page's assets are served under /dashboard/, where the dashboard lives.
 import tailwind from "bun-plugin-tailwind";
 
-const target = process.argv[2] as Bun.Build.CompileTarget | undefined;
-const outfile = `dist/vmbridge${target ? `-${target.replace(/^bun-/, "")}` : ""}`;
+const outdir = "dist/dashboard";
 const result = await Bun.build({
-  entrypoints: ["apps/cli/src/index.ts"],
-  compile: { ...(target ? { target } : {}), outfile, autoloadBunfig: false, autoloadDotenv: false },
+  entrypoints: ["apps/web/index.html"],
+  outdir,
+  publicPath: "/dashboard/",
   plugins: [tailwind],
   minify: true,
   define: { "process.env.NODE_ENV": JSON.stringify("production") },
@@ -15,4 +15,4 @@ if (!result.success) {
   for (const log of result.logs) console.error(log);
   process.exit(1);
 }
-console.log(`Built ${outfile}`);
+console.log(`Built ${outdir}`);
