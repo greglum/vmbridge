@@ -63,13 +63,18 @@ export class RemoteBranches {
     const cached = this.cache.get(url);
     if (!refresh && cached && Date.now() - cached.at < 60_000) return cached;
     const github = githubName(url);
-    const branches = github ? await this.github(github) : await lsRemote(url);
+    let branches: Branches;
+    if (github) {
+      // Git's own protocol lists every branch in one request and has no API rate limit. The REST API is the fallback,
+      // and explains a private or missing repository better.
+      const token = this.githubToken();
+      branches = await lsRemote(`https://github.com/${github}.git`, token).catch(() => this.github(github, token));
+    } else branches = await lsRemote(url);
     this.cache.set(url, branches);
     return branches;
   }
 
-  private async github(name: string): Promise<Branches> {
-    const token = this.githubToken();
+  private async github(name: string, token: string | undefined): Promise<Branches> {
     const headers = { accept: "application/vnd.github+json", ...(token ? { authorization: `Bearer ${token}` } : {}) };
     const get = async <T>(path: string) => {
       const response = await fetch(`https://api.github.com/repos/${name}${path}`, { headers, signal: AbortSignal.timeout(10_000) });
@@ -138,22 +143,71 @@ export class RemoteBranches {
   }
 }
 
-async function lsRemote(url: string): Promise<Branches> {
-  const git = Bun.spawn(["git", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "ls-remote", "--symref", "--", url, "HEAD", "refs/heads/*"], {
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" },
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "ignore",
-    signal: AbortSignal.timeout(10_000),
-  });
-  const output = await new Response(git.stdout).text();
-  if ((await git.exited) !== 0) throw new Error("Could not read the repository's branches.");
+const decoder = new TextDecoder();
+
+/** Git pkt-lines without their trailing newline. Flush, delimiter and response-end packets are null. */
+export function pktLines(bytes: Uint8Array): (string | null)[] {
+  const lines: (string | null)[] = [];
+  for (let at = 0; at + 4 <= bytes.length; ) {
+    const length = Number.parseInt(decoder.decode(bytes.subarray(at, at + 4)), 16);
+    if (!Number.isInteger(length) || (length > 2 && length < 4)) throw new Error("The repository sent an unreadable answer.");
+    if (length <= 2) {
+      lines.push(null);
+      at += 4;
+      continue;
+    }
+    lines.push(decoder.decode(bytes.subarray(at + 4, at + length)).replace(/\n$/, ""));
+    at += length;
+  }
+  return lines;
+}
+
+const pkt = (line: string) => `${(new TextEncoder().encode(line).length + 4).toString(16).padStart(4, "0")}${line}`;
+
+/** Branches and the default branch from ref lines of either protocol: `<oid> <ref>`, then capabilities or attributes. */
+export function parseRefs(lines: (string | null)[]): Omit<Branches, "at"> {
   const names = new Set<string>();
   let defaultBranch: string | null = null;
-  for (const line of output.split("\n")) {
-    const [value = "", ref] = line.trimEnd().split("\t");
-    if (ref === "HEAD" && value.startsWith("ref: refs/heads/")) defaultBranch = value.slice("ref: refs/heads/".length);
+  for (const line of lines) {
+    if (!line) continue;
+    // Version 0 puts capabilities after a NUL on the first line; version 2 puts attributes after spaces.
+    const [refPart = "", capabilities = ""] = line.split("\0");
+    const [, ref, ...attributes] = refPart.split(" ");
+    const symref = [...attributes, ...capabilities.split(" ")].find((entry) => entry.startsWith("symref-target:") || entry.startsWith("symref=HEAD:"));
+    if (ref === "HEAD" && symref?.includes("refs/heads/")) defaultBranch = symref.slice(symref.indexOf("refs/heads/") + "refs/heads/".length);
     if (ref?.startsWith("refs/heads/")) names.add(ref.slice("refs/heads/".length));
   }
-  return { names: [...names].sort(), defaultBranch, at: Date.now() };
+  return { names: [...names].sort(), defaultBranch };
+}
+
+/**
+ * What `git ls-remote --symref <url> HEAD refs/heads/*` prints, read over git's smart HTTP protocol with fetch, so it
+ * runs wherever VM Bridge does. HTTPS only and never prompts. Asks for protocol version 2, which lists only branches,
+ * and reads version 0's full list from servers without it. `token` goes to github.com only.
+ */
+export async function lsRemote(url: string, token?: string): Promise<Branches> {
+  const parsed = URL.parse(url);
+  if (parsed?.protocol !== "https:" || parsed.username || parsed.password) throw new Error("Only HTTPS repositories can be read.");
+  const base = parsed.href.replace(/\/+$/, "");
+  const headers: Record<string, string> = { "git-protocol": "version=2", "user-agent": "git/vmbridge" };
+  if (token && parsed.hostname === "github.com") headers.authorization = `Basic ${btoa(`x-access-token:${token}`)}`;
+  const request = async (path: string, init: RequestInit = {}) => {
+    const response = await fetch(`${base}${path}`, {
+      ...init,
+      headers: { ...headers, ...init.headers },
+      // A redirect must not carry the token to another host.
+      redirect: headers.authorization ? "error" : "follow",
+      signal: AbortSignal.timeout(10_000),
+    }).catch(() => null);
+    if (!response?.ok) throw new Error("Could not read the repository's branches.");
+    return pktLines(new Uint8Array(await response.arrayBuffer()));
+  };
+
+  let advertised = await request("/info/refs?service=git-upload-pack");
+  // Smart HTTP may start with a service line and a flush before what the protocol itself sends.
+  if (advertised[0]?.startsWith("# service=")) advertised = advertised.slice(2);
+  if (advertised[0] !== "version 2") return { ...parseRefs(advertised), at: Date.now() };
+  const body = `${pkt("command=ls-refs\n")}0001${pkt("symrefs\n")}${pkt("ref-prefix HEAD\n")}${pkt("ref-prefix refs/heads/\n")}0000`;
+  const refs = await request("/git-upload-pack", { method: "POST", body, headers: { "content-type": "application/x-git-upload-pack-request" } });
+  return { ...parseRefs(refs), at: Date.now() };
 }
