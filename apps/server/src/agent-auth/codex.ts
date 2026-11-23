@@ -1,6 +1,8 @@
 // ChatGPT sign-in for Codex, the same device flow `codex login --device-auth` runs.
 // The saved file is a Codex `auth.json`, so VMs use it as is.
 
+import { sleep } from "../runtime.ts";
+
 const issuer = "https://auth.openai.com";
 const clientId = "app_EMoamEEZ73f0CkXaXp7hrann";
 export const verificationUrl = `${issuer}/codex/device`;
@@ -93,7 +95,7 @@ export async function completeDeviceCode(code: DeviceCode, signal: AbortSignal):
     if (Date.now() > deadline) throw new Error("The code expired. Start again.");
     const response = await post(`${issuer}/api/accounts/deviceauth/token`, { device_auth_id: code.deviceAuthId, user_code: code.userCode });
     // 403 and 404 mean the person has not approved the code yet.
-    if (response.status === 403 || response.status === 404) await Bun.sleep(code.intervalMs);
+    if (response.status === 403 || response.status === 404) await sleep(code.intervalMs);
     else if (!response.ok) throw new Error(`OpenAI answered ${response.status} while waiting for the sign-in.`);
     else approved = (await response.json()) as typeof approved;
   }

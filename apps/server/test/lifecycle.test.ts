@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import type { AgentAuth, AgentSecrets } from "../src/agent-auth/profiles.ts";
+import { openSocket } from "../src/bun/socket.ts";
 import { openDatabase } from "../src/bun/sqlite.ts";
 import { Fleet } from "../src/fleet.ts";
 import { Hub } from "../src/gateway/hub.ts";
@@ -200,7 +201,7 @@ function setup(skillRoots?: string[]) {
   };
   /** Another Fleet on the same database, as after VM Bridge restarts. */
   const newFleet = () => {
-    const fleet = new Fleet(store, settings, secrets, traffic, agents, skills);
+    const fleet = new Fleet(store, settings, secrets, traffic, agents, skills, openSocket);
     fleet.driver = () => driver as unknown as Driver;
     fleets.push(fleet);
     return fleet;

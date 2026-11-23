@@ -61,8 +61,6 @@ const spanKey = (provider: string, snapshot: string) => `${provider}\n${snapshot
  * snapshots stay open across restarts: the provider keeps them, and bills them, while VM Bridge is down.
  */
 export class Usage {
-  private timer?: ReturnType<typeof setInterval>;
-
   constructor(
     private readonly store: Store,
     /** IDs of the VMs connected now. */
@@ -75,15 +73,8 @@ export class Usage {
     return this.store.db;
   }
 
-  /** Saves open intervals every `heartbeatMs`. */
-  start() {
-    this.timer ??= setInterval(() => this.sync(Date.now(), true), heartbeatMs);
-  }
-
   /** For VM Bridge stopping: awake intervals end now, since VM Bridge no longer knows. */
   close(now = Date.now()) {
-    clearInterval(this.timer);
-    this.timer = undefined;
     this.sync(now, true);
     this.endAwake(now);
   }

@@ -6,6 +6,7 @@ import type { CreateVm } from "./providers/types.ts";
 import { envVars, type Settings, type Secrets } from "./settings.ts";
 import { busyNotice, choose, maxVmsPerProject, overflowRetryMs, type VmLoad } from "./placement.ts";
 import { primaryVm, type ProjectRow, type Store, type VmRow } from "./store.ts";
+import { sleep, type OpenSocket } from "./runtime.ts";
 import type { Traffic } from "./traffic.ts";
 import { Backend, TokenRejected } from "./vm/backend.ts";
 import type { AgentAuth } from "./agent-auth/profiles.ts";
@@ -128,6 +129,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
     private readonly traffic: Traffic,
     private readonly agents: AgentAuth,
     private readonly skills: Pick<Skills, "state" | "files">,
+    private readonly openSocket: OpenSocket,
   ) {
     super();
     this.bases = new Bases(
@@ -390,7 +392,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
       // A T3 server still running from before VM Bridge restarted may be in the middle of a turn: then the idle sweep restarts it later.
       const backend = await this.connect(vm, box, await version, async (preview) => {
         if (wasAsleep || !vm.t3Token) return true;
-        const shell = await new Backend(vmId, preview, vm.t3Token).json<Shell>("/api/orchestration/shell").catch(() => null);
+        const shell = await new Backend(vmId, preview, vm.t3Token, this.openSocket).json<Shell>("/api/orchestration/shell").catch(() => null);
         return Boolean(shell && !hasLiveWork(shell));
       }, watch);
       watch.done();
@@ -450,14 +452,14 @@ export class Fleet extends EventEmitter<FleetEvents> {
       throw new Error(`T3 ${version} speaks orchestration protocol ${server.descriptor.orchestrationProtocolVersion}. VM Bridge supports 2.`);
     }
     if (restart && server.credentials !== fingerprint) this.unrestartable.set(vm.id, fingerprint);
-    let backend = new Backend(vm.id, preview, server.token);
+    let backend = new Backend(vm.id, preview, server.token, this.openSocket);
     try {
       try {
         await backend.connect();
       } catch (error) {
         if (!(error instanceof TokenRejected)) throw error;
         server = await startT3(box, null);
-        backend = new Backend(vm.id, preview, server.token);
+        backend = new Backend(vm.id, preview, server.token, this.openSocket);
         await backend.connect();
       }
       watch.lap("open T3 socket");
@@ -600,7 +602,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
    */
   private async reconnect(vmId: string) {
     for (const pause of this.reconnectPausesMs) {
-      await Bun.sleep(pause);
+      await sleep(pause);
       const state = this.store.vm(vmId)?.state;
       // Stopping, removed, put to sleep, or reconnected by a request meanwhile.
       if (this.closed || !state || state === "sleeping" || state === "gone" || this.backend(vmId)) return;

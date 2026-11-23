@@ -4,6 +4,7 @@ import { providers } from "../providers/index.ts";
 import { mayBeAwake, message, type Fleet } from "../fleet.ts";
 import { labelVcpus, type VmLoad } from "../placement.ts";
 import type { Settings } from "../settings.ts";
+import { sleep } from "../runtime.ts";
 import { primaryVm, type ProjectRow, type Store, type VmRow } from "../store.ts";
 import type { Traffic } from "../traffic.ts";
 import { T3Rejected, type Backend, type Frame } from "../vm/backend.ts";
@@ -1021,7 +1022,7 @@ export class Hub extends EventEmitter<HubEvents> {
         await this.sleepVm(vmId, shell);
       }),
     ).catch(() => {});
-    await Promise.race([sleeping, Bun.sleep(timeoutMs)]);
+    await Promise.race([sleeping, sleep(timeoutMs)]);
   }
 
   /**
