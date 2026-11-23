@@ -202,15 +202,15 @@ export interface VmInfo {
   problem: string | null;
 }
 
-/** Where an installed skill comes from: skills.sh, or a folder on the machine running VM Bridge. */
-export type SkillSource = "skills.sh" | "local";
+/** Where an installed skill comes from: skills.sh, a folder on the machine running VM Bridge, or the dashboard. */
+export type SkillSource = "skills.sh" | "local" | "upload";
 
 /** A skill VM Bridge installs on every VM. */
 export interface SkillInfo {
   /** Its folder name on the VMs. */
   name: string;
   source: SkillSource;
-  /** `owner/repo` for skills.sh, the folder for a local skill. */
+  /** `owner/repo` for skills.sh, the folder for a local skill, empty for an upload. */
   ref: string;
   description: string | null;
   updatedAt: number;
@@ -230,6 +230,60 @@ export interface InstructionFile {
   path: string;
   /** Every VM gets it, at the path that agent reads. */
   sync: boolean;
+}
+
+/** The instructions files that can be pasted in the dashboard. Codex and OpenCode read AGENTS.md, Claude Code CLAUDE.md. */
+export const instructionNames = ["AGENTS.md", "CLAUDE.md"] as const;
+export type InstructionName = (typeof instructionNames)[number];
+
+/** Which pasted file each agent reads. A pasted file wins over that agent's file on the machine running VM Bridge. */
+export const instructionFor: Record<AgentKind, InstructionName> = { claude: "CLAUDE.md", codex: "AGENTS.md", opencode: "AGENTS.md" };
+
+/** One file of a skill, relative to its folder. */
+export interface SkillFile {
+  path: string;
+  /** Base64, so scripts and images survive as they are. */
+  data: string;
+  executable?: boolean;
+}
+
+/**
+ * Limits for a pasted instructions file and an uploaded skill. A skill is stored sealed as one row, base64 twice
+ * over, so 1 MB of files stays under the 2 MB a Durable Object row can hold.
+ */
+export const uploadLimits = { instructionBytes: 256 * 1024, skillBytes: 1024 * 1024, skillFiles: 100 };
+
+/** A usable skill folder name, which is also its name on the VMs. */
+export const skillNamePattern = /^[A-Za-z0-9][\w.-]{0,99}$/;
+
+/**
+ * What is wrong with an uploaded skill's files, by path and decoded size, or null when nothing is. The dashboard checks
+ * before sending, and the server again, since anyone can call its API.
+ */
+export function skillUploadProblem(name: string, files: { path: string; size: number }[]): string | null {
+  if (!skillNamePattern.test(name)) return `${name || "That"} is not a usable skill name. Use letters, digits, dots, dashes and underscores.`;
+  if (files.length > uploadLimits.skillFiles) return `${name} has more than ${uploadLimits.skillFiles} files.`;
+  const paths = new Set<string>();
+  let bytes = 0;
+  for (const file of files) {
+    const parts = file.path.split("/");
+    // Relative, inside the skill's folder, and nothing a shell or the VM's file system would read differently.
+    const unsafe = file.path.length > 500 || /[\x00-\x1f\\]/.test(file.path) || parts.some((part) => !part || part === "." || part === ".." || part.length > 255);
+    if (unsafe) return `${name} has a file outside its folder or with an unusable name: ${file.path.slice(0, 100)}`;
+    if (paths.has(file.path)) return `${name} has ${file.path} twice.`;
+    paths.add(file.path);
+    bytes += file.size;
+  }
+  // A file and a folder of the same name cannot both be written.
+  for (const path of paths) {
+    const parts = path.split("/");
+    for (let i = 1; i < parts.length; i++) {
+      if (paths.has(parts.slice(0, i).join("/"))) return `${name} has ${parts.slice(0, i).join("/")} as both a file and a folder.`;
+    }
+  }
+  if (bytes > uploadLimits.skillBytes) return `${name} is larger than 1 MB.`;
+  if (!paths.has("SKILL.md")) return `${name} has no SKILL.md at its top.`;
+  return null;
 }
 
 export interface SkillSearchResult {
@@ -337,6 +391,10 @@ export interface Overview {
   /** Every skill on this machine is installed and kept in sync, not only the ones picked. */
   syncLocalSkills: boolean;
   instructions: InstructionFile[];
+  /** Instructions files pasted in the dashboard. Their text comes from `GET /instructions`. */
+  savedInstructions: InstructionName[];
+  /** VM Bridge can read skills and instructions files on the machine it runs on. False on Cloudflare Workers. */
+  machine: boolean;
 }
 
 export type Currency = "USD" | "EUR";

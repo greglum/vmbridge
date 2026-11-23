@@ -25,6 +25,7 @@ import { isWorking } from "./gateway/types.ts";
 import { disableTailscaleHttps, enableTailscaleHttps, networkInfo, type Served } from "./bun/network.ts";
 import { providers } from "./providers/index.ts";
 import { envVars, machineName, saveEnvVars, type Secrets, type Settings } from "./settings.ts";
+import { InstructionsError, isInstructionName } from "./instructions.ts";
 import { SkillError, type Skills } from "./skills.ts";
 import type { Store } from "./store.ts";
 import type { Traffic } from "./traffic.ts";
@@ -138,7 +139,7 @@ export class Admin {
       return await this.route(request, path, address);
     } catch (error) {
       if (error instanceof TooManyAttempts) return json({ error: error.message }, 429);
-      if (error instanceof BadRequest || error instanceof InvalidPassword || error instanceof InvalidSignIn || error instanceof GitHubRejected || error instanceof SkillError) return json({ error: error.message }, 400);
+      if (error instanceof BadRequest || error instanceof InvalidPassword || error instanceof InvalidSignIn || error instanceof GitHubRejected || error instanceof SkillError || error instanceof InstructionsError) return json({ error: error.message }, 400);
       return json({ error: message(error) }, 500);
     }
   }
@@ -496,7 +497,8 @@ export class Admin {
         const input = await body(request);
         if (input.source === "skills.sh") await skills.installFromSkillsSh(text(input.repo, "The repository"), text(input.skill, "The skill"));
         else if (input.source === "local") await skills.installLocal(text(input.path, "The folder"));
-        else throw new BadRequest("Pick a skill from skills.sh or this machine.");
+        else if (input.source === "upload") skills.installUpload(text(input.name, "The skill's name"), input.files);
+        else throw new BadRequest("Pick a skill from skills.sh or this machine, or upload one.");
         return json(skills.list());
       }
       if (id && action === "update" && method === "POST") return json({ changed: await skills.update(decodeURIComponent(id)) });
@@ -506,6 +508,13 @@ export class Admin {
       }
     }
 
+    if (path === "/instructions" && method === "GET") return json(skills.instructions.saved());
+    if (section === "instructions" && id && isInstructionName(id) && !action && method === "PUT") {
+      const input = await body(request);
+      if (typeof input.text !== "string") throw new BadRequest(`Send the text of ${id}.`);
+      skills.instructions.save(id, input.text);
+      return json(skills.instructions.saved());
+    }
     if (section === "instructions" && id && !action && method === "PUT") {
       const agent = agentKinds.find((kind) => kind === id);
       if (!agent) return json({ error: "No such agent." }, 404);
@@ -659,6 +668,8 @@ export class Admin {
       skills: this.deps.skills.list(),
       syncLocalSkills: this.deps.skills.syncAll,
       instructions: this.deps.skills.instructions.list(),
+      savedInstructions: this.deps.skills.instructions.savedNames(),
+      machine: this.deps.skills.hasMachine,
     };
   }
 

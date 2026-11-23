@@ -233,6 +233,14 @@ export const migrations = [
   // against. Now they are keyed (see `credentialsFingerprint`): a VM with an old one counts as behind on sign-ins, so
   // it restarts T3 with the current ones, as after any sign-in change.
   `UPDATE vms SET t3_credentials = 'unkeyed' WHERE t3_credentials IS NOT NULL;`,
+  // AGENTS.md and CLAUDE.md pasted in the dashboard, sealed with the context `instructions:<name>`.
+  `
+  CREATE TABLE instructions (
+    name TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  `,
 ];
 
 /**

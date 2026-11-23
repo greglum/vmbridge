@@ -17,9 +17,10 @@ Website and docs: [vmbridge.ordinity.com](https://vmbridge.ordinity.com)
 - One dashboard, behind a password, for providers, GitHub, agent sign-ins, pairing devices and a
   live view of your VMs.
 - Environment variables you set once reach every VM, for agents and shells.
-- Agent skills from [skills.sh](https://skills.sh) or from this machine reach every VM, for Claude
-  Code and Codex.
-- Your global `AGENTS.md` (and Claude Code's `CLAUDE.md`) on this machine can follow you to every VM.
+- Agent skills from [skills.sh](https://skills.sh), from this machine or uploaded in the dashboard
+  reach every VM, for Claude Code and Codex.
+- Your global `AGENTS.md` and `CLAUDE.md`, pasted in the dashboard or read from this machine, can
+  follow you to every VM.
 - Works over Tailscale, Cloudflare Tunnel and, once you turn it on, your local network.
 
 ## Install
@@ -86,12 +87,19 @@ before they serve anything when they wake. Edits to a local skill reach the VMs 
 seconds. Removing a skill takes it off every VM, and skills put on a VM some other way are left
 alone.
 
+To add a skill that is not on this machine, drop its folder, its `SKILL.md` or a `.zip` of it on
+the **Installed** tab, or use **Choose folder** or **Choose file**. It needs a `SKILL.md` at its top,
+at most 100 files and 1 MB, and no links. Upload it again to update it.
+
 Switch on **Sync all** to install every skill on this machine without picking them one by one. New
 skills in those folders follow within a few seconds, and a skill deleted here comes off the VMs. When
 two folders hold a skill with the same name, the first in the order above wins. Skills over 5 MB are
 skipped. Turning it off keeps what it installed until you remove it.
 
-The AGENTS.md tab on the same page lists each agent's global file found on this machine,
+The **Instructions** tab on the same page takes a pasted `AGENTS.md` (read by Codex and OpenCode)
+and `CLAUDE.md` (read by Claude Code), and every VM gets them where those agents read them. A pasted
+file wins over the agent's file on this machine. Below them it lists each agent's global file found
+on this machine,
 `~/.claude/CLAUDE.md` for Claude Code, `~/.codex/AGENTS.md` for Codex and
 `~/.config/opencode/AGENTS.md` for OpenCode (`$CLAUDE_CONFIG_DIR`, `$CODEX_HOME` and
 `$XDG_CONFIG_HOME` move them). Switch one on and every VM gets it where that agent reads it, the
@@ -102,8 +110,8 @@ file it wrote: if a VM already has its own, or the file was edited on the VM, it
 ## Encryption
 
 VM Bridge encrypts the secrets it saves, by default, with AES-256-GCM: provider keys, the GitHub
-token, environment variables for VMs, each VM's T3 token, installed skill files, agent sign-ins and
-the dashboard password's hash (argon2id).
+token, environment variables for VMs, each VM's T3 token, installed skill files, pasted `AGENTS.md`
+and `CLAUDE.md`, agent sign-ins and the dashboard password's hash (argon2id).
 
 These are not encrypted, and stay in files only your user can read:
 

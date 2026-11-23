@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import type { AgentAuth, AgentSecrets } from "../src/agent-auth/profiles.ts";
+import { bunMachine } from "../src/bun/machine.ts";
 import { openSocket } from "../src/bun/socket.ts";
 import { openDatabase } from "../src/bun/sqlite.ts";
 import { Fleet } from "../src/fleet.ts";
@@ -104,7 +105,7 @@ function setup(skillRoots?: string[]) {
   const traffic = { record: (event: Parameters<Traffic["record"]>[0]) => void recorded.push(event) } as unknown as Traffic;
   const signIns: AgentSecrets = {};
   const agents = { vmSecrets: async () => ({ ...signIns }), adoptCodex: () => {}, codexDue: () => false } as unknown as AgentAuth;
-  const skills = skillRoots ? new Skills(db, testEncryption, () => skillRoots) : new Skills(db, testEncryption);
+  const skills = new Skills(db, testEncryption, bunMachine(undefined, () => skillRoots ?? []));
 
   /** The VM's files, and its T3 server: whether it runs and the env file it started with, as agents inherit it. */
   const files: Record<string, string> = {};

@@ -8,6 +8,7 @@ import { AgentAuth } from "./agent-auth/profiles.ts";
 import { Clients } from "./auth/clients.ts";
 import { DashboardAuth } from "./auth/dashboard.ts";
 import { importAuthFiles } from "./bun/auth-files.ts";
+import { bunMachine } from "./bun/machine.ts";
 import { openDashboard, withSecurityHeaders } from "./bun/dashboard.ts";
 import { runJobs } from "./bun/jobs.ts";
 import { bunPasswords } from "./bun/password.ts";
@@ -91,7 +92,7 @@ export async function start(options: StartOptions = {}) {
 
   importAuthFiles(join(dir, "auths"), db, encryption);
   const agents = new AgentAuth(db, settings, encryption);
-  const skills = new Skills(db, encryption, undefined, dir);
+  const skills = new Skills(db, encryption, bunMachine(dir));
   plaintext(db, dir, migrated, [secrets, store, skills]);
   if (!migrated) markMigrated();
   const fleet = new Fleet(store, settings, secrets, traffic, agents, skills, openSocket);
