@@ -26,6 +26,29 @@ describe("dashboard key", () => {
     expect(auth.authenticated(request("vmbridge_session=forged"))).toBe(false);
   });
 
+  test("over HTTPS the session cookie is host-only and Secure, and sessions from before still work", async () => {
+    const { auth } = dashboard();
+    await auth.setKey("correct horse");
+    const secure = (await auth.login("correct horse", "a", true))!;
+    expect(secure).toStartWith("__Host-vmbridge_session=");
+    expect(secure).toContain("Secure");
+    expect(secure).toContain("Path=/;");
+    expect(secure).not.toContain("Domain");
+    const plain = (await auth.login("correct horse", "a", false))!;
+    expect(plain).toStartWith("vmbridge_session=");
+    expect(plain).not.toContain("Secure");
+    const both = request(`${secure.split(";")[0]}; ${plain.split(";")[0]}`);
+    expect(auth.authenticated(request(secure.split(";")[0]!))).toBe(true);
+    // A cookie issued under the plain name over HTTPS before the change.
+    expect(auth.authenticated(request(plain.split(";")[0]!))).toBe(true);
+    // Logging out ends every session the request carries and clears both names.
+    const cleared = auth.logout(both);
+    expect(cleared.map((cookie) => cookie.split("=")[0])).toEqual(["vmbridge_session", "__Host-vmbridge_session"]);
+    expect(cleared.every((cookie) => cookie.includes("Max-Age=0"))).toBe(true);
+    expect(auth.authenticated(request(secure.split(";")[0]!))).toBe(false);
+    expect(auth.authenticated(request(plain.split(";")[0]!))).toBe(false);
+  });
+
   test("throttles repeated failures per address", async () => {
     const { auth } = dashboard();
     await auth.setKey("correct horse");

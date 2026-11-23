@@ -2,13 +2,13 @@
 // can run elsewhere too.
 import { homedir } from "node:os";
 import { join } from "node:path";
-import dashboard from "@vmbridge/web/index.html";
 import { version } from "../../../package.json" with { type: "json" };
 import { Admin } from "./admin.ts";
 import { AgentAuth } from "./agent-auth/profiles.ts";
 import { Clients } from "./auth/clients.ts";
 import { DashboardAuth } from "./auth/dashboard.ts";
 import { importAuthFiles } from "./bun/auth-files.ts";
+import { openDashboard, withSecurityHeaders } from "./bun/dashboard.ts";
 import { runJobs } from "./bun/jobs.ts";
 import { bunPasswords } from "./bun/password.ts";
 import { openSocket } from "./bun/socket.ts";
@@ -107,6 +107,8 @@ export async function start(options: StartOptions = {}) {
   let tunnel: CloudflareTunnel;
   let listeners: Listeners<SocketData>;
   const served = () => ({ hosts: listeners.hosts(), port: listeners.port, fixed: host !== undefined, localNetwork: settings.get("localNetwork") });
+  const development = process.env.VMBRIDGE_DEV === "1";
+  const dashboard = await openDashboard(development);
   const admin = new Admin({ version, startedAt: Date.now(), served, applyAddresses: () => listeners.apply(), settings, secrets, store, fleet, hub, traffic, clients, auth, gateway, agents, stats, skills, usage, tunnel: () => tunnel });
 
   /** `viaTunnel` marks the loopback listener only cloudflared forwards to, whose proxy headers can be trusted. */
@@ -117,11 +119,9 @@ export async function start(options: StartOptions = {}) {
       maxRequestBodySize: 2 * 1024 * 1024,
       // Long enough for the dashboard's event stream between heartbeats.
       idleTimeout: 60,
-      development: process.env.VMBRIDGE_DEV === "1",
-      // The dashboard lives under /dashboard, a path T3 clients never request.
+      development,
       routes: {
-        "/dashboard": dashboard,
-        "/dashboard/onboarding": dashboard,
+        ...dashboard.routes,
         "/": new Response(null, { status: 302, headers: { location: "/dashboard" } }),
       },
       fetch(request, server) {
@@ -130,20 +130,23 @@ export async function start(options: StartOptions = {}) {
         if (path.startsWith("/dashboard/") && path.endsWith("/")) {
           return new Response(null, { status: 302, headers: { location: `${path.replace(/\/+$/, "")}${search}` } });
         }
-        if (path.startsWith("/admin/api/")) return admin.fetch(request, server, viaTunnel);
+        if (path.startsWith("/admin/api/")) return admin.fetch(request, server, viaTunnel).then(withSecurityHeaders);
         if (isT3Path(path)) return gateway.fetch(request, server);
+        // The dashboard lives under /dashboard, a path T3 clients never request, and its files at the root.
+        if (dashboard.fetch && (request.method === "GET" || request.method === "HEAD")) return dashboard.fetch(request);
         return new Response("Not found", { status: 404 });
       },
       websocket: gateway.websocket,
     });
   /**
-   * Bun adds the dashboard's bundled files (script, styles, icons) to a server's routes only once that server has
-   * served the page. Until then they answer 404 to a browser that already has the page, such as a dashboard left open
-   * across a restart or on a new tunnel listener, which then shows broken icons. Requesting the page once here adds them up front.
+   * In development each listener serves the dashboard itself, and Bun adds its bundled files (script, styles, icons) to
+   * a server's routes only once that server has served the page. Until then they answer 404 to a browser that already
+   * has the page, such as one left open across a restart or on a new tunnel listener. Requesting the page once here
+   * adds them up front.
    */
   const listen = async (hostname: string, port: number, viaTunnel: boolean) => {
     const listener = serve(hostname, port, viaTunnel);
-    await fetch(new URL("/dashboard", listener.url)).then((response) => response.arrayBuffer(), () => {});
+    if (development) await fetch(new URL("/dashboard", listener.url)).then((response) => response.arrayBuffer(), () => {});
     return listener;
   };
   listeners = new Listeners(
@@ -192,6 +195,7 @@ export async function start(options: StartOptions = {}) {
       gateway.close();
       await tunnel.stop();
       await listeners.stop();
+      await dashboard.stop();
       // Some providers have no idle timeout of their own: a VM left awake here would run until VM Bridge starts again.
       await hub.sleepIdle(15_000);
       hub.close();

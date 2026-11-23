@@ -294,7 +294,7 @@ function GitHub({ account }: { account: GitHubAccount | null }) {
         <>
           <Item variant="outline">
             <ItemMedia>
-              <img src={account.avatarUrl} alt="" className="size-10 rounded-full" />
+              <img src={account.avatarUrl} alt="" referrerPolicy="no-referrer" className="size-10 rounded-full" />
             </ItemMedia>
             <ItemContent>
               <ItemTitle>{account.name ?? account.login}</ItemTitle>
