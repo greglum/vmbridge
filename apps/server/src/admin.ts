@@ -647,6 +647,7 @@ export class Admin {
       instructions: this.deps.skills.instructions.list(),
       savedInstructions: this.deps.skills.instructions.savedNames(),
       machine: this.deps.skills.hasMachine,
+      passwordSource: this.deps.passwordSource,
     };
   }
 

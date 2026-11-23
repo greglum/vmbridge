@@ -315,7 +315,10 @@ function LiveSteps({ step, go, onFinish }: { step: Exclude<Step, "password">; go
   );
   if (step === "agents") return <AgentsStep overview={overview} back={back("provider")} onNext={() => go("github")} />;
   if (step === "github") return <GitHubStep account={overview.github} back={back("agents")} onNext={() => go("sync")} />;
-  if (step === "sync") return <SyncStep overview={overview} sync={sync} onSync={setSync} back={back("github")} onNext={() => go("done")} />;
+  if (step === "sync") {
+    if (!overview.machine) return <UploadLaterStep back={back("github")} onNext={() => go("done")} />;
+    return <SyncStep overview={overview} sync={sync} onSync={setSync} back={back("github")} onNext={() => go("done")} />;
+  }
   return <Done overview={overview} sync={sync} onOpen={onFinish} />;
 }
 
@@ -457,6 +460,28 @@ function GitHubStep({ account, back, onNext }: { account: GitHubAccount | null; 
   );
 }
 
+/** Where VM Bridge has no machine to read from, such as on Cloudflare Workers, skills and instructions are added later. */
+function UploadLaterStep({ back, onNext }: { back: ReactNode; onNext: () => void }) {
+  const finish = useAction();
+  return (
+    <StepFrame
+      title="Skills and instructions"
+      onSubmit={() => void finish.run(() => api("/onboarding", { body: { sync: false } })).then((ok) => ok && onNext())}
+      actions={
+        <>
+          {back}
+          <ActionButton type="submit" busy={finish.busy}>
+            Finish
+          </ActionButton>
+        </>
+      }
+    >
+      <p className="text-muted-foreground">Upload skills and paste your AGENTS.md or CLAUDE.md under Skills. Every VM gets them.</p>
+      {finish.error && <FieldError>{finish.error}</FieldError>}
+    </StepFrame>
+  );
+}
+
 function SyncStep({
   overview,
   sync,
@@ -571,7 +596,7 @@ function Done({ overview, sync, onOpen }: { overview: Overview; sync: boolean; o
         <span className="text-muted-foreground">Not connected</span>
       ),
     },
-    { label: "Skills", value: sync ? "Synced to every VM" : "Off" },
+    { label: "Skills", value: !overview.machine ? <span className="text-muted-foreground">Add them under Skills</span> : sync ? "Synced to every VM" : "Off" },
   ];
 
   return (
