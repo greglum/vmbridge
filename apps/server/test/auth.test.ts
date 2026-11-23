@@ -147,13 +147,22 @@ describe("dashboard key", () => {
     const db = openDatabase(":memory:");
     db.run("INSERT INTO settings (key, value) VALUES ('dashboardKeyHash', ?)", JSON.stringify(await webPasswords.hash("correct horse")));
     const secrets = new Secrets(db, testEncryption);
-    expect(secrets.sealPlaintext()).toBe(1);
+    expect(secrets.plaintext("seal")).toEqual(["old dashboard password setting"]);
     expect(db.one("SELECT 1 FROM settings WHERE key = 'dashboardKeyHash'")).toBeUndefined();
-    expect(secrets.sealPlaintext()).toBe(0);
+    expect(secrets.plaintext("seal")).toEqual([]);
     const auth = new DashboardAuth(db, secrets, bunPasswords);
     expect(auth.hasKey()).toBe(true);
     expect(await auth.login("correct horse", "a", false)).not.toBeNull();
     expect(secrets.get(passwordHashSecret)).toStartWith("$argon2id$");
+  });
+
+  test("an unencrypted hash planted after sealing ran is removed, not adopted as the password", async () => {
+    const db = openDatabase(":memory:");
+    const secrets = new Secrets(db, testEncryption);
+    db.run("INSERT INTO settings (key, value) VALUES ('dashboardKeyHash', ?)", JSON.stringify(await webPasswords.hash("planted")));
+    expect(secrets.plaintext("drop")).toEqual(["old dashboard password setting"]);
+    expect(db.one("SELECT 1 FROM settings WHERE key = 'dashboardKeyHash'")).toBeUndefined();
+    expect(new DashboardAuth(db, secrets, bunPasswords).hasKey()).toBe(false);
   });
 
   test("runtimes without argon2, such as Cloudflare Workers, hash with PBKDF2 and cannot check argon2id", async () => {

@@ -97,23 +97,34 @@ export function localKey(dir: string, create: boolean): KeySource {
 }
 
 const checkName = "encryption.check";
+/**
+ * The check's text once values saved before encryption were sealed. It is sealed like the check, so someone who can
+ * write the database without the key cannot set it back to make VM Bridge seal, and then trust, values they planted.
+ */
+const migratedCheck = `${checkName}:migrated`;
 
 /**
  * Loads the key and proves it is the one this database was encrypted with, using a known value sealed on first
  * start. A database that has that value never gets a new key, so a lost key stops startup instead of hiding data.
+ * `migrated` says whether values saved before encryption were sealed already, after which `markMigrated` records it.
  */
 export function openEncryption(db: Sql, source: (create: boolean) => KeySource) {
   const check = db.one<{ value: string }>(`SELECT value FROM secrets WHERE name = '${checkName}'`)?.value;
   const key = source(check === undefined);
   const encryption = new Encryption(key.key);
+  let migrated: boolean;
   if (check === undefined) {
-    db.run("INSERT INTO secrets (name, value) VALUES (?, ?)", checkName, encryption.seal(checkName, checkName));
+    // Data from before encryption gets its key made on that first start. A key that already existed means the
+    // database was new (nothing to seal) or its check was removed, and then nothing unencrypted is trusted.
+    migrated = !key.created;
+    db.run("INSERT INTO secrets (name, value) VALUES (?, ?)", checkName, encryption.seal(migrated ? migratedCheck : checkName, checkName));
   } else {
     try {
-      encryption.open(check, checkName);
+      migrated = encryption.open(check, checkName) === migratedCheck;
     } catch {
       throw new EncryptionKeyError(`The encryption key in ${key.location} is not the one VM Bridge's data was encrypted with.`);
     }
   }
-  return { encryption, key };
+  const markMigrated = () => db.run("UPDATE secrets SET value = ? WHERE name = ?", encryption.seal(migratedCheck, checkName), checkName);
+  return { encryption, key, migrated, markMigrated };
 }

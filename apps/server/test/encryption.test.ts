@@ -91,6 +91,34 @@ describe("the local key", () => {
 });
 
 describe("encrypting data saved in plain text", () => {
+  test("happens on the first start with a new key only, and the record of it cannot be reset without the key", () => {
+    const dir = tempDir();
+    const db = openDatabase(join(dir, "main.db"));
+    const first = openEncryption(db, (create) => localKey(dir, create));
+    expect(first.migrated).toBe(false);
+    first.markMigrated();
+    expect(openEncryption(db, (create) => localKey(dir, create)).migrated).toBe(true);
+
+    // Removing the check while the key stays does not bring sealing back.
+    db.run("DELETE FROM secrets WHERE name = 'encryption.check'");
+    expect(openEncryption(db, (create) => localKey(dir, create)).migrated).toBe(true);
+
+    // Neither does a check sealed with another key.
+    db.run("UPDATE secrets SET value = ? WHERE name = 'encryption.check'", new Encryption(key(9)).seal("encryption.check", "encryption.check"));
+    expect(() => openEncryption(db, (create) => localKey(dir, create))).toThrow(/not the one/);
+  });
+
+  test("drops values stored unencrypted once sealing ran", () => {
+    const db = openDatabase(":memory:");
+    const encryption = new Encryption(key(8));
+    const secrets = new Secrets(db, encryption);
+    secrets.set("provider.e2b.apiKey", "kept");
+    db.run("INSERT INTO secrets (name, value) VALUES ('github.token', 'planted')");
+    expect(secrets.plaintext("drop")).toEqual(["secret github.token"]);
+    expect(secrets.has("github.token")).toBe(false);
+    expect(secrets.get("provider.e2b.apiKey")).toBe("kept");
+  });
+
   test("seals every kind once, and reads it back", () => {
     const db = openDatabase(":memory:");
     const encryption = new Encryption(key(6));
@@ -102,7 +130,7 @@ describe("encrypting data saved in plain text", () => {
     const secrets = new Secrets(db, encryption);
     const store = new Store(db, encryption);
     const skills = new Skills(db, encryption, () => []);
-    const seal = () => secrets.sealPlaintext() + store.sealPlaintext() + skills.sealPlaintext();
+    const seal = () => [...secrets.plaintext("seal"), ...store.plaintext("seal"), ...skills.plaintext("seal")].length;
     expect(seal()).toBe(4);
     expect(seal()).toBe(0);
 

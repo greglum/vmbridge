@@ -90,7 +90,7 @@ export class Settings {
     // Persist the identity on first start so pairings survive restarts.
     if (!this.db.one("SELECT 1 FROM settings WHERE key = 'bridgeId'")) this.set("bridgeId", defaults.bridgeId());
     // Installs from before onboarding existed that already have a password and a provider never need it. Their
-    // password hash is still the plain setting that `Secrets.sealPlaintext` moves later.
+    // password hash is still the plain setting that `Secrets.plaintext` moves later.
     if (!this.db.one("SELECT 1 FROM settings WHERE key = 'onboarded'")) {
       const hasPassword = this.db.one("SELECT 1 FROM settings WHERE key = ?", legacyPasswordHash) !== undefined;
       this.set("onboarded", hasPassword && this.get("providers").length > 0);
@@ -106,6 +106,12 @@ export class Settings {
     this.db.run("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", key, JSON.stringify(value));
   }
 }
+
+/**
+ * What to do with a value stored unencrypted: `seal` it when it was saved before VM Bridge encrypted its data, or
+ * `drop` it once that was done, since VM Bridge never writes one after and someone else must have put it there.
+ */
+export type Plaintext = "seal" | "drop";
 
 /** Secret values never leave the server through the admin API; only their presence does. Stored encrypted. */
 export class Secrets {
@@ -133,19 +139,23 @@ export class Secrets {
     }
   }
 
-  /** Encrypts values saved before secrets were encrypted, including the old password hash setting. Returns how many. */
-  sealPlaintext(): number {
+  /**
+   * Encrypts, or drops, values stored unencrypted (see `Plaintext`), including the password hash older versions kept
+   * in settings. Returns what it changed.
+   */
+  plaintext(action: Plaintext): string[] {
     const rows = this.db.all<{ name: string; value: string }>("SELECT name, value FROM secrets");
     const plain = rows.filter((row) => !Encryption.isSealed(row.value));
     const legacy = this.db.one<{ value: string }>("SELECT value FROM settings WHERE key = ?", legacyPasswordHash);
     this.db.transaction(() => {
-      for (const row of plain) this.set(row.name, row.value);
+      for (const row of plain) this.set(row.name, action === "seal" ? row.value : null);
       if (legacy) {
-        this.set(passwordHashSecret, JSON.parse(legacy.value) as string | null);
+        // Planted later, it would choose the dashboard password.
+        if (action === "seal") this.set(passwordHashSecret, JSON.parse(legacy.value) as string | null);
         this.db.run("DELETE FROM settings WHERE key = ?", legacyPasswordHash);
       }
     });
-    return plain.length + (legacy ? 1 : 0);
+    return [...plain.map((row) => `secret ${row.name}`), ...(legacy ? ["old dashboard password setting"] : [])];
   }
 }
 

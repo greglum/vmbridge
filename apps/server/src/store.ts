@@ -1,6 +1,7 @@
 import type { Sql } from "./sql.ts";
 import type { ProviderId, VmSize, VmState } from "@vmbridge/contracts";
 import { Encryption } from "./encryption.ts";
+import type { Plaintext } from "./settings.ts";
 
 export interface VmRow {
   id: string;
@@ -143,14 +144,15 @@ export class Store {
     return vm.t3Token ? { ...vm, t3Token: this.encryption.open(vm.t3Token, `vm:${vm.id}:t3Token`) } : vm;
   }
 
-  /** Encrypts T3 tokens saved before they were encrypted. Returns how many. */
-  sealPlaintext(): number {
+  /** Encrypts, or drops, T3 tokens stored unencrypted (see `Plaintext`). Returns what it changed. */
+  plaintext(action: Plaintext): string[] {
     const rows = this.db.all<{ id: string; t3Token: string }>("SELECT id, t3_token AS t3Token FROM vms WHERE t3_token IS NOT NULL AND t3_token != ''")
       .filter((row) => !Encryption.isSealed(row.t3Token));
     this.db.transaction(() => {
-      for (const row of rows) this.updateVm(row.id, { t3Token: row.t3Token });
+      // Without a token, the VM's T3 server gets a new one when it next connects.
+      for (const row of rows) this.updateVm(row.id, { t3Token: action === "seal" ? row.t3Token : null });
     });
-    return rows.length;
+    return rows.map((row) => `T3 token of VM ${row.id}`);
   }
 
   insertVm(vm: Pick<VmRow, "id" | "provider" | "name" | "size" | "state" | "createdAt">) {
