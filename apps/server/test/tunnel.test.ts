@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { openDatabase } from "../src/db.ts";
 import { Secrets, Settings } from "../src/settings.ts";
 import { Traffic } from "../src/traffic.ts";
+import { testEncryption } from "./key.ts";
 import {
   CloudflareTunnel,
   findCloudflared,
@@ -113,7 +114,7 @@ describe("lifecycle", () => {
     const dir = tempDir();
     const db = openDatabase(":memory:");
     const settings = new Settings(db);
-    const secrets = new Secrets(db);
+    const secrets = new Secrets(db, testEncryption);
     const listeners: ReturnType<typeof Bun.serve>[] = [];
     const tunnel = new CloudflareTunnel({
       settings,
