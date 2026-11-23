@@ -85,6 +85,8 @@ async function chooseKey(): Promise<string> {
  */
 async function ensureKey({ force = false, ask = true } = {}) {
   const keys = dashboardKey();
+  // Opening the password store makes the encryption key on a new install, so the server will not report it.
+  if (keys.encryptionKey.created) keyNotice(keys.encryptionKey.location);
   try {
     if (keys.isSet() && !force) return;
     const fromEnv = process.env.VMBRIDGE_PASSWORD;
@@ -98,6 +100,11 @@ async function ensureKey({ force = false, ask = true } = {}) {
   } finally {
     keys.close();
   }
+}
+
+function keyNotice(location: string) {
+  console.log(`\nSaved provider keys, sign-ins and environment variables are encrypted with a new key in ${location}.`);
+  console.log("Back it up. Without it, they have to be entered again.");
 }
 
 function serverOptions(values: { host?: string; port?: string }) {
@@ -130,10 +137,7 @@ async function run(options: { host: string; port: number }) {
   if (setupCode) console.log("\nOpen a link to choose your password and finish setup. Press Ctrl+C to stop.");
   else if (server.setupCode) console.log("\nNo dashboard password yet. Set one with `vmbridge password`, or start `vmbridge run` in a terminal for a setup link.");
   else console.log("\nOpen the dashboard to set up providers and pair devices. Press Ctrl+C to stop.");
-  if (server.encryptionKey.created) {
-    console.log(`\nSaved provider keys, sign-ins and environment variables are encrypted with a new key in ${server.encryptionKey.location}.`);
-    console.log("Back it up. Without it, they have to be entered again.");
-  }
+  if (server.encryptionKey.created) keyNotice(server.encryptionKey.location);
 
   let stopping = false;
   const stop = async () => {

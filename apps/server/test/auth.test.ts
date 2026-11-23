@@ -1,15 +1,23 @@
 import { describe, expect, setSystemTime, spyOn, test } from "bun:test";
 import { openDatabase } from "../src/bun/sqlite.ts";
-import { Settings } from "../src/settings.ts";
+import { bunPasswords } from "../src/bun/password.ts";
+import { passwordHashSecret, Secrets, Settings } from "../src/settings.ts";
 import { DashboardAuth, TooManyAttempts } from "../src/auth/dashboard.ts";
+import { webPasswords, type Passwords } from "../src/auth/password.ts";
 import { Clients, clientSessionMs, pairingLinkMs } from "../src/auth/clients.ts";
+import { testEncryption } from "./key.ts";
 
 const request = (cookie: string) => new Request("http://x/", { headers: { cookie } });
 
+// PBKDF2 unless a test is about argon2id, which is slow on purpose.
+function dashboard(db = openDatabase(":memory:"), passwords: Passwords = webPasswords) {
+  const secrets = new Secrets(db, testEncryption);
+  return { db, secrets, auth: new DashboardAuth(db, secrets, passwords) };
+}
+
 describe("dashboard key", () => {
   test("logs in with the key and rejects others", async () => {
-    const db = openDatabase(":memory:");
-    const auth = new DashboardAuth(db, new Settings(db));
+    const { auth } = dashboard();
     await auth.setKey("correct horse");
     expect(await auth.login("wrong key!", "1.1.1.1", false)).toBeNull();
     const cookie = await auth.login("correct horse", "1.1.1.1", false);
@@ -19,8 +27,7 @@ describe("dashboard key", () => {
   });
 
   test("throttles repeated failures per address", async () => {
-    const db = openDatabase(":memory:");
-    const auth = new DashboardAuth(db, new Settings(db));
+    const { auth } = dashboard();
     await auth.setKey("correct horse");
     for (let i = 0; i < 5; i++) await auth.login("nope nope", "2.2.2.2", false);
     expect(auth.login("correct horse", "2.2.2.2", false)).rejects.toBeInstanceOf(TooManyAttempts);
@@ -28,8 +35,7 @@ describe("dashboard key", () => {
   });
 
   test("changing the key ends existing sessions", async () => {
-    const db = openDatabase(":memory:");
-    const auth = new DashboardAuth(db, new Settings(db));
+    const { auth } = dashboard();
     await auth.setKey("first key!");
     const cookie = (await auth.login("first key!", "a", false))!.split(";")[0]!;
     await auth.setKey("second key");
@@ -37,8 +43,7 @@ describe("dashboard key", () => {
   });
 
   test("changing the key needs the current key", async () => {
-    const db = openDatabase(":memory:");
-    const auth = new DashboardAuth(db, new Settings(db));
+    const { auth } = dashboard();
     await auth.setKey("first key!");
     expect(await auth.changeKey("guessing!", "second key", "a")).toBe(false);
     expect(await auth.login("first key!", "b", false)).not.toBeNull();
@@ -47,16 +52,14 @@ describe("dashboard key", () => {
   });
 
   test("guessing the current key is throttled like logging in", async () => {
-    const db = openDatabase(":memory:");
-    const auth = new DashboardAuth(db, new Settings(db));
+    const { auth } = dashboard();
     await auth.setKey("first key!");
     for (let i = 0; i < 5; i++) await auth.changeKey("guessing!", "second key", "a");
     expect(auth.changeKey("first key!", "second key", "a")).rejects.toBeInstanceOf(TooManyAttempts);
   });
 
   test("watchers hear when their session ends by logout, a new key, or expiry", async () => {
-    const db = openDatabase(":memory:");
-    const auth = new DashboardAuth(db, new Settings(db));
+    const { auth } = dashboard();
     await auth.setKey("first key!");
     const first = request((await auth.login("first key!", "a", false))!.split(";")[0]!);
     const second = request((await auth.login("first key!", "a", false))!.split(";")[0]!);
@@ -80,29 +83,29 @@ describe("dashboard key", () => {
     }
   });
 
-  test("stores a salted PBKDF2 hash", async () => {
-    const db = openDatabase(":memory:");
-    const settings = new Settings(db);
-    const auth = new DashboardAuth(db, settings);
+  test("stores a salted argon2id hash, encrypted", async () => {
+    const { db, secrets, auth } = dashboard(undefined, bunPasswords);
     await auth.setKey("correct horse");
-    const first = settings.get("dashboardKeyHash")!;
+    const first = secrets.get(passwordHashSecret)!;
     await auth.setKey("correct horse");
-    expect(first).toMatch(/^\$pbkdf2-sha256\$i=100000\$[\w+/=]+\$[\w+/=]+$/);
-    expect(settings.get("dashboardKeyHash")).not.toBe(first);
+    expect(first).toMatch(/^\$argon2id\$v=19\$m=65536,t=2,p=1\$/);
+    expect(secrets.get(passwordHashSecret)).not.toBe(first);
+    const stored = db.all<{ value: string }>("SELECT value FROM settings UNION ALL SELECT value FROM secrets").map((row) => row.value);
+    expect(stored.join()).not.toContain("$argon2");
   });
 
-  test("an argon2 hash from an older version still logs in, once, and is replaced by PBKDF2", async () => {
-    const db = openDatabase(":memory:");
-    const settings = new Settings(db);
-    const auth = new DashboardAuth(db, settings);
+  test("a PBKDF2 hash from an older version still logs in, once, and is replaced by argon2id", async () => {
+    const { secrets, auth } = dashboard(undefined, bunPasswords);
     // A session from the older version, made before its hash is replaced.
     await auth.setKey("correct horse");
     const before = request((await auth.login("correct horse", "b", false))!.split(";")[0]!);
-    settings.set("dashboardKeyHash", await Bun.password.hash("correct horse"));
+    const old = await webPasswords.hash("correct horse");
+    secrets.set(passwordHashSecret, old);
+    // A wrong password changes nothing.
     expect(await auth.login("wrong key!", "a", false)).toBeNull();
-    expect(settings.get("dashboardKeyHash")).toStartWith("$argon2");
+    expect(secrets.get(passwordHashSecret)).toBe(old);
     const cookie = (await auth.login("correct horse", "a", false))!.split(";")[0]!;
-    expect(settings.get("dashboardKeyHash")).toStartWith("$pbkdf2-sha256$");
+    expect(secrets.get(passwordHashSecret)).toStartWith("$argon2id$");
     // Rehashing keeps every session, including ones from before it.
     expect(auth.authenticated(before)).toBe(true);
     expect(auth.authenticated(request(cookie))).toBe(true);
@@ -111,23 +114,21 @@ describe("dashboard key", () => {
   });
 
   test("a password changed while an old hash is being replaced stays changed", async () => {
-    const db = openDatabase(":memory:");
-    const settings = new Settings(db);
-    settings.set("dashboardKeyHash", await Bun.password.hash("old password"));
-    const auth = new DashboardAuth(db, settings);
-    // Holds the login's PBKDF2 rehash until the password change has finished.
-    const derive = crypto.subtle.deriveBits.bind(crypto.subtle);
+    const { secrets, auth } = dashboard(undefined, bunPasswords);
+    secrets.set(passwordHashSecret, await webPasswords.hash("old password"));
+    // Holds the login's argon2id rehash until the password change has finished.
+    const hash = Bun.password.hash.bind(Bun.password);
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
     let entered!: () => void;
     const rehashing = new Promise<void>((resolve) => (entered = resolve));
     let calls = 0;
-    const spy = spyOn(crypto.subtle, "deriveBits").mockImplementation(async (...args: Parameters<typeof derive>) => {
+    const spy = spyOn(Bun.password, "hash").mockImplementation(async (...args: Parameters<typeof hash>) => {
       if (calls++ === 0) {
         entered();
         await gate;
       }
-      return derive(...args);
+      return hash(...args);
     });
     try {
       const login = auth.login("old password", "a", false);
@@ -142,9 +143,29 @@ describe("dashboard key", () => {
     expect(await auth.login("new password", "c", false)).not.toBeNull();
   });
 
-  test("a stopped watch is not called", async () => {
+  test("an unencrypted hash from an older version moves into the encrypted secrets and still logs in", async () => {
     const db = openDatabase(":memory:");
-    const auth = new DashboardAuth(db, new Settings(db));
+    db.run("INSERT INTO settings (key, value) VALUES ('dashboardKeyHash', ?)", JSON.stringify(await webPasswords.hash("correct horse")));
+    const secrets = new Secrets(db, testEncryption);
+    expect(secrets.sealPlaintext()).toBe(1);
+    expect(db.one("SELECT 1 FROM settings WHERE key = 'dashboardKeyHash'")).toBeUndefined();
+    expect(secrets.sealPlaintext()).toBe(0);
+    const auth = new DashboardAuth(db, secrets, bunPasswords);
+    expect(auth.hasKey()).toBe(true);
+    expect(await auth.login("correct horse", "a", false)).not.toBeNull();
+    expect(secrets.get(passwordHashSecret)).toStartWith("$argon2id$");
+  });
+
+  test("runtimes without argon2, such as Cloudflare Workers, hash with PBKDF2 and cannot check argon2id", async () => {
+    const hash = await webPasswords.hash("correct horse");
+    expect(hash).toMatch(/^\$pbkdf2-sha256\$i=100000\$[\w+/=]+\$[\w+/=]+$/);
+    expect(await webPasswords.verify("correct horse", hash)).toEqual({ ok: true, outdated: false });
+    expect(await webPasswords.verify("wrong key!", hash)).toEqual({ ok: false, outdated: false });
+    expect(await webPasswords.verify("correct horse", await bunPasswords.hash("correct horse"))).toEqual({ ok: false, outdated: false });
+  });
+
+  test("a stopped watch is not called", async () => {
+    const { auth } = dashboard();
     await auth.setKey("first key!");
     const session = request((await auth.login("first key!", "a", false))!.split(";")[0]!);
     let called = false;
@@ -157,8 +178,7 @@ describe("dashboard key", () => {
 
 describe("first password setup", () => {
   const fresh = () => {
-    const db = openDatabase(":memory:");
-    const auth = new DashboardAuth(db, new Settings(db));
+    const { db, auth } = dashboard();
     return { db, auth, code: auth.createSetupCode()! };
   };
 
@@ -184,7 +204,7 @@ describe("first password setup", () => {
   test("the code stops working once a password exists, such as one set from the terminal", async () => {
     const { db, auth, code } = fresh();
     // `vmbridge password` runs in another process, against the same database.
-    await new DashboardAuth(db, new Settings(db)).setKey("from the terminal");
+    await dashboard(db).auth.setKey("from the terminal");
     expect(await auth.claim(code, "correct horse", "a", false)).toBeNull();
     expect(await auth.login("from the terminal", "a", false)).not.toBeNull();
     expect(auth.createSetupCode()).toBeNull();
@@ -207,8 +227,7 @@ describe("first password setup", () => {
 
 describe("login throttling", () => {
   const setup = async () => {
-    const db = openDatabase(":memory:");
-    const auth = new DashboardAuth(db, new Settings(db));
+    const { auth } = dashboard();
     await auth.setKey("correct horse");
     return auth;
   };

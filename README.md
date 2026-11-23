@@ -96,9 +96,9 @@ file it wrote: if a VM already has its own, or the file was edited on the VM, it
 ## Encryption
 
 VM Bridge encrypts everything sensitive it saves, by default, with AES-256-GCM: provider keys, the
-GitHub token, environment variables for VMs, each VM's T3 token, installed skill files and agent
-sign-ins. Chat history, queued messages, logs and settings are not encrypted. They stay in files
-only your user can read.
+GitHub token, environment variables for VMs, each VM's T3 token, installed skill files, agent
+sign-ins and the dashboard password's hash (argon2id). Chat history, queued messages, logs and
+settings are not encrypted. They stay in files only your user can read.
 
 On first start VM Bridge makes a random key in `~/.vmbridge/encryption.key`, readable only by your
 user. Set `VMBRIDGE_ENCRYPTION_KEY` to 32 random bytes in base64 (`openssl rand -base64 32`) to use

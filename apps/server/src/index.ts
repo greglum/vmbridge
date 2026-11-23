@@ -10,6 +10,7 @@ import { Clients } from "./auth/clients.ts";
 import { DashboardAuth } from "./auth/dashboard.ts";
 import { importAuthFiles } from "./bun/auth-files.ts";
 import { runJobs } from "./bun/jobs.ts";
+import { bunPasswords } from "./bun/password.ts";
 import { openSocket } from "./bun/socket.ts";
 import { openDatabase } from "./bun/sqlite.ts";
 import { localKey, openEncryption } from "./encryption.ts";
@@ -24,6 +25,7 @@ import { Rpc } from "./gateway/rpc.ts";
 import { networkInfo } from "./bun/network.ts";
 import { Secrets, Settings } from "./settings.ts";
 import { Skills } from "./skills.ts";
+import type { Sql } from "./sql.ts";
 import { Store } from "./store.ts";
 import { Traffic } from "./traffic.ts";
 import { CloudflareTunnel } from "./bun/tunnel.ts";
@@ -36,11 +38,22 @@ export const defaultHost = "0.0.0.0";
 export const dataDir = () => process.env.VMBRIDGE_HOME || join(homedir(), ".vmbridge");
 export const databasePath = (dir = dataDir()) => join(dir, "main.db");
 
+/** Rewrites the database so replaced plain text is not left behind in free pages or the write-ahead log. */
+function compact(db: Sql) {
+  db.exec("VACUUM");
+  db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+}
+
 /** Dashboard password setup, for the CLI to run before the server starts. */
 export function dashboardKey(dir = dataDir()) {
   const db = openDatabase(databasePath(dir));
-  const auth = new DashboardAuth(db, new Settings(db));
+  const { encryption, key } = openEncryption(db, (create) => localKey(dir, create));
+  const secrets = new Secrets(db, encryption);
+  // An older version's unencrypted password hash moves first, so it still counts as set.
+  if (secrets.sealPlaintext() > 0) compact(db);
+  const auth = new DashboardAuth(db, secrets, bunPasswords);
   return {
+    encryptionKey: { location: key.location, created: key.created },
     isSet: () => auth.hasKey(),
     set: (key: string) => auth.setKey(key),
     close: () => db.close(),
@@ -70,11 +83,7 @@ export async function start(options: StartOptions = {}) {
   // Data saved before encryption existed. Each table moves in one transaction, so a start cut short finishes the rest
   // next time.
   const sealed = secrets.sealPlaintext() + store.sealPlaintext() + skills.sealPlaintext();
-  if (sealed > 0) {
-    // Rewrites the database so the replaced plain text is not left behind in free pages or the write-ahead log.
-    db.exec("VACUUM");
-    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-  }
+  if (sealed > 0) compact(db);
   const fleet = new Fleet(store, settings, secrets, traffic, agents, skills, openSocket);
   skills.on("changed", () => {
     fleet.emit("changed");
@@ -93,7 +102,7 @@ export async function start(options: StartOptions = {}) {
   const clients = new Clients(db);
   const rpc = new Rpc(hub, clones, branches, traffic, () => secrets.has("github.token"));
   const gateway = new T3Gateway(hub, rpc, clients);
-  const auth = new DashboardAuth(db, settings);
+  const auth = new DashboardAuth(db, secrets, bunPasswords);
   // Defined before the server starts listening; its listener only opens once the tunnel is on.
   let tunnel: CloudflareTunnel;
   const admin = new Admin({ version, startedAt: Date.now(), host, port, settings, secrets, store, fleet, hub, traffic, clients, auth, gateway, agents, stats, skills, usage, tunnel: () => tunnel });

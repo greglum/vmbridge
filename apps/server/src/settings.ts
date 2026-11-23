@@ -11,7 +11,6 @@ export interface ProviderPreference {
 interface SettingValues {
   /** Stable T3 environment identity. Never changes once created. */
   bridgeId: string;
-  dashboardKeyHash: string | null;
   /** Whether first-run onboarding was finished. Until then the dashboard sends you there. */
   onboarded: boolean;
   /** The name T3 shows for this machine. */
@@ -50,6 +49,10 @@ interface SettingValues {
   cloudflareTunnel: { enabled: boolean; hostname: string | null; port: number | null };
 }
 
+/** The dashboard password's hash. Older versions kept it unencrypted, as the `dashboardKeyHash` setting. */
+export const passwordHashSecret = "dashboard.passwordHash";
+const legacyPasswordHash = "dashboardKeyHash";
+
 const defaultMachineName = "VM Bridge";
 
 /** Trimmed, with blank meaning the default. Null when it is too long. */
@@ -60,7 +63,6 @@ export function machineName(input: string): string | null {
 
 const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
   bridgeId: () => crypto.randomUUID(),
-  dashboardKeyHash: () => null,
   onboarded: () => false,
   machineName: () => defaultMachineName,
   providers: () => [],
@@ -84,9 +86,11 @@ export class Settings {
   constructor(private readonly db: Sql) {
     // Persist the identity on first start so pairings survive restarts.
     if (!this.db.one("SELECT 1 FROM settings WHERE key = 'bridgeId'")) this.set("bridgeId", defaults.bridgeId());
-    // Installs from before onboarding existed that already have a password and a provider never need it.
+    // Installs from before onboarding existed that already have a password and a provider never need it. Their
+    // password hash is still the plain setting that `Secrets.sealPlaintext` moves later.
     if (!this.db.one("SELECT 1 FROM settings WHERE key = 'onboarded'")) {
-      this.set("onboarded", this.get("dashboardKeyHash") !== null && this.get("providers").length > 0);
+      const hasPassword = this.db.one("SELECT 1 FROM settings WHERE key = ?", legacyPasswordHash) !== undefined;
+      this.set("onboarded", hasPassword && this.get("providers").length > 0);
     }
   }
 
@@ -126,14 +130,19 @@ export class Secrets {
     }
   }
 
-  /** Encrypts values saved before secrets were encrypted. Returns how many. */
+  /** Encrypts values saved before secrets were encrypted, including the old password hash setting. Returns how many. */
   sealPlaintext(): number {
     const rows = this.db.all<{ name: string; value: string }>("SELECT name, value FROM secrets");
     const plain = rows.filter((row) => !Encryption.isSealed(row.value));
+    const legacy = this.db.one<{ value: string }>("SELECT value FROM settings WHERE key = ?", legacyPasswordHash);
     this.db.transaction(() => {
       for (const row of plain) this.set(row.name, row.value);
+      if (legacy) {
+        this.set(passwordHashSecret, JSON.parse(legacy.value) as string | null);
+        this.db.run("DELETE FROM settings WHERE key = ?", legacyPasswordHash);
+      }
     });
-    return plain.length;
+    return plain.length + (legacy ? 1 : 0);
   }
 }
 
