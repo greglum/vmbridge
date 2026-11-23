@@ -1,4 +1,4 @@
-import { describe, expect, setSystemTime, test } from "bun:test";
+import { describe, expect, setSystemTime, spyOn, test } from "bun:test";
 import { openDatabase } from "../src/bun/sqlite.ts";
 import { Settings } from "../src/settings.ts";
 import { DashboardAuth, TooManyAttempts } from "../src/auth/dashboard.ts";
@@ -94,16 +94,52 @@ describe("dashboard key", () => {
   test("an argon2 hash from an older version still logs in, once, and is replaced by PBKDF2", async () => {
     const db = openDatabase(":memory:");
     const settings = new Settings(db);
-    settings.set("dashboardKeyHash", await Bun.password.hash("correct horse"));
     const auth = new DashboardAuth(db, settings);
+    // A session from the older version, made before its hash is replaced.
+    await auth.setKey("correct horse");
+    const before = request((await auth.login("correct horse", "b", false))!.split(";")[0]!);
+    settings.set("dashboardKeyHash", await Bun.password.hash("correct horse"));
     expect(await auth.login("wrong key!", "a", false)).toBeNull();
     expect(settings.get("dashboardKeyHash")).toStartWith("$argon2");
     const cookie = (await auth.login("correct horse", "a", false))!.split(";")[0]!;
     expect(settings.get("dashboardKeyHash")).toStartWith("$pbkdf2-sha256$");
-    // Rehashing keeps the session it was logged in with.
+    // Rehashing keeps every session, including ones from before it.
+    expect(auth.authenticated(before)).toBe(true);
     expect(auth.authenticated(request(cookie))).toBe(true);
     expect(await auth.login("correct horse", "a", false)).not.toBeNull();
     expect(await auth.login("wrong key!", "a", false)).toBeNull();
+  });
+
+  test("a password changed while an old hash is being replaced stays changed", async () => {
+    const db = openDatabase(":memory:");
+    const settings = new Settings(db);
+    settings.set("dashboardKeyHash", await Bun.password.hash("old password"));
+    const auth = new DashboardAuth(db, settings);
+    // Holds the login's PBKDF2 rehash until the password change has finished.
+    const derive = crypto.subtle.deriveBits.bind(crypto.subtle);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let entered!: () => void;
+    const rehashing = new Promise<void>((resolve) => (entered = resolve));
+    let calls = 0;
+    const spy = spyOn(crypto.subtle, "deriveBits").mockImplementation(async (...args: Parameters<typeof derive>) => {
+      if (calls++ === 0) {
+        entered();
+        await gate;
+      }
+      return derive(...args);
+    });
+    try {
+      const login = auth.login("old password", "a", false);
+      await rehashing;
+      await auth.setKey("new password");
+      release();
+      expect(await login).not.toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await auth.login("old password", "c", false)).toBeNull();
+    expect(await auth.login("new password", "c", false)).not.toBeNull();
   });
 
   test("a stopped watch is not called", async () => {

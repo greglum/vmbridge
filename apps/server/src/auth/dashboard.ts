@@ -145,8 +145,12 @@ export class DashboardAuth {
       return false;
     }
     this.failures.delete(address);
-    // Swaps a hash from an older version for the current kind, keeping every session.
-    if (outdated && this.settings.get("dashboardKeyHash") === hash) this.settings.set("dashboardKeyHash", await hashPassword(key));
+    // Swaps a hash from an older version for the current kind, keeping every session. Checked again after hashing,
+    // with no await before the write, so a password changed meanwhile is never put back.
+    if (outdated) {
+      const replacement = await hashPassword(key);
+      if (this.settings.get("dashboardKeyHash") === hash) this.settings.set("dashboardKeyHash", replacement);
+    }
     return true;
   }
 }
