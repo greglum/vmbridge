@@ -98,7 +98,10 @@ export async function start(options: StartOptions = {}) {
     void hub.credentialsChanged().catch(() => {});
   };
   const clones = new Clones(hub);
-  const branches = new RemoteBranches(() => secrets.get("github.token"));
+  const branches = new RemoteBranches(
+    () => secrets.get("github.token"),
+    async (hostname) => (await Bun.dns.lookup(hostname)).map((entry) => entry.address),
+  );
   const clients = new Clients(db);
   const rpc = new Rpc(hub, clones, branches, traffic, () => secrets.has("github.token"));
   const gateway = new T3Gateway(hub, rpc, clients);
