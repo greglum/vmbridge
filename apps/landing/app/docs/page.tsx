@@ -220,7 +220,7 @@ export default function Docs() {
                 items={[
                   "Each project has its own VMs. Projects never share a disk, a process list or a shell. A busy project gets more than one.",
                   "A VM sleeps after it has been idle for a set time, and wakes when you send a message.",
-                  "Several providers at once: boxd, Instabox, Daytona, Boat, Railway, E2B, Freestyle and Superserve. Pick one per repository, or let new VMs use the default.",
+                  "Several providers at once: boxd, Instabox, Daytona, Boat, Railway, E2B, Freestyle, Superserve and Kubi. Pick one per repository, or let new VMs use the default.",
                   "Everything is set up from a web dashboard behind one password: provider keys, GitHub, agent sign-ins and device pairing.",
                   "T3 Code needs no changes. To the app, VM Bridge looks like a single T3 server.",
                 ]}
@@ -365,8 +365,8 @@ bun run compile        # dist/vmbridge
                 ])}
               />
               <p>
-                Each provider also has its own idle or time limit as a safety net in case VM Bridge is offline. Railway has none, so VM Bridge never
-                sets one there.
+                Each provider also has its own idle or time limit as a safety net in case VM Bridge is offline. Railway and Kubi have none, so VM
+                Bridge never sets one there.
               </p>
             </Section>
 
@@ -406,7 +406,12 @@ bun run compile        # dist/vmbridge
                     you use that size, which takes about 15 s.
                   </>,
                   <>
-                    <strong>Freestyle</strong> and <strong>Superserve</strong> have one machine size, so small, medium and large are the same VM.
+                    <strong>Kubi</strong> stops a VM to sleep it, and starting it again reboots it, so T3 starts fresh on wake. VMs are persistent
+                    by default. A disposable VM, picked in the Kubi settings, is deleted after 7 days asleep. The API key needs read, exec, power
+                    and network.
+                  </>,
+                  <>
+                    <strong>Freestyle</strong>, <strong>Superserve</strong> and <strong>Kubi</strong> have one machine size, so small, medium and large are the same VM.
                   </>,
                 ]}
               />

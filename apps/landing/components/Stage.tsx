@@ -26,7 +26,7 @@ export const steps: Step[] = [
   },
   {
     title: "Choose a provider",
-    body: "Paste a key for boxd, Instabox, Daytona, Boat, Railway, E2B, Freestyle or Superserve in the dashboard. Pick a VM size and how long a VM may sit idle.",
+    body: "Paste a key for boxd, Instabox, Daytona, Boat, Railway, E2B, Freestyle, Superserve or Kubi in the dashboard. Pick a VM size and how long a VM may sit idle.",
     links: [false, false],
     paired: false,
     vm: "pick",

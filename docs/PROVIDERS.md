@@ -2,17 +2,17 @@
 
 VM Bridge runs every VM through `@opencoredev/sandbox-sdk` 1.2.0. You can add several providers and use them at once.
 
-| | Boat | boxd | Daytona | E2B | Freestyle | Instabox | Railway | Superserve |
-|---|---|---|---|---|---|---|---|---|
-| Sizes (small / medium / large) | 2/4 GB, 4/8 GB, 8/16 GB | 1/4 GB, 2/8 GB, 4/16 GB | 1/1 GB, 2/4 GB, 4/8 GB | 2/2 GB, 4/4 GB, 8/8 GB | 4/8 GB for all three | 2/4 GB, 4/8 GB, 8/16 GB | 1/2 GB, 2/4 GB, 4/8 GB | 2/4 GB for all three |
-| Idle sleep | stop (disk kept) | pause (memory kept) | stop (disk kept) | pause (memory kept) | pause (memory kept) | pause (memory kept) | checkpoint, then destroy | pause (memory kept) |
-| Wake | resume | resume | start | resume | resume | resume | new VM from checkpoint (new sandbox ID) | resume |
-| Snapshot | no (SDK) | yes | yes (files only) | yes, and delete | yes (memory and disk) | yes, and delete | checkpoint (files only) | yes |
-| T3 port reachable through | preview host, `_port_auth` cookie | public default proxy | private preview, `X-Daytona-Preview-Token` header | public URL | public `*.style.dev` domain | public published port | public domain declared at create | private preview, token header |
-| Agent sign-ins | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge |
-| GitHub | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge |
-| Provider safety net if VM Bridge is down | auto-stop 12 h after start, pushed back while agents work | auto-suspend after 60 min idle | auto-stop after 60 min without preview or toolbox traffic | auto-pause 60 min after start or wake, pushed back while agents work | auto-pause after 60 min without network traffic | auto-suspend after 30 min idle | none | auto-pause after 12 h awake |
-| Extra package | none | `@boxd-sh/sdk` | none | none | none | none | `railway` | none |
+| | Boat | boxd | Daytona | E2B | Freestyle | Instabox | Railway | Superserve | Kubi |
+|---|---|---|---|---|---|---|---|---|---|
+| Sizes (small / medium / large) | 2/4 GB, 4/8 GB, 8/16 GB | 1/4 GB, 2/8 GB, 4/16 GB | 1/1 GB, 2/4 GB, 4/8 GB | 2/2 GB, 4/4 GB, 8/8 GB | 4/8 GB for all three | 2/4 GB, 4/8 GB, 8/16 GB | 1/2 GB, 2/4 GB, 4/8 GB | 2/4 GB for all three | 4/8 GB for all three |
+| Idle sleep | stop (disk kept) | pause (memory kept) | stop (disk kept) | pause (memory kept) | pause (memory kept) | pause (memory kept) | checkpoint, then destroy | pause (memory kept) | stop (disk kept) |
+| Wake | resume | resume | start | resume | resume | resume | new VM from checkpoint (new sandbox ID) | resume | start (a full reboot) |
+| Snapshot | no (SDK) | yes | yes (files only) | yes, and delete | yes (memory and disk) | yes, and delete | checkpoint (files only) | yes | not used |
+| T3 port reachable through | preview host, `_port_auth` cookie | public default proxy | private preview, `X-Daytona-Preview-Token` header | public URL | public `*.style.dev` domain | public published port | public domain declared at create | private preview, token header | private port, `Kubi-Port-Token` header |
+| Agent sign-ins | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge |
+| GitHub | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge | VM Bridge |
+| Provider safety net if VM Bridge is down | auto-stop 12 h after start, pushed back while agents work | auto-suspend after 60 min idle | auto-stop after 60 min without preview or toolbox traffic | auto-pause 60 min after start or wake, pushed back while agents work | auto-pause after 60 min without network traffic | auto-suspend after 30 min idle | none | auto-pause after 12 h awake | none |
+| Extra package | none | `@boxd-sh/sdk` | none | none | none | none | `railway` | none | none |
 
 Public previews (boxd, E2B, Freestyle, Instabox, Railway) expose the T3 server port. The T3 server requires its own bearer session token on every route, and only VM Bridge holds it.
 
@@ -25,11 +25,12 @@ Public previews (boxd, E2B, Freestyle, Instabox, Railway) expose the T3 server p
 - **Freestyle**: the `freestyle/ubuntu` base snapshot fixes the machine at 4 vCPU, 8 GB and 32 GB of disk, and Freestyle can only grow a VM, never shrink it, so all three sizes are the same VM. Freestyle's plan deletes a VM 30 days after it last ran, so a VM asleep that long is gone and its projects get a new VM. The SDK's default 30 s deadline cut off one delete of a VM that had just run T3 (Freestyle finished the delete anyway), so VM Bridge gives Freestyle calls 2 minutes.
 - **Instabox**: the default template is `agent-browser`. Ports must be 1024 or higher (T3 uses 3773). The free plan allows one machine in any state (a paused one counts) and only 4 vCPU, 8 GB (`400 spec_not_allowed` for 2 vCPU, 4 GB, checked live), so medium is the default. With one machine there is no room to build a base snapshot, and those builds fail with `429 quota_exceeded`, which the SDK retries for up to a minute first. A snapshot fixes the size of VMs made from it to its source's (`sizeLocked`), so VM Bridge names no size there. A snapshot of a running machine is like a power cut, so the base setup runs `sync` first. Deleting a snapshot leaves the machines made from it working.
 - **Superserve**: every template has 2 vCPU, 4 GB and 8 GB of disk, so all three sizes are the same VM. The SDK needs Python in the VM and the default `superserve/node-22` template has none, so VM Bridge uses `superserve/python-3.11` and installs Node itself. Superserve has no idle timer, only a cap on time awake that resets on every resume, so the safety net is a pause after 12 hours awake. Superserve's docs only say pause keeps "VM state". A check confirmed it keeps memory: a process started before a pause was still running after resume, and uptime carried on instead of restarting.
+- **Kubi**: one machine for every size: 4 vCPU, 8 GB and 50 GB of disk, Debian 13 with Node 20.19, in `eu-1`. VM Bridge calls Kubi's API with `fetch` (the `@trykubi/sdk` package has no ports). A VM is a Kubi screen labelled with VM Bridge's labels and its key. Sleep is a stop (disk kept) and wake is a start, which reboots the VM, so T3 starts again on every wake like on Daytona. Processes do not survive a stop. T3 is reached through a token port (`PUT /screens/{id}/ports/3773`), whose token goes in a `Kubi-Port-Token` header; Kubi closes idle HTTP connections after 5 minutes and WebSockets after 1 hour, and VM Bridge's 5 s ping keeps the socket busy. Exec takes at most 10000 characters of command and 64 KiB of stdin, so longer commands and all stdin go up as files only the VM's user can read, removed as the command starts. A persistent screen ($20 a month, kept until deleted) is the default. Kubi settings can pick disposable instead ($0.035 an hour running, $0.003 an hour stopped), which Kubi deletes 7 days after it stops. The API key needs `read`, `exec`, `power` and `network`; adding the provider checks the key with `GET /me` and names any that are missing. A full account (`402 QUOTA_EXCEEDED`) names its screen limit. Kubi has no idle timer, so there is no safety net.
 - **Railway**: no pause, and Railway's own idle timeout destroys the VM, so VM Bridge sets none. CPU and memory are fixed per client, so VM Bridge opens one client per size. Railway keeps checkpoints until they are deleted and the SDK has no delete, so VM Bridge deletes them with Railway's own SDK (`Sandbox.checkpoints` to find one by key, then `Sandbox.deleteCheckpoint`): after a wake from the checkpoint, and when a VM asleep as a checkpoint is deleted.
 
 ## Status
 
-All eight drivers are built and have passed a live run. E2B, Freestyle and Superserve ran `scripts/live.ts <provider> --agent` on 2026-11-21 with the same steps as below. On 2026-11-21, Boat, boxd, Instabox and Railway each ran `scripts/live.ts <provider> --agent` at medium size: create, clone, one short Codex turn, sleep, reads while asleep, a new message that wakes the VM, a second turn, the checkout still there, delete. Daytona was not set up for that round, so its results below are from its own earlier runs without an agent turn.
+All nine drivers are built. All but Kubi have passed a full `scripts/live.ts` run; Kubi's live check is below. E2B, Freestyle and Superserve ran `scripts/live.ts <provider> --agent` on 2026-11-21 with the same steps as below. On 2026-11-21, Boat, boxd, Instabox and Railway each ran `scripts/live.ts <provider> --agent` at medium size: create, clone, one short Codex turn, sleep, reads while asleep, a new message that wakes the VM, a second turn, the checkout still there, delete. Daytona was not set up for that round, so its results below are from its own earlier runs without an agent turn.
 
 Verified live:
 
@@ -172,6 +173,22 @@ Still unverified:
 | VM `vcs.refreshStatus` | 655 | 821 |
 | VM `orchestration.getThreadProjection` | 331 | 565 |
 | Asleep: `getThreadProjection` from VM Bridge's copy | 0.3 | 1.3 |
+
+### Kubi live results (2026-11-23, disposable screen, 4 vCPU, 8 GB)
+
+The test key had `read`, `exec` and `power` but not `network`, so the T3 port path is **untested**: opening the port, the preview URL with its token header, and VM Bridge's socket to T3 through it. `scripts/live.ts` needs that path, so a throwaway script drove the driver, `prepareVm` and `startT3` directly and waited for T3 inside the VM instead. Everything else passed: the key check named the missing `network` permission, opening the port failed with the same message, the listing found the screen by its labels, T3 came back after the reboot with its data and session token, and the screen was deleted (0 screens and 0 templates left).
+
+| Step | Time |
+|---|---|
+| Create (screen running, `/workspace` ready) | 12.6 to 13.6 s |
+| First setup (`prepareVm`: Node, T3 and tools) | 40.3 s |
+| Start T3 and issue a session | 7.6 s |
+| Sleep (stop) | 5.5 s |
+| Wake: start operation | 17.7 s |
+| Wake: start call to T3 answering again | 24.2 s |
+| Delete | 1.9 s |
+
+Earlier runs measured a stop at about 3.6 s, a blank create to running at 13 s, and a start call to T3 answering at 19.7 s median and 21.7 s at worst.
 
 ### Instabox live results (2026-11-21, medium size)
 
