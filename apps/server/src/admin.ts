@@ -28,7 +28,7 @@ import { envVars, machineName, saveEnvVars, type Secrets, type Settings } from "
 import { SkillError, type Skills } from "./skills.ts";
 import type { Store } from "./store.ts";
 import type { Traffic } from "./traffic.ts";
-import { normalizeHostname, requestOrigin, tunnelTokenSecret, type CloudflareTunnel } from "./tunnel.ts";
+import { normalizeHostname, requestOrigin, tunnelTokenSecret, type CloudflareTunnel } from "./bun/tunnel.ts";
 import type { Usage } from "./usage.ts";
 import { envNameProblem, envValueProblem } from "./vm/runtime.ts";
 import type { Stats } from "./vm/stats.ts";

@@ -16,7 +16,7 @@ import {
   redact,
   requestOrigin,
   tunnelTokenSecret,
-} from "../src/tunnel.ts";
+} from "../src/bun/tunnel.ts";
 
 const dirs: string[] = [];
 const tempDir = () => {
