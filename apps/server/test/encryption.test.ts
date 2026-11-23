@@ -172,6 +172,9 @@ describe("encryption key text", () => {
   test("a base64 key is used as is and a passphrase is stretched the same way every time", () => {
     const raw = crypto.getRandomValues(new Uint8Array(32));
     expect(Buffer.from(keyFromText(` ${Buffer.from(raw).toString("base64")}\n`, "key"))).toEqual(Buffer.from(raw));
+    // A key wrapped across lines read as the same key before passphrases existed, so it still must.
+    const encoded = Buffer.from(raw).toString("base64");
+    expect(Buffer.from(keyFromText(`${encoded.slice(0, 20)}\n${encoded.slice(20)}`, "key"))).toEqual(Buffer.from(raw));
     const passphrase = "correct horse battery staple and a few more words";
     const derived = keyFromText(passphrase, "key");
     expect(derived.length).toBe(32);
