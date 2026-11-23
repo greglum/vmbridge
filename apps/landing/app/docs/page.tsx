@@ -156,7 +156,7 @@ export default function Docs() {
               <Block>{`git clone https://github.com/vkpdeveloper/vmbridge
 cd vmbridge
 bun install
-bun run build          # dist/vmbridge
+bun run compile        # dist/vmbridge
 ./dist/vmbridge`}</Block>
             </Section>
 
