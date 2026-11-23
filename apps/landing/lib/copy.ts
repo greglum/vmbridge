@@ -120,10 +120,10 @@ export const copy = {
     },
   },
 
-  /** The eight providers on a ring around the bridge mark. */
+  /** The nine providers on a ring around the bridge mark. */
   providers: {
     /** 40 */
-    title: "Eight supported sandbox providers",
+    title: "Nine supported sandbox providers",
     /** 150 */
     body: "Use your own accounts and API keys, and add several providers at once.",
   },

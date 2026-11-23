@@ -17,7 +17,7 @@ const spots = providers.map((provider, i) => {
 });
 
 /**
- * The eight providers on a ring around the bridge mark: the ring is the whole demo.
+ * The nine providers on a ring around the bridge mark: the ring is the whole demo.
  * Title and body sit in the left column at xl; the ring fills the right and stays
  * visible, centred, at every width. Nodes are sized so neighbours never overlap.
  */

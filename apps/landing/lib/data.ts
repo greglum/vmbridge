@@ -1,4 +1,4 @@
-export type ProviderId = "boxd" | "instabox" | "daytona" | "boat" | "railway" | "e2b" | "freestyle" | "superserve";
+export type ProviderId = "boxd" | "instabox" | "daytona" | "boat" | "railway" | "e2b" | "freestyle" | "superserve" | "kubi";
 
 export interface Provider {
   id: ProviderId;
@@ -130,6 +130,19 @@ export const providers: Provider[] = [
     safetyNet: "Pauses after 12 h awake",
     measured: { ready: "55 s", wakeSeconds: [16, 16], browseMs: 320 },
   },
+  {
+    id: "kubi",
+    name: "Kubi",
+    logo: "/providers/kubi.svg",
+    tile: "#000",
+    inset: "18%",
+    color: "#4ca464",
+    sleep: "Stop, disk kept",
+    wake: "Start (a reboot)",
+    sizes: ["4 vCPU, 8 GB", "4 vCPU, 8 GB", "4 vCPU, 8 GB"],
+    reach: "Private port with a token header",
+    safetyNet: "None",
+  },
 ];
 
 export const github = "https://github.com/vkpdeveloper/vmbridge";
@@ -236,7 +249,7 @@ export const faq = [
   {
     question: "Which cloud providers does VM Bridge support?",
     answer:
-      "VM Bridge supports boxd, Instabox, Daytona, Boat, Railway, E2B, Freestyle and Superserve. You can add several at once, pick a default for new VMs, and send a repository to a given provider.",
+      "VM Bridge supports boxd, Instabox, Daytona, Boat, Railway, E2B, Freestyle, Superserve and Kubi. You can add several at once, pick a default for new VMs, and send a repository to a given provider.",
   },
   {
     question: "Which coding agents can I use?",
