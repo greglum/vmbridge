@@ -34,7 +34,11 @@ export class BunSql implements Sql {
 }
 
 export function openDatabase(path: string): BunSql {
-  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  if (path !== ":memory:") {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    // Also for a folder made before, or by someone else, with the usual 0755: it holds the key, logs and tunnel files.
+    chmodSync(dirname(path), 0o700);
+  }
   const database = new Database(path, { create: true, strict: true });
   // The database holds provider keys and tokens: owner-only. WAL side files share the 0700 directory.
   if (path !== ":memory:") chmodSync(path, 0o600);

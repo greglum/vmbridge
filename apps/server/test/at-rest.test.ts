@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/bun/sqlite.ts";
@@ -61,4 +61,11 @@ test("values saved before encryption existed are encrypted once, also when the C
   expect(Encryption.isSealed(env!.value!)).toBe(true);
   const [vm] = raw(dir, "SELECT t3_token FROM vms");
   expect(Encryption.isSealed(vm!.t3_token!)).toBe(true);
+});
+
+test("the data folder is made private on every start, even one made readable before", async () => {
+  const dir = tempDir();
+  chmodSync(dir, 0o755);
+  await startAndStop(dir);
+  expect(statSync(dir).mode & 0o777).toBe(0o700);
 });

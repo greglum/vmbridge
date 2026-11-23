@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { dashboardKey, dataDir, defaultPort, start, version } from "@vmbridge/server";
-import { service } from "./service.ts";
+import { logPath, protectLog, service } from "./service.ts";
 
 const help = `VM Bridge ${version}
 
@@ -123,6 +123,8 @@ async function run(options: { host?: string; port: number }) {
   const server = await start(options);
   mkdirSync(dataDir(), { recursive: true, mode: 0o700 });
   writeFileSync(pidFile(), String(process.pid));
+  // A service installed by an older version left its log readable by everyone.
+  protectLog();
 
   await server.tunnelReady();
   const network = await server.network();
@@ -202,7 +204,7 @@ async function main() {
         if (existing) throw new Error(`VM Bridge is already running in a terminal (process ${existing}). Stop it first.`);
         const options = serverOptions(values);
         await service.install(options);
-        return console.log(`VM Bridge now runs in the background on port ${options.port}. Logs: ${join(dataDir(), "vmbridge.log")}`);
+        return console.log(`VM Bridge now runs in the background on port ${options.port}. Logs: ${logPath()}`);
       }
       if (subcommand === "uninstall") {
         await service.uninstall();

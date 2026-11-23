@@ -1,9 +1,17 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { childEnv, dataDir } from "@vmbridge/server";
 
 const label = "dev.vmbridge";
+
+/** The background service's output on macOS. It can hold provider errors and addresses, so only the owner reads it. */
+export const logPath = () => join(dataDir(), "vmbridge.log");
+
+/** launchd appends to the log with whatever mode it already has, and makes a new one world-readable. */
+export function protectLog() {
+  if (existsSync(logPath())) chmodSync(logPath(), 0o600);
+}
 
 interface ServiceOptions {
   host?: string;
@@ -48,8 +56,10 @@ const launchd = {
   domain: () => `gui/${process.getuid?.()}`,
 
   async install(options: ServiceOptions) {
-    const log = join(dataDir(), "vmbridge.log");
+    const log = logPath();
     mkdirSync(dataDir(), { recursive: true, mode: 0o700 });
+    writeFileSync(log, "", { flag: "a", mode: 0o600 });
+    protectLog();
     const strings = (values: string[]) => values.map((value) => `      <string>${xml(value)}</string>`).join("\n");
     const env = Object.entries(environment())
       .map(([key, value]) => `      <key>${key}</key>\n      <string>${xml(value)}</string>`)
