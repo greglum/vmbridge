@@ -2,7 +2,9 @@ import type { Clients } from "../auth/clients.ts";
 import { clientSessionMs } from "../auth/clients.ts";
 import { message } from "../fleet.ts";
 import type { Frame } from "../vm/backend.ts";
+import type { WatchUpgrade } from "../watch/watch.ts";
 import { bridgeAuth, bridgeScopes, type Hub } from "./hub.ts";
+import { previewQuery, previewRelay, previewStreamPath } from "./preview.ts";
 import type { Rpc, RpcClient } from "./rpc.ts";
 import type { Projection, Wire } from "./types.ts";
 
@@ -47,6 +49,8 @@ export const isT3Path = (path: string) => path === "/ws" || path === "/oauth/tok
  */
 export class T3Gateway {
   private readonly sockets = new Set<ClientSocket>();
+  /** Open preview streams, which end with their device's access like its RPC sockets. */
+  private readonly streams = new Set<{ clientId: string; end: (code: number, reason: string) => void }>();
   private readonly expiry: ReturnType<typeof setInterval>;
 
   constructor(
@@ -56,6 +60,7 @@ export class T3Gateway {
   ) {
     this.expiry = setInterval(() => {
       for (const socket of this.sockets) if (!clients.valid(socket.data.clientId)) socket.close(1008, "Session expired");
+      for (const stream of this.streams) if (!clients.valid(stream.clientId)) stream.end(1008, "Session expired");
     }, 30_000);
   }
 
@@ -66,14 +71,16 @@ export class T3Gateway {
   /** Ends a revoked device's open connections. */
   disconnect(clientId: string) {
     for (const socket of this.sockets) if (socket.data.clientId === clientId) socket.close(1008, "Device removed");
+    for (const stream of this.streams) if (stream.clientId === clientId) stream.end(1008, "Device removed");
   }
 
-  async fetch(request: Request, upgrade: Upgrade): Promise<Response | undefined> {
+  /** `upgrade` accepts the RPC WebSocket, and `relay` a preview tab's stream. */
+  async fetch(request: Request, upgrade: Upgrade, relay: WatchUpgrade): Promise<Response | undefined> {
     const origin = request.headers.get("origin");
     const started = performance.now();
     const path = new URL(request.url).pathname;
     const seen: { clientId?: string } = {};
-    const response = await this.route(request, upgrade, seen).catch((error) =>
+    const response = await this.route(request, upgrade, relay, seen).catch((error) =>
       json({ error: "bridge_unavailable", message: message(error) }, 503),
     );
     if (!response) return undefined;
@@ -97,7 +104,7 @@ export class T3Gateway {
     return response;
   }
 
-  private async route(request: Request, upgrade: Upgrade, seen: { clientId?: string }): Promise<Response | undefined> {
+  private async route(request: Request, upgrade: Upgrade, relay: WatchUpgrade, seen: { clientId?: string }): Promise<Response | undefined> {
     const url = new URL(request.url);
     const path = url.pathname;
     if (request.method === "OPTIONS") {
@@ -120,6 +127,7 @@ export class T3Gateway {
       const upgraded = upgrade(request, { clientId, cancels: new Map() });
       return upgraded === null ? json({ error: "websocket_required" }, 400) : upgraded;
     }
+    if (path === previewStreamPath) return this.previewStream(request, url, relay);
 
     const bearer = request.headers.get("authorization")?.match(/^Bearer (.+)$/)?.[1];
     const client = bearer ? this.clients.authenticate(bearer) : null;
@@ -140,8 +148,9 @@ export class T3Gateway {
     if (!client) return unauthenticated();
     seen.clientId = client.id;
 
-    if (/^\/api\/auth\/websocket-ticket(?:\/rpc)?$/.test(path) && request.method === "POST") {
-      const { ticket, expiresAt } = this.clients.ticket(client.id);
+    const ticketFor = /^\/api\/auth\/websocket-ticket(?:\/(rpc|media))?$/.exec(path);
+    if (ticketFor && request.method === "POST") {
+      const { ticket, expiresAt } = this.clients.ticket(client.id, ticketFor[1] === "media" ? "media" : "rpc");
       return json({ ticket, expiresAt: new Date(expiresAt).toISOString() });
     }
     if (path === "/api/orchestration/shell" && request.method === "GET") return json(this.hub.shell());
@@ -152,6 +161,32 @@ export class T3Gateway {
     const thread = /^\/api\/orchestration\/threads\/([^/]+)(?:\/(bounded|history|transcript))?$/.exec(path);
     if (thread && request.method === "GET") return this.thread(decodeURIComponent(thread[1]!), thread[2], url);
     return json({ error: "unsupported_bridge_route" }, 404);
+  }
+
+  /**
+   * A preview tab's stream, relayed to the T3 server on the VM that owns the tab's thread and no other: a tab exists
+   * only on its thread's VM. A VM that is not awake has no tabs, which the client hears as a closed tab.
+   */
+  private previewStream(request: Request, url: URL, relay: WatchUpgrade) {
+    const clientId = this.clients.redeemTicket(url.searchParams.get("wsTicket") ?? "", "media");
+    if (!clientId) return unauthenticated();
+    const query = previewQuery(url);
+    const stream = {
+      clientId,
+      ...previewRelay(
+        async () => {
+          const vmId = this.hub.store.threadVm(query.get("threadId") ?? "");
+          const backend = vmId ? this.hub.fleet.backend(vmId) : undefined;
+          return backend ? backend.media(previewStreamPath, query) : null;
+        },
+        () => this.streams.delete(stream),
+      ),
+    };
+    this.streams.add(stream);
+    const upgraded = relay(request, stream.viewer);
+    if (upgraded !== null) return upgraded;
+    this.streams.delete(stream);
+    return json({ error: "websocket_required" }, 400);
   }
 
   private async exchange(request: Request) {
@@ -239,5 +274,6 @@ export class T3Gateway {
   close() {
     clearInterval(this.expiry);
     for (const socket of this.sockets) socket.close(1001, "VM Bridge stopped");
+    for (const stream of this.streams) stream.end(1001, "VM Bridge stopped");
   }
 }

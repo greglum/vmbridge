@@ -62,8 +62,8 @@ describe("request noise", () => {
     const gateway = new T3Gateway({ traffic } as unknown as Hub, {} as Rpc, new Clients(openDatabase(":memory:")));
     const upgrade = () => null;
     try {
-      for (let i = 0; i < 600; i++) await gateway.fetch(new Request(`http://bridge/api/${"x".repeat(8000)}${i}`), upgrade);
-      await gateway.fetch(new Request("http://bridge/api/projects", { headers: { authorization: "Bearer wrong" } }), upgrade);
+      for (let i = 0; i < 600; i++) await gateway.fetch(new Request(`http://bridge/api/${"x".repeat(8000)}${i}`), upgrade, upgrade);
+      await gateway.fetch(new Request("http://bridge/api/projects", { headers: { authorization: "Bearer wrong" } }), upgrade, upgrade);
       expect(pushed).toEqual([]);
       jest.advanceTimersByTime(refusedWindowMs);
       expect(pushed.map((event) => event.operation)).toEqual(["Refused 601 requests without a device session"]);

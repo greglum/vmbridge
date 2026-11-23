@@ -51,6 +51,8 @@ export const bridgeScopes = [
   "source-control:write",
   "access:read",
   "providers:manage",
+  // T3 clients show agents' browser tabs only with this scope. VM Bridge forwards what that takes, see `Rpc`.
+  "preview:operate",
 ];
 
 export const bridgeAuth = {
@@ -394,7 +396,14 @@ export class Hub extends EventEmitter<HubEvents> {
       serverVersion: native?.serverVersion ?? "0.1.0",
       platform: { os: "linux", arch: "x64", machine: "cloud" },
       orchestrationProtocolVersion: 2,
-      capabilities: { repositoryIdentity: true, connectionProbe: true, inlineMessageContext: true, vcsBranchStatus: true },
+      capabilities: {
+        repositoryIdentity: true,
+        connectionProbe: true,
+        inlineMessageContext: true,
+        vcsBranchStatus: true,
+        // Agents' browser tabs run on the VMs' T3 servers, which VM Bridge relays.
+        serverBrowser: (native?.capabilities as { serverBrowser?: boolean } | undefined)?.serverBrowser === true,
+      },
     };
   }
 

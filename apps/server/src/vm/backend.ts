@@ -113,6 +113,24 @@ export class Backend {
     this.heartbeat = setInterval(() => this.open && this.socket?.send('{"_tag":"Ping"}'), 5_000);
   }
 
+  /**
+   * Opens one of T3's media WebSockets, such as a preview tab's stream, at `path` with `query`, under a fresh media
+   * ticket of VM Bridge's own session.
+   */
+  async media(path: string, query: URLSearchParams, timeoutMs = 15_000): Promise<WebSocket> {
+    const ticket = await this.http("/api/auth/websocket-ticket/media", { method: "POST", signal: AbortSignal.timeout(timeoutMs) });
+    if (!ticket.ok) throw new Error(`The T3 server on VM ${this.vmId} refused a media ticket (${ticket.status}).`);
+    const url = this.url(path);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    for (const [key, value] of query) url.searchParams.set(key, value);
+    url.searchParams.set("wsTicket", ((await ticket.json()) as { ticket: string }).ticket);
+    try {
+      return await this.openSocket(url, this.preview.headers ?? {}, timeoutMs);
+    } catch (error) {
+      throw new Error(`Cannot open ${path} on VM ${this.vmId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private receive(data: string) {
     let decoded: unknown;
     try {

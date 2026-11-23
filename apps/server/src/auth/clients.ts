@@ -5,6 +5,9 @@ import { hashToken, newToken } from "./tokens.ts";
 export const pairingLinkMs = 15 * 60_000;
 export const clientSessionMs = 30 * 86_400_000;
 const ticketMs = 30_000;
+
+/** What a ticket opens: the RPC WebSocket, or a media stream such as a preview tab's. T3 asks for each separately. */
+export type TicketUse = "rpc" | "media";
 // How often a device in use writes its last-seen time and pushes its session forward.
 const touchEveryMs = 60_000;
 
@@ -18,11 +21,11 @@ interface ClientRow {
 
 /**
  * T3 devices pair with a one-use link, exchange it for a bearer token, and then
- * fetch short-lived single-use tickets to open the RPC WebSocket. Each paired
- * device keeps the name of the link it used.
+ * fetch short-lived single-use tickets to open the RPC WebSocket or a media stream.
+ * Each paired device keeps the name of the link it used.
  */
 export class Clients {
-  private readonly tickets = new Map<string, { clientId: string; expiresAt: number }>();
+  private readonly tickets = new Map<string, { clientId: string; use: TicketUse; expiresAt: number }>();
 
   constructor(private readonly db: Sql) {}
 
@@ -112,20 +115,20 @@ export class Clients {
     this.db.run("UPDATE clients SET revoked_at = ? WHERE id = ?", Date.now(), clientId);
   }
 
-  ticket(clientId: string): { ticket: string; expiresAt: number } {
+  ticket(clientId: string, use: TicketUse = "rpc"): { ticket: string; expiresAt: number } {
     const now = Date.now();
     for (const [key, entry] of this.tickets) if (entry.expiresAt < now) this.tickets.delete(key);
     const ticket = newToken();
     const expiresAt = now + ticketMs;
-    this.tickets.set(hashToken(ticket), { clientId, expiresAt });
+    this.tickets.set(hashToken(ticket), { clientId, use, expiresAt });
     return { ticket, expiresAt };
   }
 
-  /** Single use: a ticket is consumed whether or not it is still valid. */
-  redeemTicket(ticket: string): string | null {
+  /** Single use: a ticket is consumed whether or not it is still valid, and opens only what it was issued for. */
+  redeemTicket(ticket: string, use: TicketUse = "rpc"): string | null {
     const key = hashToken(ticket);
     const entry = this.tickets.get(key);
     this.tickets.delete(key);
-    return entry && entry.expiresAt > Date.now() && this.valid(entry.clientId) ? entry.clientId : null;
+    return entry && entry.use === use && entry.expiresAt > Date.now() && this.valid(entry.clientId) ? entry.clientId : null;
   }
 }

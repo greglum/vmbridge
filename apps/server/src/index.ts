@@ -28,7 +28,7 @@ import type { Sql } from "./sql.ts";
 import { CloudflareTunnel, requestOrigin } from "./bun/tunnel.ts";
 import { isWatchPath, type Viewer } from "./watch/watch.ts";
 
-/** A T3 client's socket, or a watch page's. */
+/** A T3 client's RPC socket, or a relayed stream's: a watch page's or a preview tab's. */
 type Socket = SocketData | { viewer: Viewer };
 
 export { version };
@@ -107,7 +107,7 @@ export async function start(options: StartOptions = {}) {
   const served = () => ({ hosts: listeners.hosts(), port: listeners.port, fixed: host !== undefined, localNetwork: settings.get("localNetwork") });
   network = new BunNetwork({ served, applyAddresses: () => listeners.apply(), settings, secrets, tunnel: () => tunnel });
   const admin = new Admin({ ...bridge, version, startedAt: Date.now(), network, passwordSource: null });
-  // A watch page's socket carries its viewer; any other is a T3 client's, so the casts only drop the viewer case.
+  // A relayed stream's socket carries its viewer; any other is a T3 client's RPC socket, so the casts only drop the viewer case.
   const websocket: WebSocketHandler<Socket> = {
     maxPayloadLength: 16 * 1024 * 1024,
     open(socket) {
@@ -146,9 +146,10 @@ export async function start(options: StartOptions = {}) {
         if (path.startsWith("/admin/api/")) {
           return admin.fetch(request, requestOrigin(request, server.requestIP(request)?.address, viaTunnel)).then(withSecurityHeaders);
         }
-        if (isT3Path(path)) return gateway.fetch(request, (upgrade, data) => (server.upgrade(upgrade, { data }) ? undefined : null));
+        const relay = (upgrade: Request, viewer: Viewer) => (server.upgrade(upgrade, { data: { viewer } }) ? undefined : null);
+        if (isT3Path(path)) return gateway.fetch(request, (upgrade, data) => (server.upgrade(upgrade, { data }) ? undefined : null), relay);
         // Before the dashboard's files, which would otherwise answer for any path.
-        if (isWatchPath(path)) return watch.fetch(request, (upgrade, viewer) => (server.upgrade(upgrade, { data: { viewer } }) ? undefined : null));
+        if (isWatchPath(path)) return watch.fetch(request, relay);
         // The dashboard lives under /dashboard, a path T3 clients never request, and its files at the root.
         if (dashboard.fetch && (request.method === "GET" || request.method === "HEAD")) return dashboard.fetch(request);
         return new Response("Not found", { status: 404 });

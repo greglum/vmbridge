@@ -45,8 +45,13 @@ const tagged = (requestId: RequestId, error: Wire) => ({
 
 type StreamEvent = "shell" | "config" | "scheduledTasks" | "clones";
 
-/** Requests T3 clients may forward to a VM. Anything else is refused rather than guessed at. */
-const forwardable = /^(orchestration\.|projects\.|vcs\.|sourceControl\.|git\.|review\.|filesystem\.|server\.(getProvider|refreshProvider))/;
+/**
+ * Requests T3 clients may forward to a VM. Anything else is refused rather than guessed at. Of the preview methods,
+ * only reading and closing a thread's tabs: agents open them, and the client watches them through the relayed stream.
+ */
+const forwardable = /^(orchestration\.|projects\.|vcs\.|sourceControl\.|git\.|review\.|filesystem\.|server\.(getProvider|refreshProvider)|preview\.(list|close)$)/;
+/** Stands in for a T3 server's epoch in the empty tab list of a VM that is not awake. */
+const asleepEpoch = "vmbridge-asleep";
 const mutation = /\.(create|write|mutate|switch|remove|stop|forceStop|pull$|runStackedAction$|preparePullRequestThread$|publishRepository$)/i;
 const scheduleMutations = new Set(["scheduledTasks.upsert", "scheduledTasks.setEnabled", "scheduledTasks.delete", "scheduledTasks.runNow"]);
 
@@ -135,6 +140,11 @@ export class Rpc {
       subscribeVcsBranch: (call) => this.vcsSubscription(call),
       subscribeVcsStatus: (call) => this.vcsSubscription(call),
       "orchestration.subscribeThread": (call) => this.subscribeThread(call),
+      subscribePreviewEvents: (call) => this.previewEvents(call),
+      "preview.list": (call) => this.previewTabs(call),
+      "preview.close": (call) => this.previewTabs(call),
+      // The client's own browser profiles, for tabs it hosts. Tabs on a VM use the VM's browser, so this is dropped.
+      "preview.reportProfiles": (call) => this.reply(call, undefined),
     };
   }
 
@@ -531,6 +541,50 @@ export class Rpc {
       throw new Error("This thread's VM is asleep and has no saved transcript. Send a message to wake it.");
     }
     if (call.payload.requestCompletionMarker) this.chunk(call, { kind: "synchronized" });
+  }
+
+  /**
+   * Preview tab events from every awake VM, as one stream. A VM's events count only for its own threads: one naming
+   * another VM's thread is dropped, so no VM can open or change a tab in another project's thread.
+   */
+  private previewEvents(call: Call) {
+    const upstreams = new Map<string, () => void>();
+    const detach = (vmId: string) => {
+      upstreams.get(vmId)?.();
+      upstreams.delete(vmId);
+    };
+    const attach = (vmId: string) => {
+      detach(vmId);
+      const backend = this.hub.fleet.backend(vmId);
+      if (!backend) return;
+      try {
+        const stop = backend.request(call.tag, {}, (frame) => {
+          // An Exit is the VM disconnecting; its next connection attaches again.
+          if (frame._tag !== "Chunk") return;
+          for (const event of (frame.values ?? []) as Wire[]) {
+            if (this.hub.store.threadVm(String(event.threadId)) === vmId) this.chunk(call, this.hub.out(event, vmId));
+          }
+        });
+        upstreams.set(vmId, stop);
+      } catch {
+        // It disconnected meanwhile.
+      }
+    };
+    this.hub.on("awake", attach);
+    this.hub.on("offline", detach);
+    call.client.cancels.set(String(call.id), () => {
+      this.hub.off("awake", attach);
+      this.hub.off("offline", detach);
+      for (const stop of upstreams.values()) stop();
+    });
+    for (const vmId of this.hub.fleet.connected()) attach(vmId);
+  }
+
+  /** A thread's preview tabs live on its VM. One that is not awake has none: its list is empty, and closing is done. */
+  private previewTabs(call: Call) {
+    const vmId = this.hub.store.threadVm(String(call.payload.threadId));
+    if (!vmId || this.hub.fleet.backend(vmId)) return this.forward(call);
+    this.reply(call, call.tag === "preview.list" ? { sessions: [], serverEpoch: asleepEpoch, revision: 0 } : undefined);
   }
 
   /** Routes a request to its VM, waking the VM only for requests that change something. */

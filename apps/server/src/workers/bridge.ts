@@ -119,7 +119,7 @@ export class BridgeObject extends DurableObject<Env> {
       const origin = { address: request.headers.get("cf-connecting-ip") ?? "unknown", secure: url.protocol === "https:" };
       return withSecurityHeaders(await running.admin.fetch(request, origin));
     }
-    return (await running.bridge.gateway.fetch(request, running.upgrade)) ?? new Response("Not found", { status: 404 });
+    return (await running.bridge.gateway.fetch(request, running.upgrade, running.watchUpgrade)) ?? new Response("Not found", { status: 404 });
   }
 
   async alarm() {

@@ -190,7 +190,7 @@ async function openStream(watch: Watch, token: string) {
     viewer = opened;
     return undefined;
   });
-  const page = { sent: [] as Uint8Array[], closed: null as { code?: number; reason?: string } | null };
+  const page = { sent: [] as (string | Uint8Array)[], closed: null as { code?: number; reason?: string } | null };
   const socket: ViewerSocket = {
     send: (data) => void page.sent.push(data),
     close: (code, reason) => void (page.closed = { code, reason }),
@@ -397,5 +397,6 @@ describe("the screen skill", () => {
     expect(skillMd).toContain(watchUrlPath);
     expect(skillMd).toContain("show me my screen");
     expect(skillMd).toContain("turned off in VM Bridge");
+    expect(skillMd).toContain("`preview_open`");
   });
 });
