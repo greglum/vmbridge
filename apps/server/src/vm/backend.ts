@@ -42,8 +42,10 @@ export class Backend {
   private url(path: string) {
     const base = new URL(this.preview.url);
     const url = new URL(path, base.origin);
-    // Some providers carry preview credentials in the query string.
-    for (const [key, value] of base.searchParams) if (!url.searchParams.has(key)) url.searchParams.set(key, value);
+    // Some providers carry preview credentials in the query string. They replace any the client sent under the same
+    // name, which would otherwise reach the provider's proxy in place of the real ones.
+    for (const key of new Set(base.searchParams.keys())) url.searchParams.delete(key);
+    for (const [key, value] of base.searchParams) url.searchParams.append(key, value);
     return url;
   }
 
