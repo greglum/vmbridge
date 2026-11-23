@@ -11,6 +11,7 @@ const fakeValues: Record<ProviderId, Record<string, string>> = {
   e2b: { apiKey: "e2b_fake" },
   freestyle: { apiKey: "fs_fake" },
   instabox: { apiKey: "ib_fake" },
+  kubi: { apiKey: "kubi_fake" },
   railway: { token: "00000000-0000-0000-0000-000000000000", environmentId: "00000000-0000-0000-0000-000000000000" },
   superserve: { apiKey: "ss_live_fake" },
 };

@@ -12,7 +12,7 @@ interface Published {
   /** Per hour while running. `perSize` for flat machine prices, else per vCPU and GiB of memory of the size's machine. */
   running: { vcpuHour: number; gibHour: number; diskGibHour?: number; diskGib?: Record<VmSize, number> } | { perSize: Record<VmSize, number> };
   /** Per hour while VM Bridge has it asleep, before storage billed per GiB. Null: not published. */
-  asleep: { gibHour: number } | { diskGibHour: number; diskGib: Record<VmSize, number> } | 0 | null;
+  asleep: { perHour: number } | { gibHour: number } | { diskGibHour: number; diskGib: Record<VmSize, number> } | 0 | null;
   storageGibMonth: number | null;
   sleeping: string;
   snapshots: string;
@@ -103,6 +103,19 @@ const published: Record<ProviderId, Published> = {
     snapshots: "Free. Free plan: 5 snapshots.",
     plans: "Free: 1 VM at a time, 4 vCPU, 8 GiB, disk included. Pro: $20 a month, credits included, 200 GiB disk.",
   },
+  // Persistent screens, VM Bridge's default: one monthly price per screen, running or stopped.
+  kubi: {
+    currency: "USD",
+    source: "https://trykubi.com/pricing",
+    asOf,
+    running: { perSize: { small: 20 / hoursPerMonth, medium: 20 / hoursPerMonth, large: 20 / hoursPerMonth } },
+    asleep: { perHour: 20 / hoursPerMonth },
+    storageGibMonth: null,
+    sleeping: "A persistent VM costs the same asleep as awake. A disposable one pays $0.003 an hour for its disk.",
+    snapshots: "Not used by VM Bridge.",
+    plans: "Persistent: $20 a month per VM, running or asleep. Disposable: $0.035 an hour running, paid from usage credit.",
+    caveat: "The estimate is for persistent VMs. Disposable VMs, picked in the Kubi settings, cost $0.035 an hour running.",
+  },
   railway: {
     currency: "USD",
     source: "https://railway.com/pricing",
@@ -146,6 +159,7 @@ function runningHourly(provider: ProviderId, size: VmSize) {
 function asleepHourly(provider: ProviderId, size: VmSize) {
   const { asleep } = published[provider];
   if (asleep === null || asleep === 0) return asleep;
+  if ("perHour" in asleep) return asleep.perHour;
   if ("gibHour" in asleep) return machine(provider, size).gib * asleep.gibHour;
   return asleep.diskGibHour * asleep.diskGib[size];
 }

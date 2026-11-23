@@ -20,6 +20,7 @@ const providerColors: Record<ProviderId, string> = {
   e2b: "#c98500",
   freestyle: "#d55181",
   instabox: "#0ca30c",
+  kubi: "#4ca464",
   railway: "#9085e9",
   superserve: "#e66767",
 };

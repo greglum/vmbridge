@@ -12,6 +12,7 @@ import { boatProvider } from "./boat.ts";
 import { boxdWeb, useBoxdWeb } from "./boxd-web.ts";
 import { daytonaProvider } from "./daytona.ts";
 import { e2bProvider } from "./e2b.ts";
+import { kubiProvider } from "./kubi.ts";
 import { notFound, retryNotFound, sdkDriver } from "./sdk.ts";
 import { required, type ProviderDefinition } from "./types.ts";
 
@@ -251,6 +252,7 @@ export const providers: Record<ProviderId, ProviderDefinition> = {
   e2b: e2bProvider,
   freestyle: freestyleProvider,
   instabox: instaboxProvider,
+  kubi: kubiProvider,
   railway: railwayProvider,
   superserve: superserveProvider,
 };

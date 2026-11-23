@@ -9,6 +9,7 @@ import daytona from "./assets/providers/daytona.png";
 import e2b from "./assets/providers/e2b.png";
 import freestyle from "./assets/providers/freestyle.png";
 import instabox from "./assets/providers/instabox.svg";
+import kubi from "./assets/providers/kubi.svg";
 import railway from "./assets/providers/railway.svg";
 import superserve from "./assets/providers/superserve.svg";
 
@@ -32,6 +33,7 @@ const providerLogos: Record<string, { src: string; tile: string; inset: string }
   boat: { src: boat, tile: "bg-white", inset: "p-[18%]" },
   boxd: { src: boxd, tile: "bg-black", inset: "p-[24%]" },
   instabox: { src: instabox, tile: "bg-black", inset: "" },
+  kubi: { src: kubi, tile: "bg-black", inset: "p-[18%]" },
   railway: { src: railway, tile: "bg-[#13111c]", inset: "p-[20%]" },
   daytona: { src: daytona, tile: "bg-black", inset: "" },
   e2b: { src: e2b, tile: "bg-black", inset: "" },
