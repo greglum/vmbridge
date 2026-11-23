@@ -14,7 +14,8 @@ Usage:
   vmbridge service uninstall                        Remove the background service
   vmbridge password                                 Set a new dashboard password
 
-The password can also come from VMBRIDGE_PASSWORD. Data lives in ${dataDir()}.`;
+The password can also come from VMBRIDGE_PASSWORD. Data lives in ${dataDir()}.
+Saved secrets are encrypted with the key in ${join(dataDir(), "encryption.key")}, or VMBRIDGE_ENCRYPTION_KEY (base64) when set.`;
 
 const pidFile = () => join(dataDir(), "vmbridge.pid");
 
@@ -123,6 +124,10 @@ async function run(options: { host: string; port: number }) {
   if (setupCode) console.log("\nOpen a link to choose your password and finish setup. Press Ctrl+C to stop.");
   else if (server.setupCode) console.log("\nNo dashboard password yet. Set one with `vmbridge password`, or start `vmbridge run` in a terminal for a setup link.");
   else console.log("\nOpen the dashboard to set up providers and pair devices. Press Ctrl+C to stop.");
+  if (server.encryptionKey.created) {
+    console.log(`\nSaved provider keys, sign-ins and environment variables are encrypted with a new key in ${server.encryptionKey.location}.`);
+    console.log("Back it up. Without it, they have to be entered again.");
+  }
 
   let stopping = false;
   const stop = async () => {
