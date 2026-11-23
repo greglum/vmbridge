@@ -24,7 +24,7 @@ import { RemoteBranches } from "./gateway/repos.ts";
 import { Rpc } from "./gateway/rpc.ts";
 import { Listeners } from "./bun/listeners.ts";
 import { networkInfo, wantedHosts } from "./bun/network.ts";
-import { Secrets, Settings } from "./settings.ts";
+import { Secrets, Settings, type Plaintext } from "./settings.ts";
 import { Skills } from "./skills.ts";
 import type { Sql } from "./sql.ts";
 import { Store } from "./store.ts";
@@ -38,19 +38,30 @@ export const defaultPort = 3774;
 export const dataDir = () => process.env.VMBRIDGE_HOME || join(homedir(), ".vmbridge");
 export const databasePath = (dir = dataDir()) => join(dir, "main.db");
 
-/** Rewrites the database so replaced plain text is not left behind in free pages or the write-ahead log. */
-function compact(db: Sql) {
-  db.exec("VACUUM");
-  db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+/**
+ * Data saved before encryption existed is sealed, until `openEncryption` says that ran. Each table moves in one
+ * transaction, so a start cut short finishes the rest next time. After that VM Bridge never writes a value
+ * unencrypted, so one found was put there by something else, and is removed.
+ */
+function plaintext(db: Sql, dir: string, migrated: boolean, tables: { plaintext(action: Plaintext): string[] }[]) {
+  const changed = tables.flatMap((table) => table.plaintext(migrated ? "drop" : "seal"));
+  if (migrated) {
+    for (const what of changed) console.error(`Removed the ${what} from ${databasePath(dir)}: it was not encrypted, so VM Bridge did not save it.`);
+  } else if (changed.length > 0) {
+    // Rewrites the database so the replaced plain text is not left behind in free pages or the write-ahead log.
+    db.exec("VACUUM");
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  }
 }
 
 /** Dashboard password setup, for the CLI to run before the server starts. */
 export function dashboardKey(dir = dataDir()) {
   const db = openDatabase(databasePath(dir));
-  const { encryption, key } = openEncryption(db, (create) => localKey(dir, create));
+  const { encryption, key, migrated } = openEncryption(db, (create) => localKey(dir, create));
   const secrets = new Secrets(db, encryption);
-  // An older version's unencrypted password hash moves first, so it still counts as set.
-  if (secrets.sealPlaintext() > 0) compact(db);
+  // An older version's unencrypted password hash moves first, so it still counts as set. Starting records that
+  // sealing ran, once the other tables are done too.
+  plaintext(db, dir, migrated, [secrets]);
   const auth = new DashboardAuth(db, secrets, bunPasswords);
   return {
     encryptionKey: { location: key.location, created: key.created },
@@ -72,7 +83,7 @@ export async function start(options: StartOptions = {}) {
   const dir = options.dir ?? dataDir();
   const db = openDatabase(databasePath(dir));
   const settings = new Settings(db);
-  const { encryption, key: encryptionKey } = openEncryption(db, (create) => localKey(dir, create));
+  const { encryption, key: encryptionKey, migrated, markMigrated } = openEncryption(db, (create) => localKey(dir, create));
   const secrets = new Secrets(db, encryption);
   const store = new Store(db, encryption);
   const traffic = new Traffic(db);
@@ -80,10 +91,8 @@ export async function start(options: StartOptions = {}) {
   importAuthFiles(join(dir, "auths"), db, encryption);
   const agents = new AgentAuth(db, settings, encryption);
   const skills = new Skills(db, encryption, undefined, dir);
-  // Data saved before encryption existed. Each table moves in one transaction, so a start cut short finishes the rest
-  // next time.
-  const sealed = secrets.sealPlaintext() + store.sealPlaintext() + skills.sealPlaintext();
-  if (sealed > 0) compact(db);
+  plaintext(db, dir, migrated, [secrets, store, skills]);
+  if (!migrated) markMigrated();
   const fleet = new Fleet(store, settings, secrets, traffic, agents, skills, openSocket);
   skills.on("changed", () => {
     fleet.emit("changed");

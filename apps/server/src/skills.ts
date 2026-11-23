@@ -6,7 +6,7 @@ import { basename, join, relative, sep } from "node:path";
 import type { LocalSkill, SkillInfo, SkillSearchResult, SkillSource } from "@vmbridge/contracts";
 import { Encryption } from "./encryption.ts";
 import { Instructions } from "./instructions.ts";
-import { Settings } from "./settings.ts";
+import { Settings, type Plaintext } from "./settings.ts";
 import { skillHash, skillsFingerprint, type SkillFile, type SkillsState } from "./vm/skills.ts";
 
 export class SkillError extends Error {}
@@ -183,16 +183,17 @@ export class Skills extends EventEmitter<{ changed: [] }> {
     return JSON.parse(this.encryption.open(row.files, `skill:${name}`)) as SkillFile[];
   }
 
-  /** Encrypts skill files saved before they were encrypted. Returns how many skills. */
-  sealPlaintext(): number {
+  /** Encrypts, or drops, skills whose files are stored unencrypted (see `Plaintext`). Returns what it changed. */
+  plaintext(action: Plaintext): string[] {
     const rows = this.db.all<{ name: string; files: string }>("SELECT name, files FROM skills")
       .filter((row) => !Encryption.isSealed(row.files));
     this.db.transaction(() => {
       for (const row of rows) {
-        this.db.run("UPDATE skills SET files = ? WHERE name = ?", this.encryption.seal(row.files, `skill:${row.name}`), row.name);
+        if (action === "seal") this.db.run("UPDATE skills SET files = ? WHERE name = ?", this.encryption.seal(row.files, `skill:${row.name}`), row.name);
+        else this.db.run("DELETE FROM skills WHERE name = ?", row.name);
       }
     });
-    return rows.length;
+    return rows.map((row) => `skill ${row.name}`);
   }
 
   private save(name: string, source: SkillSource, ref: string, files: SkillFile[]) {
