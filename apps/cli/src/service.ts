@@ -6,14 +6,14 @@ import { dataDir } from "@vmbridge/server";
 const label = "dev.vmbridge";
 
 interface ServiceOptions {
-  host: string;
+  host?: string;
   port: number;
 }
 
 /** The command that runs VM Bridge: the compiled binary itself, or Bun with this script in development. */
 function command(options: ServiceOptions) {
   const compiled = Bun.main.startsWith("/$bunfs/") || Bun.main.startsWith("B:/~BUN/");
-  return [process.execPath, ...(compiled ? [] : [Bun.main]), "run", "--host", options.host, "--port", String(options.port)];
+  return [process.execPath, ...(compiled ? [] : [Bun.main]), "run", ...(options.host ? ["--host", options.host] : []), "--port", String(options.port)];
 }
 
 /** Variables the service needs: a PATH that finds git and tailscale, and the data directory if it was moved. */

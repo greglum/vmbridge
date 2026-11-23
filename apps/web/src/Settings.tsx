@@ -338,6 +338,32 @@ function Addresses() {
         </ItemGroup>
       </Section>
       {network && (
+        <Section title="Local network" actions={<Badge variant="secondary">{network.localNetwork.enabled ? "On" : "Off"}</Badge>}>
+          <Item variant="outline">
+            <ItemContent>
+              <ItemTitle>
+                <label htmlFor="local-network">Devices on this network</label>
+              </ItemTitle>
+              <ItemDescription>
+                {network.localNetwork.fixed
+                  ? "Set by --host when VM Bridge started."
+                  : network.localNetwork.enabled
+                    ? "They can connect over plain HTTP, which others on this Wi-Fi can read."
+                    : "Off, so they can't connect. Tailscale and Cloudflare Tunnel still work."}
+              </ItemDescription>
+            </ItemContent>
+            <ItemActions>
+              <Switch
+                id="local-network"
+                checked={network.localNetwork.enabled}
+                disabled={action.busy || network.localNetwork.fixed}
+                onCheckedChange={(enabled) => void action.run(async () => setNetwork(await api<NetworkInfo>("/network/local", { body: { enabled } })))}
+              />
+            </ItemActions>
+          </Item>
+        </Section>
+      )}
+      {network && (
         <Section title="Tailscale" actions={<Badge variant="secondary">{tailscale?.running ? "Connected" : tailscale?.installed ? "Not connected" : "Not installed"}</Badge>}>
           {tailscale?.running ? (
             <Item variant="outline">

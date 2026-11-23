@@ -107,7 +107,8 @@ export interface CloudflareInfo {
 
 export interface NetworkInfo {
   port: number;
-  host: string;
+  /** Whether VM Bridge answers on the local network. `fixed`: set by --host, so the switch cannot change it. */
+  localNetwork: { enabled: boolean; fixed: boolean };
   addresses: Address[];
   tailscale: {
     installed: boolean;
