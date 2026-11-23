@@ -34,6 +34,7 @@ import { Usage } from "./usage.ts";
 import { Stats } from "./vm/stats.ts";
 
 export { version };
+export { childEnv } from "./bun/env.ts";
 export const defaultPort = 3774;
 export const dataDir = () => process.env.VMBRIDGE_HOME || join(homedir(), ".vmbridge");
 export const databasePath = (dir = dataDir()) => join(dir, "main.db");
