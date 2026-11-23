@@ -781,6 +781,34 @@ describe("sign-in changes", () => {
     expect(files[envPath]).not.toContain("GH_TOKEN=");
     expect(server.restarts).toBe(0);
   });
+
+  test("sign-ins removed while a VM sleeps are scrubbed by the first command it runs on waking", async () => {
+    const { fleet, hub, files, secrets, settings, server, signIns, calls } = idleFleet();
+    secrets.set("github.token", "github_pat_old");
+    settings.set("github", { login: "octo", name: null, avatarUrl: "", profileUrl: "", email: "1+octo@users.noreply.github.com", scopes: null, expiresAt: null, checkedAt: 0 });
+    signIns.opencodeApiKey = "oc-old";
+    saveEnvVars(secrets, { NPM_TOKEN: "npm-old" });
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    await fleet.sleep(vm.id);
+
+    secrets.set("github.token", null);
+    settings.set("github", null);
+    delete signIns.opencodeApiKey;
+    saveEnvVars(secrets, {});
+    await hub.credentialsChanged();
+    // Asleep: nothing could be written yet.
+    expect(files["/workspace/.vmbridge/git-credentials"]).toContain("github_pat_old");
+
+    calls.length = 0;
+    await fleet.ensure(vm.id);
+    expect(calls[0]).toBe("bash -s");
+    expect(files["/workspace/.vmbridge/git-credentials"]).toBeUndefined();
+    for (const old of ["github_pat_old", "oc-old", "npm-old"]) {
+      expect(files[envPath]).not.toContain(old);
+      expect(server.env).not.toContain(old);
+    }
+  });
 });
 
 describe("environment variables", () => {
