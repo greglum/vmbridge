@@ -31,6 +31,8 @@ export type WatchUpgrade = (request: Request, viewer: Viewer) => Response | unde
 /** How a stream ends, for the watch page. Any other close means it reconnects. */
 export const asleepCode = 4000;
 const endedCode = 4001;
+/** A page sends only its handshake before the screen's stream opens; more than this is not a viewer. */
+const earlyLimit = 64 * 1024;
 
 export const isWatchPath = (path: string) => path === "/watch" || path.startsWith("/watch/");
 
@@ -229,6 +231,7 @@ export class Watch {
     let screen: WebSocket | undefined;
     /** What the page sent before the screen's stream opened. */
     const early: Uint8Array[] = [];
+    let earlyBytes = 0;
     let ended = false;
     const end = (code: number, reason: string) => {
       if (ended) return;
@@ -264,8 +267,10 @@ export class Watch {
         const allowed = chunk && filter.push(chunk);
         if (!allowed) return end(1008, "View only");
         if (allowed.length === 0) return;
-        if (screen) screen.send(allowed);
-        else early.push(allowed);
+        if (screen) return screen.send(allowed);
+        earlyBytes += allowed.length;
+        if (earlyBytes > earlyLimit) return end(1008, "Too much before the stream opened");
+        early.push(allowed);
       },
       closed: () => {
         page = undefined;

@@ -269,6 +269,17 @@ describe("the screen's stream", () => {
     expect(screen.received.flatMap((data) => [...data])).toEqual([...handshake, ...frameRequest]);
   });
 
+  test("a page that floods while the screen's stream is still opening is ended", async () => {
+    const { watch, addVm, fleet } = setup();
+    fleet.screen = () => new Promise(() => {});
+    addVm("vm1");
+    await watch.refresh();
+    const { viewer, page } = await openStream(watch, tokenOf(watch.url("vm1")));
+    viewer.received(handshake);
+    for (let i = 0; i < 7000 && !page.closed; i++) viewer.received(frameRequest);
+    expect(page.closed?.code).toBe(1008);
+  });
+
   test("a new link ends the streams open on the old one", async () => {
     const { watch, addVm, fleet } = setup();
     const screen = fakeScreen();
