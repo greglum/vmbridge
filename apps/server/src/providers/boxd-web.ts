@@ -230,9 +230,10 @@ export function boxdWeb(client: BoxdWebClient, options: BoxdWebOptions): BoxdWeb
     try {
       const outcome = await Promise.race([running, aborted]);
       if (outcome === "aborted") {
-        // `[v]` keeps the pattern from matching this kill command itself.
+        // `[v]` keeps the pattern from matching this kill command itself. `timeout` leads the group, so the negative
+        // PID kills the command's children too. No `--`: dash, the usual Linux `sh`, takes it for a PID and kills nothing.
         const pattern = quote(`[v]${tag.slice(1)}`);
-        await raw(id, `for p in $(pgrep -f ${pattern}); do kill -KILL -- -"$p" "$p" 2>/dev/null; done; true`);
+        await raw(id, `for p in $(pgrep -f ${pattern}); do kill -9 -"$p" 2>/dev/null; kill -9 "$p" 2>/dev/null; done; true`);
         return { exitCode: null, timedOut: true };
       }
       if (outcome.stdout) input.onChunk({ stream: "stdout", text: outcome.stdout });
