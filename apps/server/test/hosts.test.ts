@@ -63,7 +63,7 @@ describe("allowed hosts", () => {
       const addresses = [{ kind: "local" as const, label: "This machine", url: "http://127.0.0.1:3774" }];
       if (state.tailscaleHttps) addresses.push({ kind: "local", label: "Tailscale HTTPS", url: state.tailscaleHttps });
       return {
-        host: "0.0.0.0",
+        localNetwork: { enabled: false, fixed: false },
         port: 3774,
         addresses,
         tailscale: { installed: true, running: true, dnsName: "box.tail1234.ts.net", httpsUrl: state.tailscaleHttps },

@@ -23,10 +23,10 @@ async function startBridge(host?: string) {
   const bridge = await start({ dir, host, port: 0 });
   bridges.push(bridge);
   const base = `http://127.0.0.1:${bridge.port}`;
-  const login = await fetch(`${base}/admin/api/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: password }) });
+  const login = await fetch(`${base}/admin/api/login`, { method: "POST", headers: { "content-type": "application/json", origin: base }, body: JSON.stringify({ key: password }) });
   const cookie = login.headers.get("set-cookie")!.split(";")[0]!;
   const setLocalNetwork = (enabled: boolean) =>
-    fetch(`${base}/admin/api/network/local`, { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ enabled }) });
+    fetch(`${base}/admin/api/network/local`, { method: "POST", headers: { "content-type": "application/json", origin: base, cookie }, body: JSON.stringify({ enabled }) });
   return { bridge, setLocalNetwork };
 }
 
