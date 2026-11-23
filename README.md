@@ -101,23 +101,34 @@ file it wrote: if a VM already has its own, or the file was edited on the VM, it
 
 ## Encryption
 
-VM Bridge encrypts everything sensitive it saves, by default, with AES-256-GCM: provider keys, the
-GitHub token, environment variables for VMs, each VM's T3 token, installed skill files, agent
-sign-ins and the dashboard password's hash (argon2id). Chat history, queued messages, logs and
-settings are not encrypted. They stay in files only your user can read.
+VM Bridge encrypts the secrets it saves, by default, with AES-256-GCM: provider keys, the GitHub
+token, environment variables for VMs, each VM's T3 token, installed skill files, agent sign-ins and
+the dashboard password's hash (argon2id).
+
+These are not encrypted, and stay in files only your user can read:
+
+- Chat history: thread transcripts and the copies of them kept while a VM sleeps.
+- Messages waiting for a VM to wake.
+- What each VM's T3 server last reported, such as its configuration.
+- Error messages, the activity log and `vmbridge.log`.
+- Settings, projects, paired devices and usage history.
 
 On first start VM Bridge makes a random key in `~/.vmbridge/encryption.key`, readable only by your
-user. Set `VMBRIDGE_ENCRYPTION_KEY` to 32 random bytes in base64 (`openssl rand -base64 32`) to use
-your own key instead. The key file sits next to your data, so keeping the key outside the folder, in
-that variable, is stronger.
+user. That file sits next to the database, so anyone with a copy of the whole folder, such as a
+backup, can decrypt everything in it. To keep the key apart from your data, set
+`VMBRIDGE_ENCRYPTION_KEY` to the key (the file's contents) and move the file out of the folder. On a
+new install you can instead set the variable to 32 random bytes in base64
+(`openssl rand -base64 32`) before the first start.
 
 Back up the key somewhere apart from your data, such as a password manager. VM Bridge will not start
 with the wrong key or without its key, so it never overwrites what you saved. If the key is lost, no
 one can read those values again: start with a new data folder and add your provider keys, agent
 sign-ins, environment variables and GitHub token again.
 
-Updating from a version without encryption encrypts your saved data on first start. After that,
-older versions can't read it, so don't go back to one.
+Updating from a version without encryption encrypts your saved data on first start, so make that
+first start without `VMBRIDGE_ENCRYPTION_KEY` set. After that, older versions can't read it, so
+don't go back to one. VM Bridge never saves a secret unencrypted after that start, so it removes any
+it finds, with an error in its log.
 
 ## Addresses
 
