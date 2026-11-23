@@ -21,7 +21,8 @@ Website and docs: [vmbridge.ordinity.com](https://vmbridge.ordinity.com)
   reach every VM, for Claude Code and Codex.
 - Your global `AGENTS.md` and `CLAUDE.md`, pasted in the dashboard or read from this machine, can
   follow you to every VM.
-- Works over Tailscale, Cloudflare Tunnel and, once you turn it on, your local network.
+- Works over Tailscale, Cloudflare Tunnel and, once you turn it on, your local network. Or deploy it
+  to Cloudflare Workers with one button.
 
 ## Install
 
@@ -33,6 +34,8 @@ curl -fsSL https://raw.githubusercontent.com/vkpdeveloper/vmbridge/main/install.
 
 This installs one `vmbridge` file in `~/.local/bin` (set `VMBRIDGE_INSTALL_DIR` to change it).
 Run the same command again to update.
+
+Or run it on Cloudflare, with no machine of your own: see [Cloudflare Workers](#cloudflare-workers).
 
 Each release file is signed with a build attestation that ties it to the GitHub Actions run and commit that built it. To check an installed file with the [GitHub CLI](https://cli.github.com):
 
@@ -185,6 +188,25 @@ update the dashboard tunnel to match. The tunnel's config and credentials live i
 - While it is on, the tunnel starts and stops with VM Bridge, including when you close its terminal.
   If cloudflared stops on its own, VM Bridge starts it again after a second, waiting longer after
   each failure, up to a minute. Its warnings and errors go to the VM Bridge log with tokens hidden.
+
+## Cloudflare Workers
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/vkpdeveloper/vmbridge)
+
+The button copies VM Bridge to your GitHub account and runs it on your Cloudflare account, on the
+free Workers plan. It asks for two secrets:
+
+- `VMBRIDGE_PASSWORD`: the dashboard password, at least 12 characters.
+- `VMBRIDGE_ENCRYPTION_KEY`: the output of `openssl rand -base64 32`, or a passphrase of at least 32
+  characters. Keep a copy. Without it no one can read your saved keys and sign-ins.
+
+Then open the Worker's address and log in. Pair T3 Code with the same address. There is no setup
+link, local network, Tailscale or tunnel to set up: the Worker's `workers.dev` address (or a domain
+you add to it) is the only one. To change the password, change the secret under the Worker's
+**Settings** in Cloudflare; that also logs everyone out.
+
+There is no machine to read skills or `AGENTS.md` from, so upload skills and paste instructions under
+**Skills**. How it works, limits and costs: [docs/cloudflare.md](docs/cloudflare.md).
 
 ## Commands
 
