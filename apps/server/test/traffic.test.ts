@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { openDatabase } from "../src/db.ts";
+import { openDatabase } from "../src/bun/sqlite.ts";
 import { keptErrors, problemMs, Traffic } from "../src/traffic.ts";
 
 let quiet: ReturnType<typeof spyOn>;

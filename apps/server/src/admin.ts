@@ -22,7 +22,7 @@ import type { Hub } from "./gateway/hub.ts";
 import type { T3Gateway } from "./gateway/http.ts";
 import { githubName } from "./gateway/repos.ts";
 import { isWorking } from "./gateway/types.ts";
-import { disableTailscaleHttps, enableTailscaleHttps, networkInfo } from "./network.ts";
+import { disableTailscaleHttps, enableTailscaleHttps, networkInfo } from "./bun/network.ts";
 import { providers } from "./providers/index.ts";
 import { envVars, machineName, saveEnvVars, type Secrets, type Settings } from "./settings.ts";
 import { SkillError, type Skills } from "./skills.ts";

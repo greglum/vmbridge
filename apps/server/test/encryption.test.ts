@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentAuth } from "../src/agent-auth/profiles.ts";
-import { openDatabase } from "../src/db.ts";
+import { openDatabase } from "../src/bun/sqlite.ts";
 import { Encryption, EncryptionKeyError, keyPath, keyVariable, localKey, openEncryption } from "../src/encryption.ts";
 import { Secrets, Settings } from "../src/settings.ts";
 import { Skills } from "../src/skills.ts";
@@ -96,10 +96,10 @@ describe("encrypting data saved in plain text", () => {
     const dir = tempDir();
     const db = openDatabase(":memory:");
     const encryption = new Encryption(key(6));
-    db.query("INSERT INTO secrets (name, value) VALUES ('provider.e2b.apiKey', 'e2b-plain'), ('env', '{\"FOO\":\"env-plain\"}')").run();
-    db.query("INSERT INTO vms (id, provider, name, size, state, created_at, t3_token) VALUES ('vm1', 'e2b', 'one', 'medium', 'ready', 0, 't3-plain')").run();
+    db.run("INSERT INTO secrets (name, value) VALUES ('provider.e2b.apiKey', 'e2b-plain'), ('env', '{\"FOO\":\"env-plain\"}')");
+    db.run("INSERT INTO vms (id, provider, name, size, state, created_at, t3_token) VALUES ('vm1', 'e2b', 'one', 'medium', 'ready', 0, 't3-plain')");
     const files = JSON.stringify([{ path: "SKILL.md", data: Buffer.from("skill-plain").toString("base64") }]);
-    db.query("INSERT INTO skills (name, source, ref, hash, files, installed_at, updated_at) VALUES ('mine', 'local', '/x', 'h', ?, 0, 0)").run(files);
+    db.run("INSERT INTO skills (name, source, ref, hash, files, installed_at, updated_at) VALUES ('mine', 'local', '/x', 'h', ?, 0, 0)", files);
     mkdirSync(join(dir, "auths", "opencode-work"), { recursive: true });
     const profile = { id: "opencode-work", agent: "opencode", method: "api-key", name: "Work", detail: null, createdAt: 0, error: null, token: "oc-plain" };
     writeFileSync(join(dir, "auths", "opencode-work", "profile.json"), JSON.stringify(profile));
@@ -114,7 +114,7 @@ describe("encrypting data saved in plain text", () => {
     expect(seal()).toBe(0);
 
     const raw = [
-      ...db.query<{ value: string }, []>("SELECT value FROM secrets UNION ALL SELECT t3_token FROM vms UNION ALL SELECT files FROM skills").all().map((row) => row.value),
+      ...db.all<{ value: string }>("SELECT value FROM secrets UNION ALL SELECT t3_token FROM vms UNION ALL SELECT files FROM skills").map((row) => row.value),
       readFileSync(join(dir, "auths", "opencode-work", "profile.json"), "utf8"),
     ].join("\n");
     for (const plain of ["e2b-plain", "env-plain", "t3-plain", Buffer.from("skill-plain").toString("base64"), "oc-plain"]) expect(raw).not.toContain(plain);
@@ -131,7 +131,7 @@ describe("encrypting data saved in plain text", () => {
     const db = openDatabase(":memory:");
     const secrets = new Secrets(db, new Encryption(key(7)));
     secrets.set("github.token", "gh-token");
-    db.query("UPDATE secrets SET name = 'provider.e2b.apiKey' WHERE name = 'github.token'").run();
+    db.run("UPDATE secrets SET name = 'provider.e2b.apiKey' WHERE name = 'github.token'");
     expect(() => secrets.get("provider.e2b.apiKey")).toThrow(EncryptionKeyError);
   });
 });

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentAuth, InvalidSignIn } from "../src/agent-auth/profiles.ts";
 import type { CodexAuthFile } from "../src/agent-auth/codex.ts";
-import { openDatabase } from "../src/db.ts";
+import { openDatabase } from "../src/bun/sqlite.ts";
 import { Settings } from "../src/settings.ts";
 import { prepareVm } from "../src/vm/runtime.ts";
 import { recordingBox } from "./vm-program.ts";

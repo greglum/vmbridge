@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import type { Sql } from "./sql.ts";
 import type { ProviderId, TrafficEvent } from "@vmbridge/contracts";
 
 type Listener = (event: TrafficEvent) => void;
@@ -29,11 +29,9 @@ export class Traffic {
   private readonly listeners = new Set<Listener>();
   readonly recent: TrafficEvent[] = [];
 
-  constructor(private readonly db?: Database) {
+  constructor(private readonly db?: Sql) {
     if (!db) return;
-    const rows = db
-      .query<ErrorRow, []>("SELECT at, kind, operation, reason, vm_id AS vmId, provider FROM errors ORDER BY id")
-      .all();
+    const rows = db.all<ErrorRow>("SELECT at, kind, operation, reason, vm_id AS vmId, provider FROM errors ORDER BY id");
     for (const row of rows) {
       this.recent.push({
         id: this.nextId++,
@@ -73,11 +71,10 @@ export class Traffic {
     const vms = new Map<string, string>();
     const providers = new Map<ProviderId, string>();
     if (!this.db) return { vms, providers };
-    const rows = this.db
-      .query<ErrorRow, [number]>(
-        "SELECT at, kind, operation, reason, vm_id AS vmId, provider FROM errors WHERE resolved = 0 AND kind = 'provider' AND at >= ? ORDER BY id",
-      )
-      .all(now - problemMs);
+    const rows = this.db.all<ErrorRow>(
+      "SELECT at, kind, operation, reason, vm_id AS vmId, provider FROM errors WHERE resolved = 0 AND kind = 'provider' AND at >= ? ORDER BY id",
+      now - problemMs,
+    );
     for (const row of rows) {
       if (/^build \w+ base snapshot$/.test(row.operation)) continue;
       const text = `${row.operation[0]?.toUpperCase() ?? ""}${row.operation.slice(1)} failed${row.reason ? `: ${row.reason}` : ""}`;
@@ -92,18 +89,18 @@ export class Traffic {
       const subject = entry.vmId ? ` (VM ${entry.vmId})` : entry.provider ? ` (${entry.provider})` : "";
       console.error(`[error] ${entry.operation}${entry.reason ? `: ${entry.reason}` : ""}${subject}`);
       if (!this.db) return;
-      this.db
-        .query("INSERT INTO errors (at, kind, operation, reason, vm_id, provider) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(entry.at, entry.kind, entry.operation, entry.reason ?? null, entry.vmId ?? null, entry.provider ?? null);
-      this.db.query("DELETE FROM errors WHERE id <= (SELECT MAX(id) FROM errors) - ?").run(keptErrors);
+      this.db.run(
+        "INSERT INTO errors (at, kind, operation, reason, vm_id, provider) VALUES (?, ?, ?, ?, ?, ?)",
+        entry.at, entry.kind, entry.operation, entry.reason ?? null, entry.vmId ?? null, entry.provider ?? null,
+      );
+      this.db.run("DELETE FROM errors WHERE id <= (SELECT MAX(id) FROM errors) - ?", keptErrors);
       return;
     }
     // The same operation working again for the same VM, or for the provider as a whole, puts its failures right.
     if (!this.db || entry.status !== "ok" || (!entry.vmId && !entry.provider)) return;
-    this.db
-      .query(
-        "UPDATE errors SET resolved = 1 WHERE resolved = 0 AND operation = ?1 AND (vm_id = ?2 OR (?2 IS NULL AND provider = ?3))",
-      )
-      .run(entry.operation, entry.vmId ?? null, entry.provider ?? null);
+    this.db.run(
+      "UPDATE errors SET resolved = 1 WHERE resolved = 0 AND operation = ?1 AND (vm_id = ?2 OR (?2 IS NULL AND provider = ?3))",
+      entry.operation, entry.vmId ?? null, entry.provider ?? null,
+    );
   }
 }

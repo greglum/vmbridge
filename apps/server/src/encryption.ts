@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import type { Sql } from "./sql.ts";
 import { createCipheriv, createDecipheriv, createSecretKey, randomBytes, type KeyObject } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -102,12 +102,12 @@ const checkName = "encryption.check";
  * Loads the key and proves it is the one this database was encrypted with, using a known value sealed on first
  * start. A database that has that value never gets a new key, so a lost key stops startup instead of hiding data.
  */
-export function openEncryption(db: Database, source: (create: boolean) => KeySource) {
-  const check = db.query<{ value: string }, []>(`SELECT value FROM secrets WHERE name = '${checkName}'`).get()?.value;
+export function openEncryption(db: Sql, source: (create: boolean) => KeySource) {
+  const check = db.one<{ value: string }>(`SELECT value FROM secrets WHERE name = '${checkName}'`)?.value;
   const key = source(check === undefined);
   const encryption = new Encryption(key.key);
   if (check === undefined) {
-    db.query("INSERT INTO secrets (name, value) VALUES (?, ?)").run(checkName, encryption.seal(checkName, checkName));
+    db.run("INSERT INTO secrets (name, value) VALUES (?, ?)", checkName, encryption.seal(checkName, checkName));
   } else {
     try {
       encryption.open(check, checkName);

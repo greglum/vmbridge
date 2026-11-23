@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { SandboxError } from "@opencoredev/sandbox-sdk";
 import type { AgentAuth } from "../src/agent-auth/profiles.ts";
-import { openDatabase } from "../src/db.ts";
+import { openDatabase } from "../src/bun/sqlite.ts";
 import { Fleet, SettingUp } from "../src/fleet.ts";
 import type { Box, Driver } from "../src/providers/index.ts";
 import { Secrets, Settings } from "../src/settings.ts";

@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import type { Sql } from "./sql.ts";
 import { EventEmitter } from "node:events";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -106,7 +106,7 @@ export class Skills extends EventEmitter<{ changed: [] }> {
   readonly instructions: Instructions;
 
   constructor(
-    private readonly db: Database,
+    private readonly db: Sql,
     /** Skill files are stored encrypted: local skills can hold anything their folder does. */
     private readonly encryption: Encryption,
     /** The folders to find this machine's skills in. */
@@ -130,11 +130,11 @@ export class Skills extends EventEmitter<{ changed: [] }> {
   }
 
   private rows() {
-    return this.db.query<SkillRow, []>(`SELECT ${columns} FROM skills ORDER BY name`).all();
+    return this.db.all<SkillRow>(`SELECT ${columns} FROM skills ORDER BY name`);
   }
 
   private row(name: string) {
-    return this.db.query<SkillRow, [string]>(`SELECT ${columns} FROM skills WHERE name = ?`).get(name);
+    return this.db.one<SkillRow>(`SELECT ${columns} FROM skills WHERE name = ?`, name);
   }
 
   list(): SkillInfo[] {
@@ -148,7 +148,7 @@ export class Skills extends EventEmitter<{ changed: [] }> {
   }
 
   state(): SkillsState {
-    const skills = this.db.query<{ name: string; hash: string }, []>("SELECT name, hash FROM skills ORDER BY name").all();
+    const skills = this.db.all<{ name: string; hash: string }>("SELECT name, hash FROM skills ORDER BY name");
     const instructions = this.instructions.state();
     return { fingerprint: skillsFingerprint(skills, instructions), skills, instructions };
   }
@@ -161,15 +161,13 @@ export class Skills extends EventEmitter<{ changed: [] }> {
 
   /** Encrypts skill files saved before they were encrypted. Returns how many skills. */
   sealPlaintext(): number {
-    const rows = this.db
-      .query<{ name: string; files: string }, []>("SELECT name, files FROM skills")
-      .all()
+    const rows = this.db.all<{ name: string; files: string }>("SELECT name, files FROM skills")
       .filter((row) => !Encryption.isSealed(row.files));
     this.db.transaction(() => {
       for (const row of rows) {
-        this.db.query("UPDATE skills SET files = ? WHERE name = ?").run(this.encryption.seal(row.files, `skill:${row.name}`), row.name);
+        this.db.run("UPDATE skills SET files = ? WHERE name = ?", this.encryption.seal(row.files, `skill:${row.name}`), row.name);
       }
-    })();
+    });
     return rows.length;
   }
 
@@ -178,13 +176,12 @@ export class Skills extends EventEmitter<{ changed: [] }> {
     const existing = this.row(name);
     if (existing?.hash === hash && existing.ref === ref) return false;
     const now = Date.now();
-    this.db
-      .query(
-        `INSERT INTO skills (name, source, ref, description, hash, files, installed_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    this.db.run(
+      `INSERT INTO skills (name, source, ref, description, hash, files, installed_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (name) DO UPDATE SET source = excluded.source, ref = excluded.ref, description = excluded.description, hash = excluded.hash,
            files = excluded.files, updated_at = excluded.updated_at`,
-      )
-      .run(name, source, ref, describe(files), hash, this.encryption.seal(JSON.stringify(files), `skill:${name}`), now, now);
+      name, source, ref, describe(files), hash, this.encryption.seal(JSON.stringify(files), `skill:${name}`), now, now,
+    );
     this.emit("changed");
     return true;
   }
@@ -249,7 +246,7 @@ export class Skills extends EventEmitter<{ changed: [] }> {
   }
 
   remove(name: string) {
-    if (this.db.query("DELETE FROM skills WHERE name = ?").run(name).changes) this.emit("changed");
+    if (this.db.run("DELETE FROM skills WHERE name = ?", name)) this.emit("changed");
   }
 
   /** Skills in this machine's Claude Code and Codex skill folders. */
