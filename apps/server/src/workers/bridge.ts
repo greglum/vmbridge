@@ -97,6 +97,8 @@ export class BridgeObject extends DurableObject<Env> {
 
     const admin = new Admin({ ...bridge, version: packageJson.version, startedAt: Date.now(), network: workerNetwork, passwordSource: `the Worker's ${passwordVariable} secret` });
     const jobs = new AlarmJobs(this.ctx.storage, bridgeJobs({ hub, fleet, stats, usage, traffic, watch }));
+    // A recreated Durable Object already knows its address; without this, links would read as off until the next alarm.
+    await watch.refresh();
     void fleet.resume();
     traffic.record({ kind: "system", operation: "VM Bridge started" });
     return { bridge, admin, upgrade: upgrader(gateway), watchUpgrade: watchUpgrader(), jobs };
