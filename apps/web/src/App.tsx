@@ -105,7 +105,7 @@ function Login({ onLoggedIn }: { onLoggedIn: () => void }) {
           <Button type="submit" size="lg" className="h-10" disabled={action.busy || !key}>
             Log in
           </Button>
-          {unencrypted && <p className="text-center text-sm text-muted-foreground">This connection is not encrypted. Turn on Tailscale HTTPS in Settings.</p>}
+          {unencrypted && <p className="text-center text-sm text-muted-foreground">This connection is not encrypted. For HTTPS, turn on Tailscale HTTPS or Cloudflare Tunnel in Settings.</p>}
         </FieldGroup>
       </form>
     </main>
