@@ -304,7 +304,17 @@ function GitHub({ account }: { account: GitHubAccount | null }) {
               <Button variant="outline" size="sm" disabled={action.busy} onClick={() => void action.run(() => api("/github/check", { body: {} }))}>
                 Check again
               </Button>
-              <Button variant="ghost" size="sm" className="text-destructive" disabled={action.busy} onClick={() => void action.run(() => api("/github", { method: "DELETE" }))}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive"
+                disabled={action.busy}
+                onClick={() =>
+                  void action
+                    .run(() => api("/github", { method: "DELETE" }))
+                    .then((ok) => ok && toast.success("GitHub disconnected. Sleeping VMs drop the token when they wake. Revoke it on GitHub too."))
+                }
+              >
                 Disconnect
               </Button>
             </ItemActions>
@@ -427,7 +437,11 @@ export function AgentSection({ agent, profiles, collapsed }: { agent: AgentKind;
               size="sm"
               className="text-destructive"
               disabled={action.busy}
-              onClick={() => void action.run(() => api(`/agents/${profile.id}`, { method: "DELETE" }))}
+              onClick={() =>
+                void action
+                  .run(() => api(`/agents/${profile.id}`, { method: "DELETE" }))
+                  .then((ok) => ok && toast.success(`${profile.name} removed. Sleeping VMs drop it when they wake. Revoke it at its source too.`))
+              }
             >
               Remove
             </Button>
