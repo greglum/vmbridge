@@ -22,7 +22,7 @@ import type { Hub } from "./gateway/hub.ts";
 import type { T3Gateway } from "./gateway/http.ts";
 import { githubName } from "./gateway/repos.ts";
 import { isWorking } from "./gateway/types.ts";
-import { disableTailscaleHttps, enableTailscaleHttps, networkInfo } from "./bun/network.ts";
+import { disableTailscaleHttps, enableTailscaleHttps, networkInfo, type Served } from "./bun/network.ts";
 import { providers } from "./providers/index.ts";
 import { envVars, machineName, saveEnvVars, type Secrets, type Settings } from "./settings.ts";
 import { SkillError, type Skills } from "./skills.ts";
@@ -36,8 +36,9 @@ import type { Stats } from "./vm/stats.ts";
 export interface AdminDeps {
   version: string;
   startedAt: number;
-  host: string;
-  port: number;
+  served: () => Served;
+  /** Opens or closes listeners to match the local network switch. */
+  applyAddresses: () => Promise<void>;
   settings: Settings;
   secrets: Secrets;
   store: Store;
@@ -171,8 +172,17 @@ export class Admin {
     if (path === "/network" && method === "GET") return json(await this.network());
     if (path === "/network/https" && method === "POST") {
       const { enabled } = await body(request);
-      if (enabled === true) await enableTailscaleHttps(this.deps.port);
-      else await disableTailscaleHttps(this.deps.port);
+      const { port } = this.deps.served();
+      if (enabled === true) await enableTailscaleHttps(port);
+      else await disableTailscaleHttps(port);
+      return json(await this.network());
+    }
+    if (path === "/network/local" && method === "POST") {
+      const { enabled } = await body(request);
+      if (typeof enabled !== "boolean") throw new BadRequest("Say whether to turn the local network on.");
+      if (this.deps.served().fixed) throw new BadRequest("VM Bridge was started with --host, which decides this.");
+      settings.set("localNetwork", enabled);
+      await this.deps.applyAddresses();
       return json(await this.network());
     }
     if (path === "/network/cloudflare" && method === "POST") {
@@ -632,7 +642,7 @@ export class Admin {
 
   /** Server-sent events: every traffic event, and a fresh overview whenever the fleet changes. */
   private network() {
-    return networkInfo(this.deps.host, this.deps.port, this.deps.tunnel().info());
+    return networkInfo(this.deps.served(), this.deps.tunnel().info());
   }
 
   private events(request: Request) {

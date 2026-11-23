@@ -48,6 +48,8 @@ interface SettingValues {
    * A dashboard tunnel's token is the `cloudflare.tunnelToken` secret.
    */
   cloudflareTunnel: { enabled: boolean; hostname: string | null; port: number | null };
+  /** Listen on the local network too. Off by default, for existing installs as well: it is plain HTTP. */
+  localNetwork: boolean;
 }
 
 const defaultMachineName = "VM Bridge";
@@ -78,6 +80,7 @@ const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
   syncLocalSkills: () => false,
   fallbackConfig: () => null,
   cloudflareTunnel: () => ({ enabled: false, hostname: null, port: null }),
+  localNetwork: () => false,
 };
 
 export class Settings {

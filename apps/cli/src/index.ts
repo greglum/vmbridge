@@ -2,18 +2,20 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { dashboardKey, dataDir, defaultHost, defaultPort, start, version } from "@vmbridge/server";
+import { dashboardKey, dataDir, defaultPort, start, version } from "@vmbridge/server";
 import { service } from "./service.ts";
 
 const help = `VM Bridge ${version}
 
 Usage:
-  vmbridge [run] [--host 0.0.0.0] [--port ${defaultPort}]   Start VM Bridge in this terminal
-  vmbridge stop                                     Stop VM Bridge, including the background service
-  vmbridge service install [--host] [--port]        Run VM Bridge in the background at login
-  vmbridge service uninstall                        Remove the background service
-  vmbridge password                                 Set a new dashboard password
+  vmbridge [run] [--host <address>] [--port ${defaultPort}]   Start VM Bridge in this terminal
+  vmbridge stop                                        Stop VM Bridge, including the background service
+  vmbridge service install [--host] [--port]           Run VM Bridge in the background at login
+  vmbridge service uninstall                           Remove the background service
+  vmbridge password                                    Set a new dashboard password
 
+VM Bridge listens on this machine and on Tailscale. Turn on the local network in Settings > Addresses,
+or pass --host (or set VMBRIDGE_HOST) to listen on one address only: --host 0.0.0.0 is every network.
 The password can also come from VMBRIDGE_PASSWORD. Data lives in ${dataDir()}.
 Saved secrets are encrypted with the key in ${join(dataDir(), "encryption.key")}, or VMBRIDGE_ENCRYPTION_KEY (base64) when set.`;
 
@@ -103,10 +105,11 @@ async function ensureKey({ force = false, ask = true } = {}) {
 function serverOptions(values: { host?: string; port?: string }) {
   const port = values.port === undefined ? defaultPort : Number(values.port);
   if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("--port must be a port number.");
-  return { host: values.host ?? defaultHost, port };
+  const host = values.host || process.env.VMBRIDGE_HOST || undefined;
+  return { host, port };
 }
 
-async function run(options: { host: string; port: number }) {
+async function run(options: { host?: string; port: number }) {
   const existing = runningPid();
   if (existing) throw new Error(`VM Bridge is already running (process ${existing}). Stop it with \`vmbridge stop\`.`);
   await ensureKey({ ask: false });
@@ -122,6 +125,11 @@ async function run(options: { host: string; port: number }) {
   const page = setupCode ? `/dashboard/onboarding#code=${setupCode}` : "/dashboard";
   console.log(`VM Bridge ${version} is running.\n`);
   for (const address of network.addresses) console.log(`  ${address.label.padEnd(20)} ${address.url}${page}`);
+  if (!network.localNetwork.enabled && !network.localNetwork.fixed) {
+    console.log("\n  Devices on your local network can't connect. Turn it on in Settings > Addresses, or start with --host 0.0.0.0.");
+  } else if (network.localNetwork.enabled && network.localNetwork.fixed) {
+    console.log("\n  Devices on your local network can connect, over plain HTTP (set by --host).");
+  }
   if (network.tailscale.running && !network.tailscale.httpsUrl) console.log("\n  Turn on Tailscale HTTPS in the dashboard settings for an https:// address.");
   if (cloudflare.installed && !cloudflare.enabled) console.log("\n  Cloudflare Tunnel is available: turn it on in Settings > Addresses.");
   else if (cloudflare.state === "failed") console.log(`\n  Cloudflare Tunnel did not start: ${cloudflare.error}`);

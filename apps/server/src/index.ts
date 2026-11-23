@@ -21,7 +21,8 @@ import { isT3Path, T3Gateway, type SocketData } from "./gateway/http.ts";
 import { Hub } from "./gateway/hub.ts";
 import { RemoteBranches } from "./gateway/repos.ts";
 import { Rpc } from "./gateway/rpc.ts";
-import { networkInfo } from "./bun/network.ts";
+import { Listeners } from "./bun/listeners.ts";
+import { networkInfo, wantedHosts } from "./bun/network.ts";
 import { Secrets, Settings } from "./settings.ts";
 import { Skills } from "./skills.ts";
 import { Store } from "./store.ts";
@@ -32,7 +33,6 @@ import { Stats } from "./vm/stats.ts";
 
 export { version };
 export const defaultPort = 3774;
-export const defaultHost = "0.0.0.0";
 export const dataDir = () => process.env.VMBRIDGE_HOME || join(homedir(), ".vmbridge");
 export const databasePath = (dir = dataDir()) => join(dir, "main.db");
 
@@ -49,13 +49,13 @@ export function dashboardKey(dir = dataDir()) {
 
 export interface StartOptions {
   dir?: string;
+  /** Listen on this one address instead of loopback, Tailscale and the local network switch. 0.0.0.0 is every network. */
   host?: string;
   port?: number;
 }
 
 export async function start(options: StartOptions = {}) {
-  const host = options.host ?? defaultHost;
-  const port = options.port ?? defaultPort;
+  const host = options.host;
   const dir = options.dir ?? dataDir();
   const db = openDatabase(databasePath(dir));
   const settings = new Settings(db);
@@ -96,7 +96,9 @@ export async function start(options: StartOptions = {}) {
   const auth = new DashboardAuth(db, settings);
   // Defined before the server starts listening; its listener only opens once the tunnel is on.
   let tunnel: CloudflareTunnel;
-  const admin = new Admin({ version, startedAt: Date.now(), host, port, settings, secrets, store, fleet, hub, traffic, clients, auth, gateway, agents, stats, skills, usage, tunnel: () => tunnel });
+  let listeners: Listeners<SocketData>;
+  const served = () => ({ hosts: listeners.hosts(), port: listeners.port, fixed: host !== undefined, localNetwork: settings.get("localNetwork") });
+  const admin = new Admin({ version, startedAt: Date.now(), served, applyAddresses: () => listeners.apply(), settings, secrets, store, fleet, hub, traffic, clients, auth, gateway, agents, stats, skills, usage, tunnel: () => tunnel });
 
   /** `viaTunnel` marks the loopback listener only cloudflared forwards to, whose proxy headers can be trusted. */
   const serve = (hostname: string, port: number, viaTunnel: boolean) =>
@@ -135,7 +137,12 @@ export async function start(options: StartOptions = {}) {
     await fetch(new URL("/dashboard", listener.url)).then((response) => response.arrayBuffer(), () => {});
     return listener;
   };
-  const server = await listen(host, port, false);
+  listeners = new Listeners(
+    (hostname, port) => listen(hostname, port, false),
+    async () => (host ? [host] : wantedHosts(settings.get("localNetwork"))),
+    options.port ?? defaultPort,
+  );
+  await listeners.start();
   tunnel = new CloudflareTunnel({ settings, secrets, traffic, dir, listen: (tunnelPort) => listen("127.0.0.1", tunnelPort, true) });
   void tunnel.apply();
 
@@ -151,7 +158,9 @@ export async function start(options: StartOptions = {}) {
       } catch {}
     },
   };
-  const stopJobs = runJobs([...bridgeJobs({ hub, fleet, stats, usage, traffic }), localSkills]);
+  // Follows Tailscale coming up or changing address, and the local network appearing or changing.
+  const addresses = { name: "addresses", everyMs: 5_000, run: () => listeners.apply() };
+  const stopJobs = runJobs([...bridgeJobs({ hub, fleet, stats, usage, traffic }), localSkills, ...(host ? [] : [addresses])]);
   void fleet.resume();
   // Accounts saved by older versions lack the details the dashboard shows.
   const githubToken = secrets.get("github.token");
@@ -161,20 +170,19 @@ export async function start(options: StartOptions = {}) {
   traffic.record({ kind: "system", operation: "VM Bridge started" });
 
   return {
-    port: server.port ?? port,
-    host,
+    port: listeners.port,
     /** Opens first password setup in the dashboard. Null when a password exists. Show it only to whoever started VM Bridge. */
     setupCode: auth.createSetupCode(),
     /** Where this install's encryption key lives, and whether this start made it. */
     encryptionKey: { location: encryptionKey.location, created: encryptionKey.created },
-    network: () => networkInfo(host, server.port ?? port, tunnel.info()),
+    network: () => networkInfo(served(), tunnel.info()),
     /** Waits a little for the Cloudflare Tunnel's address, so it can be printed with the others. */
     tunnelReady: () => tunnel.ready(20_000),
     async stop() {
       stopJobs();
       gateway.close();
       await tunnel.stop();
-      await server.stop(true);
+      await listeners.stop();
       // Some providers have no idle timeout of their own: a VM left awake here would run until VM Bridge starts again.
       await hub.sleepIdle(15_000);
       hub.close();

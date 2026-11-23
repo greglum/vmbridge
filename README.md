@@ -20,7 +20,7 @@ Website and docs: [vmbridge.ordinity.com](https://vmbridge.ordinity.com)
 - Agent skills from [skills.sh](https://skills.sh) or from this machine reach every VM, for Claude
   Code and Codex.
 - Your global `AGENTS.md` (and Claude Code's `CLAUDE.md`) on this machine can follow you to every VM.
-- Works over your local network, Tailscale and Cloudflare Tunnel.
+- Works over Tailscale, Cloudflare Tunnel and, once you turn it on, your local network.
 
 ## Install
 
@@ -113,6 +113,22 @@ sign-ins, environment variables and GitHub token again.
 Updating from a version without encryption encrypts your saved data on first start. After that,
 older versions can't read it, so don't go back to one.
 
+## Addresses
+
+VM Bridge answers on this machine and on Tailscale, whose traffic is already encrypted. It does not
+answer on your local network unless you turn that on under **Settings**, **Addresses**. The local
+network is plain HTTP, so anyone else on the same Wi-Fi could read your password and session as they
+pass. The switch takes effect right away, and turning it off also disconnects devices using it.
+Tailscale works as soon as it is connected, even if it starts after VM Bridge.
+
+`--host` (or `VMBRIDGE_HOST`) makes VM Bridge listen on that one address instead, and the switch
+then has no effect. `--host 0.0.0.0` listens on every network, like versions before this switch;
+`--host 127.0.0.1` keeps VM Bridge to this machine. A background service installed by an older
+version passes `--host 0.0.0.0`, so run `vmbridge service install` again to use the switch.
+
+The addresses in Settings, in the links `vmbridge run` prints and in pairing links are the ones VM
+Bridge answers on right now.
+
 ## Cloudflare Tunnel
 
 Cloudflare Tunnel gives VM Bridge an HTTPS address on the public internet, without opening a port.
@@ -147,11 +163,11 @@ update the dashboard tunnel to match. The tunnel's config and credentials live i
 ## Commands
 
 ```
-vmbridge [run] [--host 0.0.0.0] [--port 3774]   Start in this terminal
-vmbridge stop                                   Stop, including the background service
-vmbridge service install [--host] [--port]      Run in the background at login
-vmbridge service uninstall                      Remove the background service
-vmbridge password                               Set a new dashboard password
+vmbridge [run] [--host <address>] [--port 3774]   Start in this terminal
+vmbridge stop                                     Stop, including the background service
+vmbridge service install [--host] [--port]        Run in the background at login
+vmbridge service uninstall                        Remove the background service
+vmbridge password                                 Set a new dashboard password
 ```
 
 Your data lives in `~/.vmbridge`. Set `VMBRIDGE_HOME` to keep it somewhere else. On a machine with
