@@ -1,6 +1,7 @@
 import type { Sql } from "../sql.ts";
 import { timingSafeEqual } from "node:crypto";
 import type { Settings } from "../settings.ts";
+import { hashPassword, verifyPassword } from "./password.ts";
 import { hashToken, newToken } from "./tokens.ts";
 
 const sessionMs = 30 * 86_400_000;
@@ -32,7 +33,7 @@ export class DashboardAuth {
 
   async setKey(key: string): Promise<void> {
     checkKey(key);
-    this.settings.set("dashboardKeyHash", await Bun.password.hash(key));
+    this.settings.set("dashboardKeyHash", await hashPassword(key));
     // A new key ends every existing dashboard session.
     this.db.run("DELETE FROM admin_sessions");
     this.checkWatched();
@@ -138,11 +139,14 @@ export class DashboardAuth {
   private async verify(key: string, address: string): Promise<boolean> {
     const failed = this.throttle(address);
     const hash = this.settings.get("dashboardKeyHash");
-    if (!hash || !(await Bun.password.verify(key, hash))) {
+    const { ok, outdated } = hash ? await verifyPassword(key, hash) : { ok: false, outdated: false };
+    if (!ok) {
       failed();
       return false;
     }
     this.failures.delete(address);
+    // Swaps a hash from an older version for the current kind, keeping every session.
+    if (outdated && this.settings.get("dashboardKeyHash") === hash) this.settings.set("dashboardKeyHash", await hashPassword(key));
     return true;
   }
 }
@@ -160,9 +164,13 @@ export class TooManyAttempts extends Error {
 }
 
 function cookie(value: string, maxAge: number, secure: boolean): string {
-  return new Bun.Cookie(cookieName, value, { path: "/", httpOnly: true, sameSite: "strict", maxAge, secure }).serialize();
+  return `${cookieName}=${value}; Path=/; Max-Age=${maxAge};${secure ? " Secure;" : ""} HttpOnly; SameSite=Strict`;
 }
 
 function readCookie(request: Request, name: string): string | null {
-  return new Bun.CookieMap(request.headers.get("cookie") ?? "").get(name);
+  for (const part of (request.headers.get("cookie") ?? "").split(";")) {
+    const [key, ...value] = part.trim().split("=");
+    if (key === name) return value.join("=") || null;
+  }
+  return null;
 }

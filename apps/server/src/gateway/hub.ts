@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import { providers } from "../providers/index.ts";
 import { mayBeAwake, message, type Fleet } from "../fleet.ts";
@@ -58,7 +59,7 @@ export const bridgeAuth = {
   sessionCookieName: "vmbridge_t3_session",
 };
 
-const sha256 = (value: string) => new Bun.CryptoHasher("sha256").update(value).digest("hex");
+const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
 /** How long a thread just placed on a VM counts toward its load before T3 lists it. */
 const launchGraceMs = 2 * 60_000;

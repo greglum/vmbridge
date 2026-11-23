@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AgentKind } from "@vmbridge/contracts";
 import type { Box } from "../providers/index.ts";
 import { check, root } from "./runtime.ts";
@@ -28,7 +29,7 @@ interface Manifest {
   instructions?: Partial<Record<AgentKind, string>>;
 }
 
-const sha256 = (value: string) => new Bun.CryptoHasher("sha256").update(value).digest("hex");
+const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
 export function skillHash(files: SkillFile[]) {
   const sorted = files.toSorted((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
