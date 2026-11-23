@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { openSocket } from "../src/bun/socket.ts";
 import { openDatabase } from "../src/bun/sqlite.ts";
 import { Fleet } from "../src/fleet.ts";
 import { busyNotice, choose, type VmLoad } from "../src/placement.ts";
@@ -16,7 +17,7 @@ function setup() {
   settings.set("providers", ["boxd", "railway"]);
   settings.set("defaultProvider", "boxd");
   settings.set("vmSize", "medium");
-  const fleet = new Fleet(new Store(db, testEncryption), settings, new Secrets(db, testEncryption), { record: () => {} } as unknown as Traffic, {} as never, {} as never);
+  const fleet = new Fleet(new Store(db, testEncryption), settings, new Secrets(db, testEncryption), { record: () => {} } as unknown as Traffic, {} as never, {} as never, openSocket);
   return { settings, fleet };
 }
 

@@ -1,3 +1,5 @@
+// VM Bridge on Bun: the server, timers and files on this machine. Bun-only pieces live here and in bun/, so the rest
+// can run elsewhere too.
 import { homedir } from "node:os";
 import { join } from "node:path";
 import dashboard from "@vmbridge/web/index.html";
@@ -7,9 +9,12 @@ import { AgentAuth } from "./agent-auth/profiles.ts";
 import { Clients } from "./auth/clients.ts";
 import { DashboardAuth } from "./auth/dashboard.ts";
 import { importAuthFiles } from "./bun/auth-files.ts";
+import { runJobs } from "./bun/jobs.ts";
+import { openSocket } from "./bun/socket.ts";
 import { openDatabase } from "./bun/sqlite.ts";
 import { localKey, openEncryption } from "./encryption.ts";
 import { Fleet } from "./fleet.ts";
+import { bridgeJobs } from "./jobs.ts";
 import { fetchGitHubAccount } from "./github.ts";
 import { Clones } from "./gateway/clones.ts";
 import { isT3Path, T3Gateway, type SocketData } from "./gateway/http.ts";
@@ -70,7 +75,7 @@ export async function start(options: StartOptions = {}) {
     db.exec("VACUUM");
     db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   }
-  const fleet = new Fleet(store, settings, secrets, traffic, agents, skills);
+  const fleet = new Fleet(store, settings, secrets, traffic, agents, skills, openSocket);
   skills.on("changed", () => {
     fleet.emit("changed");
     void fleet.shareSkills();
@@ -78,7 +83,6 @@ export async function start(options: StartOptions = {}) {
   const stats = new Stats(fleet);
   const usage = new Usage(store, () => fleet.connected());
   for (const event of ["changed", "awake", "offline"] as const) fleet.on(event, () => usage.sync());
-  usage.start();
   const hub = new Hub(store, settings, fleet, traffic, stats);
   agents.onChange = () => {
     fleet.emit("changed");
@@ -125,26 +129,19 @@ export async function start(options: StartOptions = {}) {
   tunnel = new CloudflareTunnel({ settings, secrets, traffic, dir, listen: (tunnelPort) => serve("127.0.0.1", tunnelPort, true) });
   void tunnel.apply();
 
-  let sweeping = false;
-  const sweep = setInterval(() => {
-    if (sweeping) return;
-    sweeping = true;
-    hub
-      .sweep()
-      .catch((error) => traffic.record({ kind: "system", operation: "idle sweep", status: "error", reason: error instanceof Error ? error.message : String(error) }))
-      .finally(() => (sweeping = false));
-  }, 15_000);
-  const codexSync = setInterval(() => void fleet.syncCodexAuth().catch(() => {}), 60 * 60_000);
-  // Often enough for the dashboard's high memory warning; opening a VM's details reads it right away.
-  const statsTimer = setInterval(() => void stats.sampleAll().catch(() => {}), 30_000);
   // Installed local skills and instructions files follow edits on this machine. Reading a few small files is cheaper than watching them reliably.
   skills.instructions.refresh();
-  const skillWatch = setInterval(() => {
-    try {
-      skills.refreshLocal();
-      skills.instructions.refresh();
-    } catch {}
-  }, 5_000);
+  const localSkills = {
+    name: "local skills",
+    everyMs: 5_000,
+    run: async () => {
+      try {
+        skills.refreshLocal();
+        skills.instructions.refresh();
+      } catch {}
+    },
+  };
+  const stopJobs = runJobs([...bridgeJobs({ hub, fleet, stats, usage, traffic }), localSkills]);
   void fleet.resume();
   // Accounts saved by older versions lack the details the dashboard shows.
   const githubToken = secrets.get("github.token");
@@ -164,10 +161,7 @@ export async function start(options: StartOptions = {}) {
     /** Waits a little for the Cloudflare Tunnel's address, so it can be printed with the others. */
     tunnelReady: () => tunnel.ready(20_000),
     async stop() {
-      clearInterval(sweep);
-      clearInterval(codexSync);
-      clearInterval(statsTimer);
-      clearInterval(skillWatch);
+      stopJobs();
       gateway.close();
       await tunnel.stop();
       await server.stop(true);
