@@ -196,7 +196,7 @@ describe("Codex sign-in", () => {
 describe("VM sign-ins", () => {
   test("VMs get only VM Bridge sign-ins, with provider ones cleared", async () => {
     const { box, written, commands } = recordingBox();
-    await prepareVm(box, "1.0.0", { claudeOAuthToken: "sk-ant-oat01-x", codexAuthJson: "{}" });
+    await prepareVm(box, "1.0.0", { claudeOAuthToken: "sk-ant-oat01-x", codexAuthJson: "{}" }, "fingerprint");
     const env = written["/workspace/.vmbridge/env"]!;
     expect(env.split("\n")[0]).toContain("GH_TOKEN GITHUB_TOKEN");
     expect(env.split("\n")[0]).toContain("ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN OPENAI_API_KEY");
@@ -214,7 +214,7 @@ describe("VM sign-ins", () => {
   test("git on the VM uses the GitHub token, the account's name and its noreply email", async () => {
     const { box, written } = recordingBox();
     const github = { token: "github_pat_abc", login: "octo-cat", name: 'Mona "Octo" Lisa', email: "1+octo-cat@users.noreply.github.com" };
-    await prepareVm(box, "1.0.0", { github });
+    await prepareVm(box, "1.0.0", { github }, "fingerprint");
     expect(written["/workspace/.vmbridge/git-credentials"]).toBe("https://octo-cat:github_pat_abc@github.com\n");
     const config = written["/workspace/.vmbridge/gitconfig"]!;
     expect(config).toContain("\thelper = store --file /workspace/.vmbridge/git-credentials");

@@ -433,8 +433,8 @@ export class Fleet extends EventEmitter<FleetEvents> {
       watch.lap("read Codex sign-in");
     }
     const credentials = await this.credentials();
-    const fingerprint = credentialsFingerprint(credentials);
-    const [prepared, preview] = await Promise.all([prepareVm(box, version, credentials), box.preview(t3Port)]);
+    const fingerprint = credentialsFingerprint(credentials, this.store.encryption);
+    const [prepared, preview] = await Promise.all([prepareVm(box, version, credentials, fingerprint), box.preview(t3Port)]);
     watch.lap("prepare VM, preview URL");
     if (prepared.codexAuth) {
       this.agents.adoptCodex(prepared.codexAuth);
@@ -500,7 +500,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
       const vm = this.store.vm(vmId);
       const backend = this.backend(vmId);
       const box = this.boxes.get(vmId);
-      if (!vm || !backend || !box || vm.t3Credentials === credentialsFingerprint(await this.credentials())) return;
+      if (!vm || !backend || !box || vm.t3Credentials === credentialsFingerprint(await this.credentials(), this.store.encryption)) return;
       if (!(await idle(backend))) return;
       // Nothing may wait between this check and taking the backend away, or new work could start on a closing socket.
       if (this.leased(vmId)) return;
@@ -532,10 +532,11 @@ export class Fleet extends EventEmitter<FleetEvents> {
       if (current) this.agents.adoptCodex(current);
     }
     const credentials = await this.credentials();
+    const fingerprint = credentialsFingerprint(credentials, this.store.encryption);
     await Promise.all(
       awake.map(({ vmId, box }) =>
         this.exclusive(vmId, async () => {
-          if (this.backend(vmId)) await writeCredentials(box, credentials);
+          if (this.backend(vmId)) await writeCredentials(box, credentials, fingerprint);
         }).catch(() => this.traffic.record({ kind: "provider", operation: "write sign-ins", vmId, status: "error" })),
       ),
     );
@@ -982,7 +983,7 @@ fi`,
     const github = token && account ? { token, login: account.login, name: account.name ?? account.login, email: account.email } : undefined;
     const env = envVars(this.secrets);
     const credentials: VmCredentials = { ...(await this.agents.vmSecrets()), github, ...(Object.keys(env).length ? { env } : {}) };
-    const fingerprint = credentialsFingerprint(credentials);
+    const fingerprint = credentialsFingerprint(credentials, this.store.encryption);
     if (fingerprint !== this.latest) {
       this.latest = fingerprint;
       this.emit("changed");
