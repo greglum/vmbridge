@@ -139,6 +139,26 @@ describe("VM setup", () => {
     });
   });
 
+  test("switches OpenCode on in T3 with an OpenCode sign-in, keeping what the user set", async () => {
+    const settings = () => JSON.parse(readFileSync(vmFile("t3/userdata/settings.json"), "utf8"));
+    await prepareVm(box, "1.0.0", {}, "fingerprint");
+    expect(existsSync(vmFile("t3/userdata/settings.json"))).toBe(false);
+
+    await prepareVm(box, "1.0.0", { opencodeApiKey: "opencode-secret" }, "fingerprint");
+    expect(settings()).toEqual({ providerInstances: { opencode: { driver: "opencode", enabled: true } } });
+
+    // A VM whose user changed other settings, then switched OpenCode off in T3.
+    const changed = { defaultThreadEnvMode: "worktree", providerInstances: { opencode: { driver: "opencode", enabled: false } } };
+    writeFileSync(vmFile("t3/userdata/settings.json"), JSON.stringify(changed));
+    await prepareVm(box, "1.0.0", { opencodeApiKey: "opencode-secret" }, "fingerprint");
+    expect(settings()).toEqual(changed);
+
+    // Other settings stay when OpenCode is switched on.
+    writeFileSync(vmFile("t3/userdata/settings.json"), JSON.stringify({ defaultThreadEnvMode: "worktree" }));
+    await prepareVm(box, "1.0.0", { opencodeApiKey: "opencode-secret" }, "fingerprint");
+    expect(settings()).toEqual({ defaultThreadEnvMode: "worktree", providerInstances: { opencode: { driver: "opencode", enabled: true } } });
+  });
+
   test("keeps a Codex sign-in the VM refreshed later than VM Bridge's, and hands it back", async () => {
     const auth = (refreshed: string) => JSON.stringify({ last_refresh: refreshed, tokens: { refresh_token: refreshed } });
     await prepareVm(box, "1.0.0", { codexAuthJson: auth("2026-01-01T00:00:00Z") }, "fingerprint");

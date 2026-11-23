@@ -253,6 +253,33 @@ exec t3 --base-dir ${t3DataDir} --host 0.0.0.0 --port ${t3Port} --no-browser
 const probeScript = `fetch("http://127.0.0.1:${t3Port}/.well-known/t3/environment",{signal:AbortSignal.timeout(10000)}).then(r=>r.ok?r.text():Promise.reject()).then(t=>process.stdout.write(t),()=>process.exit(1))`;
 const probe = `. ${root}/env && node -e ${quote(probeScript)}`;
 
+/** T3's settings file, which it reloads whenever the file changes. */
+const t3SettingsPath = `${t3DataDir}/userdata/settings.json`;
+
+/**
+ * Switches on T3's OpenCode instance, which T3 ships switched off. Leaves the file alone when it already says whether
+ * OpenCode is on, so a user who switched it off on the VM keeps it off, and when it is not a settings object.
+ */
+const enableOpenCodeScript = `const fs = require("fs");
+const path = process.argv[1];
+let settings = {};
+try {
+  settings = JSON.parse(fs.readFileSync(path, "utf8"));
+} catch (error) {
+  if (error.code !== "ENOENT") process.exit(0);
+}
+const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+if (!isObject(settings)) process.exit(0);
+const instances = settings.providerInstances ?? {};
+if (!isObject(instances)) process.exit(0);
+const opencode = instances.opencode;
+if (opencode !== undefined && !isObject(opencode)) process.exit(0);
+if (typeof opencode?.enabled === "boolean" || typeof opencode?.config?.enabled === "boolean") process.exit(0);
+settings.providerInstances = { ...instances, opencode: { driver: "opencode", ...opencode, enabled: true } };
+fs.mkdirSync(require("path").dirname(path), { recursive: true });
+fs.writeFileSync(path + ".vmbridge-new", JSON.stringify(settings, null, 2) + "\\n");
+fs.renameSync(path + ".vmbridge-new", path);`;
+
 /** Exits 0 when the first Codex auth.json was refreshed later than the second. */
 const newerScript = `const at=(p)=>Date.parse(JSON.parse(require("fs").readFileSync(p,"utf8")).last_refresh);process.exit(at(process.argv[1])>at(process.argv[2])?0:1)`;
 
@@ -362,8 +389,12 @@ export async function prepareVm(box: Box, t3Version: string, credentials: VmCred
     `. ${root}/env`,
     // Setup's output goes to stderr: stdout is the report below. A VM that lost T3 since its stamp runs setup again.
     `if [ "$(cat ${setupStampPath} 2>/dev/null)" != ${quote(stamp)} ] || ! command -v t3 >/dev/null; then bash ${root}/setup.sh ${quote(t3Version)} ${quote(stamp)} >&2; fi`,
-    // Outside setup, as it follows the sign-ins rather than the image.
-    `[ -z "\${OPENCODE_API_KEY:-}" ] || command -v opencode >/dev/null || npm install -g --prefix ${root}/npm --no-audit --no-fund --loglevel=error opencode-ai >&2`,
+    // Outside setup, as it follows the sign-ins rather than the image. Only with a sign-in: without one the CLI is not
+    // installed, and T3 would list OpenCode as broken.
+    `if [ -n "\${OPENCODE_API_KEY:-}" ]; then`,
+    `  command -v opencode >/dev/null || npm install -g --prefix ${root}/npm --no-audit --no-fund --loglevel=error opencode-ai >&2`,
+    `  node -e ${quote(enableOpenCodeScript)} ${t3SettingsPath}`,
+    "fi",
   ];
   if (credentials.codexAuthJson) {
     lines.push(
