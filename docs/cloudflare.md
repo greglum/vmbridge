@@ -76,4 +76,8 @@ Measured on a test deploy with one T3 client connected throughout, then scaled t
 "Busy" assumes a whole day like the busiest half hour of the test, so real use sits well below it.
 Storage stays in the megabytes, against 5 GB.
 
+The free plan's Durable Object time is per Cloudflare account, shared with every other Durable Object
+on it. VM Bridge alone uses about 10,800 of the 13,000 GB-seconds a day, so put it on an account
+whose other Durable Objects use little, or on Workers Paid.
+
 If you outgrow the free plan, Workers Paid is $5 a month and includes far more than one bridge uses.
