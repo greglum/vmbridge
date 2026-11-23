@@ -104,8 +104,8 @@ export class Fleet extends EventEmitter<FleetEvents> {
   private readonly drivers = new Map<ProviderId, { signature: string; driver: Driver }>();
   /** The first VM started to read T3's configuration, shared by everyone asking at once. */
   private bootstrapping?: Promise<string>;
-  /** Fingerprint of the sign-ins and variables VM Bridge last gave out, once it has. */
-  private latest?: string;
+  /** Fingerprint of the sign-ins and variables VM Bridge last gave out on each provider's VMs, once it has. */
+  private readonly latest = new Map<ProviderId, string>();
   /** VMs whose T3 server could not be restarted for these sign-ins, so the idle sweep stops trying. */
   private readonly unrestartable = new Map<string, string>();
   /** When adding a VM to each project last failed. */
@@ -432,14 +432,14 @@ export class Fleet extends EventEmitter<FleetEvents> {
       if (codexAuth) await this.agents.adoptCodex(codexAuth, vm.id);
       watch.lap("read Codex sign-in");
     }
-    const credentials = await this.credentials();
+    const credentials = await this.credentials(vm.provider);
     const fingerprint = credentialsFingerprint(credentials, this.store.encryption);
     const [prepared, preview] = await Promise.all([prepareVm(box, version, credentials, fingerprint), box.preview(t3Port)]);
     watch.lap("prepare VM, preview URL");
     if (prepared.codexAuth) {
       await this.agents.adoptCodex(prepared.codexAuth, vm.id);
       // A file VM Bridge did not adopt, such as another account's, is replaced after all.
-      const ours = (await this.credentials()).codexAuthJson;
+      const ours = (await this.credentials(vm.provider)).codexAuthJson;
       if (ours && ours !== prepared.codexAuth) await writeCodexAuth(box, ours);
       watch.lap("adopt Codex sign-in");
     }
@@ -481,12 +481,14 @@ export class Fleet extends EventEmitter<FleetEvents> {
   /** True when an awake VM's T3 server runs with older sign-ins or variables than VM Bridge now gives out. */
   stale(vmId: string) {
     const vm = this.store.vm(vmId);
-    return Boolean(vm && this.latest && vm.t3Credentials !== this.latest && this.unrestartable.get(vmId) !== this.latest);
+    const latest = vm && this.latest.get(vm.provider);
+    return Boolean(vm && latest && vm.t3Credentials !== latest && this.unrestartable.get(vmId) !== latest);
   }
 
   /** True when a VM, awake or asleep, has yet to start T3 with the current sign-ins and variables. */
   behind(vm: VmRow) {
-    return Boolean(this.latest && vm.t3Credentials !== null && vm.t3Credentials !== this.latest);
+    const latest = this.latest.get(vm.provider);
+    return Boolean(latest && vm.t3Credentials !== null && vm.t3Credentials !== latest);
   }
 
   /**
@@ -500,7 +502,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
       const vm = this.store.vm(vmId);
       const backend = this.backend(vmId);
       const box = this.boxes.get(vmId);
-      if (!vm || !backend || !box || vm.t3Credentials === credentialsFingerprint(await this.credentials(), this.store.encryption)) return;
+      if (!vm || !backend || !box || vm.t3Credentials === credentialsFingerprint(await this.credentials(vm.provider), this.store.encryption)) return;
       if (!(await idle(backend))) return;
       // Nothing may wait between this check and taking the backend away, or new work could start on a closing socket.
       if (this.leased(vmId)) return;
@@ -531,12 +533,18 @@ export class Fleet extends EventEmitter<FleetEvents> {
       const current = await readCodexAuth(box);
       if (current) await this.agents.adoptCodex(current, vmId);
     }
-    const credentials = await this.credentials();
-    const fingerprint = credentialsFingerprint(credentials, this.store.encryption);
+    // One after another, as reading them can refresh the Codex sign-in.
+    const byProvider = new Map<ProviderId, { credentials: VmCredentials; fingerprint: string }>();
+    for (const provider of new Set(awake.flatMap(({ vmId }) => this.store.vm(vmId)?.provider ?? []))) {
+      const credentials = await this.credentials(provider);
+      byProvider.set(provider, { credentials, fingerprint: credentialsFingerprint(credentials, this.store.encryption) });
+    }
     await Promise.all(
       awake.map(({ vmId, box }) =>
         this.exclusive(vmId, async () => {
-          if (this.backend(vmId)) await writeCredentials(box, credentials, fingerprint);
+          const vm = this.store.vm(vmId);
+          const given = vm && byProvider.get(vm.provider);
+          if (given && this.backend(vmId)) await writeCredentials(box, given.credentials, given.fingerprint);
         }).catch(() => this.traffic.record({ kind: "provider", operation: "write sign-ins", vmId, status: "error" })),
       ),
     );
@@ -961,13 +969,13 @@ fi`,
 
   /** Reconnects VMs that were awake when VM Bridge stopped, and cleans up after anything a stop cut short. */
   async resume() {
+    // Providers removed since still hold their VMs.
+    const used = new Set([...this.settings.get("providers"), ...this.store.vms().map((vm) => vm.provider)]);
     // So the dashboard can tell sleeping VMs behind on sign-ins or variables before any VM wakes.
-    void this.credentials().catch(() => {});
+    for (const provider of used) void this.credentials(provider).catch(() => {});
     // Builds first, so `reap` leaves their VMs alone.
     this.prepareBases();
     void this.bases.reap().catch(() => {});
-    // Providers removed since still hold their VMs.
-    const used = new Set([...this.settings.get("providers"), ...this.store.vms().map((vm) => vm.provider)]);
     for (const provider of used) {
       void this.reconcile(provider);
       void this.bases.sweep(provider).catch(() => {});
@@ -979,15 +987,22 @@ fi`,
     }
   }
 
-  private async credentials(): Promise<VmCredentials> {
+  /** What VM Bridge gives a VM on `provider`. Kubi VMs also get the agents' screen tools, and Kubi's key for agents when set. */
+  private async credentials(provider: ProviderId): Promise<VmCredentials> {
     const token = this.secrets.get("github.token");
     const account = this.settings.get("github");
     const github = token && account ? { token, login: account.login, name: account.name ?? account.login, email: account.email } : undefined;
     const env = envVars(this.secrets);
-    const credentials: VmCredentials = { ...(await this.agents.vmSecrets()), github, ...(Object.keys(env).length ? { env } : {}) };
+    const kubiKey = provider === "kubi" ? providerValues(this.settings, this.secrets, provider).agentKey : undefined;
+    const credentials: VmCredentials = {
+      ...(await this.agents.vmSecrets()),
+      github,
+      ...(Object.keys(env).length ? { env } : {}),
+      ...(provider === "kubi" ? { screen: kubiKey ? { kubiKey } : {} } : {}),
+    };
     const fingerprint = credentialsFingerprint(credentials, this.store.encryption);
-    if (fingerprint !== this.latest) {
-      this.latest = fingerprint;
+    if (fingerprint !== this.latest.get(provider)) {
+      this.latest.set(provider, fingerprint);
       this.emit("changed");
     }
     return credentials;

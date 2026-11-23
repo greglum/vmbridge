@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { AgentSecrets } from "../agent-auth/profiles.ts";
 import type { Encryption } from "../encryption.ts";
 import type { Box } from "../providers/index.ts";
+import { opencodeConfigPath, screenToolsFiles, screenToolsSetup, type ScreenTools } from "./screen-tools.ts";
 
 /** Everything VM Bridge installs or keeps lives here, on the disk that survives sleep. */
 export const root = "/workspace/.vmbridge";
@@ -24,6 +25,8 @@ export interface VmCredentials extends AgentSecrets {
   github?: { token: string; login: string; name: string; email: string };
   /** Environment variables set in the dashboard. Absent rather than empty, so having none leaves the fingerprint as it was. */
   env?: Record<string, string>;
+  /** Set on Kubi VMs only, whose agents get browser and desktop tools (see screen-tools.ts). */
+  screen?: { kubiKey?: string };
 }
 
 /** Sign-in variables a provider may set on its machines. VM Bridge clears them and sets its own. */
@@ -39,6 +42,7 @@ const providerVars = [
   "OPENAI_API_KEY",
   "CODEX_API_KEY",
   "OPENCODE_API_KEY",
+  "KUBI_API_KEY",
 ];
 
 /** The variables VM Bridge sets itself. Every name in here is reserved: the dashboard cannot set it. */
@@ -59,6 +63,9 @@ function managedVars(credentials: VmCredentials): Record<string, string | undefi
     ANTHROPIC_AUTH_TOKEN: credentials.anthropicAuthToken,
     ANTHROPIC_BASE_URL: credentials.anthropicBaseUrl,
     OPENCODE_API_KEY: credentials.opencodeApiKey,
+    // The Kubi key for agents: read and control only (see kubi.ts), never the one VM Bridge itself uses.
+    KUBI_API_KEY: credentials.screen?.kubiKey,
+    OPENCODE_CONFIG: credentials.screen ? opencodeConfigPath() : undefined,
   };
 }
 
@@ -380,11 +387,12 @@ export async function prepareVm(box: Box, t3Version: string, credentials: VmCred
   const { files, removed } = signIns(credentials, fingerprint);
   const stamp = setupStamp(t3Version);
   const incoming = `${codexAuthPath}.incoming`;
+  const tools: ScreenTools | undefined = credentials.screen && { screenId: box.id, kubi: Boolean(credentials.screen.kubiKey) };
   const lines = [
     "umask 077",
     `mkdir -p ${root} && chmod 700 ${root}`,
     put,
-    writes({ ...files, [`${root}/setup.sh`]: setupScript, [`${root}/start-t3.sh`]: startScript }),
+    writes({ ...files, ...(tools ? screenToolsFiles(tools) : {}), [`${root}/setup.sh`]: setupScript, [`${root}/start-t3.sh`]: startScript }),
     `rm -f ${removed.join(" ")}`,
     `. ${root}/env`,
     // Setup's output goes to stderr: stdout is the report below. A VM that lost T3 since its stamp runs setup again.
@@ -395,6 +403,7 @@ export async function prepareVm(box: Box, t3Version: string, credentials: VmCred
     `  command -v opencode >/dev/null || npm install -g --prefix ${root}/npm --no-audit --no-fund --loglevel=error opencode-ai >&2`,
     `  node -e ${quote(enableOpenCodeScript)} ${t3SettingsPath}`,
     "fi",
+    ...(tools ? [screenToolsSetup(tools)] : []),
   ];
   if (credentials.codexAuthJson) {
     lines.push(

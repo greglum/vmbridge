@@ -626,6 +626,29 @@ describe("sign-in changes", () => {
     expect(server.restarts).toBe(1);
   });
 
+  test("only a Kubi VM gets the agents' screen tools, and Kubi's key for agents until it is removed", async () => {
+    const other = idleFleet();
+    await other.fleet.ensure((await other.fleet.create()).id);
+    expect(Object.keys(other.files).filter((path) => /opencode\.json|desktop-mcp|codex-system/.test(path))).toEqual([]);
+    expect(other.files[envPath]).not.toMatch(/KUBI_API_KEY=|OPENCODE_CONFIG=/);
+
+    const { fleet, hub, settings, secrets, server, files } = idleFleet();
+    settings.set("providers", ["kubi"]);
+    settings.set("defaultProvider", "kubi");
+    secrets.set("provider.kubi.agentKey", "kubi_agents");
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    expect(files[envPath]).toContain("export KUBI_API_KEY='kubi_agents'");
+    expect(files[envPath]).toContain("export OPENCODE_CONFIG='/workspace/.vmbridge/opencode.json'");
+    expect(Object.keys(JSON.parse(files["/workspace/.vmbridge/opencode.json"]!).mcp)).toEqual(["browser", "desktop", "kubi"]);
+
+    secrets.set("provider.kubi.agentKey", null);
+    await hub.credentialsChanged();
+    expect(server.restarts).toBe(1);
+    expect(server.env).not.toContain("KUBI_API_KEY=");
+    expect(Object.keys(JSON.parse(files["/workspace/.vmbridge/opencode.json"]!).mcp)).toEqual(["browser", "desktop"]);
+  });
+
   test("a busy VM gets the files now and restarts T3 only once its work ends", async () => {
     const { fleet, hub, t3, files, server, signIns } = idleFleet();
     const vm = await fleet.create();
