@@ -125,8 +125,18 @@ export async function start(options: StartOptions = {}) {
       },
       websocket: gateway.websocket,
     });
-  const server = serve(host, port, false);
-  tunnel = new CloudflareTunnel({ settings, secrets, traffic, dir, listen: (tunnelPort) => serve("127.0.0.1", tunnelPort, true) });
+  /**
+   * Bun adds the dashboard's bundled files (script, styles, icons) to a server's routes only once that server has
+   * served the page. Until then they answer 404 to a browser that already has the page, such as a dashboard left open
+   * across a restart or on a new tunnel listener, which then shows broken icons. Requesting the page once here adds them up front.
+   */
+  const listen = async (hostname: string, port: number, viaTunnel: boolean) => {
+    const listener = serve(hostname, port, viaTunnel);
+    await fetch(new URL("/dashboard", listener.url)).then((response) => response.arrayBuffer(), () => {});
+    return listener;
+  };
+  const server = await listen(host, port, false);
+  tunnel = new CloudflareTunnel({ settings, secrets, traffic, dir, listen: (tunnelPort) => listen("127.0.0.1", tunnelPort, true) });
   void tunnel.apply();
 
   // Installed local skills and instructions files follow edits on this machine. Reading a few small files is cheaper than watching them reliably.

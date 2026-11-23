@@ -132,8 +132,8 @@ interface TunnelDeps {
   traffic: Traffic;
   /** Holds cloudflared's config, named tunnel credentials and pid file. */
   dir: string;
-  /** Opens the loopback listener cloudflared forwards to. Port 0 picks a free one. */
-  listen: (port: number) => TunnelListener;
+  /** Opens the loopback listener cloudflared forwards to, ready to serve. Port 0 picks a free one. */
+  listen: (port: number) => Promise<TunnelListener>;
   home?: string;
   PATH?: string;
   fallbacks?: string[];
@@ -152,7 +152,7 @@ class TunnelSetupError extends Error {}
  */
 export class CloudflareTunnel {
   private child: Subprocess<"ignore", "pipe", "pipe"> | null = null;
-  private listener: TunnelListener | null = null;
+  private listener: Promise<TunnelListener> | null = null;
   private state: CloudflareInfo["state"] = "off";
   private url: string | null = null;
   private error: string | null = null;
@@ -185,7 +185,8 @@ export class CloudflareTunnel {
       state: this.state,
       url: this.url,
       error: this.error,
-      port: this.listener?.port ?? port,
+      // Opening the listener saves its port.
+      port,
     };
   }
 
@@ -237,7 +238,7 @@ export class CloudflareTunnel {
       const binary = this.binary();
       if (!binary) throw new TunnelSetupError("cloudflared is not installed.");
       mkdirSync(this.folder, { recursive: true, mode: 0o700 });
-      const port = this.openListener();
+      const port = (await this.openListener()).port!;
       const { hostname } = this.deps.settings.get("cloudflareTunnel");
       const args = await this.command(binary, port, hostname, token);
       if (generation !== this.generation) return;
@@ -349,24 +350,30 @@ export class CloudflareTunnel {
     return ["--config", config, "run"];
   }
 
-  private openListener(): number {
-    if (this.listener?.port) return this.listener.port;
+  /** Opens the listener once. Launches while it opens, such as a retry, share it, so a second one is never left open. */
+  private openListener(): Promise<TunnelListener> {
+    if (this.listener) return this.listener;
     const saved = this.deps.settings.get("cloudflareTunnel");
-    try {
-      this.listener = this.deps.listen(saved.port ?? 0);
-    } catch {
+    const opening = this.deps
+      .listen(saved.port ?? 0)
       // The saved port is taken. A dashboard-made tunnel then needs pointing at the new one, which Settings shows.
-      this.listener = this.deps.listen(0);
-    }
-    const port = this.listener.port!;
-    if (port !== saved.port) this.deps.settings.set("cloudflareTunnel", { ...this.deps.settings.get("cloudflareTunnel"), port });
-    return port;
+      .catch(() => this.deps.listen(0))
+      .then((listener) => {
+        if (listener.port !== saved.port) this.deps.settings.set("cloudflareTunnel", { ...this.deps.settings.get("cloudflareTunnel"), port: listener.port ?? null });
+        return listener;
+      });
+    // A listener that failed to open is tried again by the next launch.
+    opening.catch(() => {
+      if (this.listener === opening) this.listener = null;
+    });
+    this.listener = opening;
+    return opening;
   }
 
   private async closeListener() {
-    const listener = this.listener;
+    const opening = this.listener;
     this.listener = null;
-    await listener?.stop(true);
+    await opening?.then((listener) => listener.stop(true), () => {});
   }
 
   private async halt() {
