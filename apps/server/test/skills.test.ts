@@ -255,7 +255,8 @@ describe("uploaded skills", () => {
     const skills = new Skills(openDatabase(":memory:"), testEncryption);
     const refused = (name: string, files: unknown, message: string) => expect(() => skills.installUpload(name, files)).toThrow(message);
     refused("notes", upload([{ path: "README.md", text: "x" }]), "has no SKILL.md");
-    for (const path of ["../escape", "/etc/passwd", "a/../../b", "a//b", "a\\b", "line\nbreak"]) {
+    // "é" is 2 bytes, so 128 of them pass a character count but not the 255-byte name limit.
+    for (const path of ["../escape", "/etc/passwd", "a/../../b", "a//b", "a\\b", "line\nbreak", "é".repeat(128)]) {
       refused("notes", upload([skillMd, { path, text: "x" }]), "outside its folder or with an unusable name");
     }
     refused("notes", upload([skillMd, skillMd]), "SKILL.md twice");
