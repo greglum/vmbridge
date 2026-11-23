@@ -76,6 +76,57 @@ const log = (name: string) => (existsSync(join(dir, name)) ? readFileSync(join(d
 const vmFile = (path: string) => join(dir, ".vmbridge", path);
 
 describe("VM setup", () => {
+  test("on a Kubi VM, installs the agents' screen tools and registers them with Claude Code, Codex and OpenCode", async () => {
+    // The screen has xdotool and scrot; sudo only records what it was asked.
+    for (const [name, text] of Object.entries({ xdotool: "#!/bin/sh\n", scrot: "#!/bin/sh\n", sudo: '#!/bin/sh\necho "$*" >> "$SUDO_LOG"\n' })) {
+      writeFileSync(join(dir, "bin", name), text);
+      chmodSync(join(dir, "bin", name), 0o755);
+    }
+    env.SUDO_LOG = join(dir, "sudo.log");
+    const kubiBox = { ...box, id: "scr_1" } as unknown as Box;
+    mkdirSync(vmFile("claude"), { recursive: true });
+    // What Claude Code keeps there itself, and a server the user added.
+    writeFileSync(vmFile("claude/.claude.json"), JSON.stringify({ numStartups: 3, mcpServers: { mine: { type: "stdio", command: "mine" } } }));
+    const claude = () => JSON.parse(readFileSync(vmFile("claude/.claude.json"), "utf8")) as { numStartups: number; mcpServers: Record<string, { args?: string[] }> };
+
+    await prepareVm(kubiBox, "1.0.0", { screen: { kubiKey: "kubi_agents" } }, "fingerprint");
+    expect(runs.at(-1)!.stderr).not.toContain("Could not set up the browser and desktop tools");
+    expect(log("npm.log")).toContain("install -g --prefix /workspace/.vmbridge/npm --no-audit --no-fund --loglevel=error @playwright/mcp@0.0.86".replace("/workspace", dir));
+    expect(claude().numStartups).toBe(3);
+    expect(Object.keys(claude().mcpServers)).toEqual(["mine", "browser", "desktop", "kubi"]);
+    expect(claude().mcpServers.desktop!.args).toEqual(["/workspace/.vmbridge/desktop-mcp.cjs".replace("/workspace", dir), "scr_1"]);
+    expect(log("sudo.log")).toEqual([`-n install -D -m 644 ${dir}/.vmbridge/codex-system.toml /etc/codex/config.toml`]);
+    const vmEnv = readFileSync(vmFile("env"), "utf8");
+    expect(vmEnv).toContain("export KUBI_API_KEY='kubi_agents'");
+    expect(vmEnv).toContain(`export OPENCODE_CONFIG='${dir}/.vmbridge/opencode.json'`);
+    // Only the env file holds the key.
+    for (const file of ["browser-mcp.sh", "desktop-mcp.cjs", "opencode.json", "codex-system.toml", "claude/.claude.json"]) {
+      expect(readFileSync(vmFile(file), "utf8")).not.toContain("kubi_agents");
+    }
+
+    // As npm would leave it, so later connects skip the install.
+    mkdirSync(vmFile("npm/lib/node_modules/@playwright/mcp"), { recursive: true });
+    writeFileSync(vmFile("npm/lib/node_modules/@playwright/mcp/package.json"), '{"version":"0.0.86"}');
+
+    // The key is removed: Kubi's own server goes, a copy the user changed stays.
+    const changed = { ...claude().mcpServers, kubi: { type: "http", url: "https://mcp.trykubi.com", headers: { Authorization: "Bearer kubi_mine" } } };
+    await prepareVm(kubiBox, "1.0.0", { screen: {} }, "fingerprint");
+    expect(Object.keys(claude().mcpServers)).toEqual(["mine", "browser", "desktop"]);
+    expect(claude().mcpServers.desktop!.args).toEqual(["/workspace/.vmbridge/desktop-mcp.cjs".replace("/workspace", dir)]);
+    expect(readFileSync(vmFile("env"), "utf8")).not.toContain("KUBI_API_KEY=");
+    writeFileSync(vmFile("claude/.claude.json"), JSON.stringify({ mcpServers: changed }));
+    await prepareVm(kubiBox, "1.0.0", { screen: {} }, "fingerprint");
+    expect(Object.keys(claude().mcpServers)).toContain("kubi");
+    expect(log("npm.log").filter((line) => line.includes("@playwright/mcp"))).toHaveLength(1);
+  });
+
+  test("other VMs get no screen tools", async () => {
+    await prepareVm(box, "1.0.0", {}, "fingerprint");
+    for (const file of ["browser-mcp.sh", "desktop-mcp.cjs", "opencode.json", "codex-system.toml", "claude/.claude.json"]) expect(existsSync(vmFile(file))).toBe(false);
+    expect(readFileSync(vmFile("env"), "utf8")).not.toMatch(/KUBI_API_KEY=|OPENCODE_CONFIG=/);
+    expect(log("npm.log").join("\n")).not.toContain("@playwright/mcp");
+  });
+
   test("finishes without the GitHub CLI when GitHub refuses its download", async () => {
     await prepareVm(box, "1.0.0", {}, "fingerprint");
     expect(runs.at(-1)!.stderr).toContain("Could not install the GitHub CLI");
