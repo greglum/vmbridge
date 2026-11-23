@@ -5,6 +5,7 @@ import type { Sql } from "../sql.ts";
 import { ClaudeCodeRejected, exchangeSetupToken, parsePastedCode, startClaudeSignIn, type ClaudeSignIn } from "./claude.ts";
 import {
   codexAccount,
+  codexTokenAccounts,
   completeDeviceCode,
   deviceCodeTtlMs,
   parseCodexAuth,
@@ -54,7 +55,7 @@ const codexRefreshMarginMs = 2 * 24 * 60 * 60_000;
 const codexAccessTokenMaxMs = 14 * 24 * 60 * 60_000;
 /** How far ahead a VM's clock may run when it stamps a refresh. */
 const clockSkewMs = 5 * 60_000;
-/** Each VM's auth.json is checked with OpenAI at most this often. */
+/** Each VM's auth.json is checked with ChatGPT at most this often. */
 const codexAdoptIntervalMs = 10 * 60_000;
 
 const slug = (text: string) =>
@@ -100,7 +101,7 @@ export class AgentAuth {
   private readonly claudeLogins = new Map<string, ClaudeSignIn>();
   /** Codex refreshes one at a time: OpenAI rotates refresh tokens, so two at once would break the sign-in. */
   private codexQueue: Promise<unknown> = Promise.resolve();
-  /** When each VM's auth.json was last checked with OpenAI. */
+  /** When each VM's auth.json was last checked with ChatGPT. */
   private readonly codexAdoptChecks = new Map<string, number>();
   onChange: () => void = () => {};
 
@@ -282,29 +283,27 @@ export class AgentAuth {
   }
 
   /**
-   * Takes over the tokens in a VM's auth.json when Codex on that VM refreshed them itself, which retires the
-   * refresh token VM Bridge holds. A VM can write anything to that file, so VM Bridge refreshes with the VM's
-   * refresh token and keeps what OpenAI sends back, only for the same ChatGPT account. That retires the VM's
-   * refresh token, so callers give VMs the new file when this returns true.
+   * Takes a VM's auth.json when Codex on that VM refreshed the tokens itself, which retires the refresh token
+   * VM Bridge holds. A VM can write anything to that file, so VM Bridge first asks ChatGPT whether the file's
+   * access token belongs to the same account. That check only reads: refreshing to check would retire the
+   * refresh token Codex on the VM holds.
    */
   adoptCodex(text: string, vmId: string): Promise<boolean> {
     const run = async () => {
       const current = this.codexInUse();
       const theirs = parseCodexAuth(text);
-      if (!current || !theirs || !this.plausiblyNewer(theirs, current.file)) return false;
+      const accountId = current ? codexAccount(current.file).accountId : null;
+      if (!current || !theirs || !accountId || !this.plausiblyNewer(theirs, current.file)) return false;
       const lastCheck = this.codexAdoptChecks.get(vmId);
       if (lastCheck !== undefined && Date.now() - lastCheck < codexAdoptIntervalMs) return false;
       this.codexAdoptChecks.set(vmId, Date.now());
-      let fresh: CodexAuthFile;
       try {
-        // Only the refresh token goes to OpenAI: the account must come from the ID token OpenAI sends back.
-        fresh = await refreshCodexAuth({ ...theirs, tokens: { ...theirs.tokens, id_token: "", access_token: "", account_id: null } });
+        if (!(await codexTokenAccounts(theirs.tokens.access_token)).includes(accountId)) return false;
       } catch {
         // VM Bridge's own tokens stay as they are.
         return false;
       }
-      if (codexAccount(fresh).accountId !== codexAccount(current.file).accountId) return false;
-      this.writeCodex(current.profile.id, fresh);
+      this.writeCodex(current.profile.id, theirs);
       if (current.profile.error) this.save({ ...current.profile, error: null });
       return true;
     };
@@ -313,9 +312,10 @@ export class AgentAuth {
     return next;
   }
 
-  /** Cheap checks before asking OpenAI: same account, a real date between ours and now, and a short-lived token. */
+  /** Cheap checks before asking ChatGPT: same account, new tokens, a real date between ours and now, and a short-lived token. */
   private plausiblyNewer(theirs: CodexAuthFile, ours: CodexAuthFile) {
-    if (theirs.tokens.refresh_token === ours.tokens.refresh_token) return false;
+    // A refresh always brings a new access token. Our access token with another refresh token is just a swapped refresh token.
+    if (theirs.tokens.refresh_token === ours.tokens.refresh_token || theirs.tokens.access_token === ours.tokens.access_token) return false;
     if (codexAccount(theirs).accountId !== codexAccount(ours).accountId) return false;
     const refreshedAt = Date.parse(theirs.last_refresh);
     if (!Number.isFinite(refreshedAt) || refreshedAt <= Date.parse(ours.last_refresh) || refreshedAt > Date.now() + clockSkewMs) return false;

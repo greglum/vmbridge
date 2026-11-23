@@ -715,24 +715,26 @@ describe("sign-in changes", () => {
     expect(server.restarts).toBe(1);
   });
 
-  test("adopting a VM's Codex tokens gives every VM the new file, since it retired theirs", async () => {
-    const { fleet, files, signIns, agents } = setup();
+  test("adopting a VM's Codex tokens gives every VM the file, since that VM's refresh retired theirs", async () => {
+    const { fleet, files, signIns, agents, calls } = setup();
     signIns.codexAuthJson = "bridge-tokens";
     const vm = await fleet.create();
     await fleet.ensure(vm.id);
     const codexPath = "/workspace/.vmbridge/codex/auth.json";
     files[codexPath] = "refreshed-on-vm";
-    // As AgentAuth does: adopting refreshes, so nothing is due afterwards.
+    // As AgentAuth does: the adopted tokens are fresh, so nothing is due afterwards.
     Object.assign(agents, {
       codexDue: () => true,
       adoptCodex: async (text: string) => {
-        signIns.codexAuthJson = `openai-tokens-for:${text}`;
+        signIns.codexAuthJson = `${text} as VM Bridge saved it`;
         return true;
       },
       refreshCodex: async (onlyChanged: boolean) => (onlyChanged ? undefined : signIns.codexAuthJson),
     });
+    calls.length = 0;
     await fleet.syncCodexAuth();
-    expect(files[codexPath]).toBe("openai-tokens-for:refreshed-on-vm");
+    expect(calls).toContain(`write ${codexPath}`);
+    expect(files[codexPath]).toBe("refreshed-on-vm as VM Bridge saved it");
   });
 
   test("after VM Bridge restarts, an idle VM with older sign-ins restarts T3 before it is used", async () => {

@@ -173,57 +173,65 @@ describe("Codex sign-in", () => {
     return (JSON.parse(testEncryption.open(stored(db, id).codexAuth!, `auths/${id}/auth.json`)) as CodexAuthFile).tokens.refresh_token;
   };
 
-  test("takes tokens a VM refreshed itself once OpenAI accepts them for the same account", async () => {
+  const accountsCheck = "https://chatgpt.com/backend-api/wham/accounts/check";
+  /** ChatGPT's answer to the accounts check: the accounts the access token can use. */
+  const accounts = (...ids: string[]) => () => Response.json({ accounts: ids.map((id) => ({ id })), account_ordering: ids, default_account_id: ids[0] ?? null });
+  const newer = (refresh: string) => JSON.stringify(codexFile("acct-1", refresh, 10 * day, new Date(Date.now() + 60_000)));
+
+  test("takes tokens a VM refreshed itself once ChatGPT accepts its access token for the same account", async () => {
     const { db, auth } = setup();
     await signInCodex(auth, codexFile("acct-1", "refresh-1", day));
-    const calls = fakeFetch(() => Response.json(codexFile("acct-1", "refresh-from-openai", 10 * day).tokens));
+    const calls = fakeFetch(accounts("acct-1"));
     expect(await auth.adoptCodex(JSON.stringify(codexFile("acct-2", "other", 10 * day)), "vm-1")).toBe(false);
     expect(await auth.adoptCodex(JSON.stringify(codexFile("acct-1", "older", 10 * day, new Date(Date.now() - 5 * day))), "vm-1")).toBe(false);
     expect(calls).toHaveLength(0);
     expect(bridgeRefreshToken(db)).toBe("refresh-1");
 
-    expect(await auth.adoptCodex(JSON.stringify(codexFile("acct-1", "from-vm", 10 * day, new Date(Date.now() + 60_000))), "vm-1")).toBe(true);
-    // Only the VM's refresh token goes to OpenAI, and VM Bridge keeps what OpenAI sent back.
-    expect(calls).toHaveLength(1);
-    expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({ grant_type: "refresh_token", refresh_token: "from-vm" });
+    const fromVm = codexFile("acct-1", "from-vm", 10 * day, new Date(Date.now() + 60_000));
+    expect(await auth.adoptCodex(JSON.stringify(fromVm), "vm-1")).toBe(true);
+    // One read-only check with the VM's access token. No refresh, so Codex on the VM keeps a working refresh token.
+    expect(calls.map((call) => call.url)).toEqual([accountsCheck]);
+    expect(new Headers(calls[0]?.init?.headers).get("authorization")).toBe(`Bearer ${fromVm.tokens.access_token}`);
     expect(auth.codexDue()).toBe(false);
-    expect(bridgeRefreshToken(db)).toBe("refresh-from-openai");
+    expect(bridgeRefreshToken(db)).toBe("from-vm");
   });
 
-  test("ignores a VM's file with a made-up date or expiry without asking OpenAI", async () => {
+  test("ignores a VM's file with a made-up date, expiry or refresh token without asking ChatGPT", async () => {
     const { db, auth } = setup();
-    await signInCodex(auth, codexFile("acct-1", "refresh-1", day));
-    const calls = fakeFetch(() => Response.json(codexFile("acct-1", "attacker", 10 * day).tokens));
+    const signedIn = codexFile("acct-1", "refresh-1", day);
+    await signInCodex(auth, signedIn);
+    const calls = fakeFetch(accounts("acct-1"));
     const farFuture = codexFile("acct-1", "attacker", 10 * day, new Date("9999-01-01T00:00:00Z"));
     const notADate = { ...codexFile("acct-1", "attacker", 10 * day), last_refresh: "not a date" };
     const longLived = codexFile("acct-1", "attacker", 365 * day, new Date(Date.now() + 60_000));
-    for (const file of [farFuture, notADate, longLived]) expect(await auth.adoptCodex(JSON.stringify(file), "vm-1")).toBe(false);
+    // The access token VM Bridge gave out, still valid, paired with a refresh token that is not.
+    const swapped = { ...signedIn, tokens: { ...signedIn.tokens, refresh_token: "attacker" }, last_refresh: new Date(Date.now() + 60_000).toISOString() };
+    for (const file of [farFuture, notADate, longLived, swapped]) expect(await auth.adoptCodex(JSON.stringify(file), "vm-1")).toBe(false);
     expect(calls).toHaveLength(0);
     expect(bridgeRefreshToken(db)).toBe("refresh-1");
     expect(auth.codexDue()).toBe(true);
   });
 
-  test("keeps its own tokens when OpenAI refuses the VM's, or they belong to another account", async () => {
+  test("keeps its own tokens when ChatGPT refuses the VM's access token, or it belongs to another account", async () => {
     const { db, auth } = setup();
     await signInCodex(auth, codexFile("acct-1", "refresh-1", day));
-    const newer = (refresh: string) => JSON.stringify(codexFile("acct-1", refresh, 10 * day, new Date(Date.now() + 60_000)));
-
-    fakeFetch(() => Response.json({ error: { code: "refresh_token_invalidated" } }, { status: 401 }));
+    fakeFetch(() => new Response("{}", { status: 401 }));
     expect(await auth.adoptCodex(newer("forged"), "vm-1")).toBe(false);
-    // The ID token claims acct-1, but OpenAI says the refresh token is someone else's.
-    fakeFetch(() => Response.json(codexFile("acct-other", "theirs", 10 * day).tokens));
+    // The file claims acct-1, but ChatGPT says its access token is for someone else.
+    fakeFetch(accounts("acct-other"));
     expect(await auth.adoptCodex(newer("foreign"), "vm-2")).toBe(false);
+    fakeFetch(() => Response.json({ accounts: [{ id: "acct-1", is_deactivated: true }] }));
+    expect(await auth.adoptCodex(newer("deactivated"), "vm-3")).toBe(false);
 
     expect(bridgeRefreshToken(db)).toBe("refresh-1");
     expect(auth.list()[0]?.error).toBeNull();
     expect(auth.codexDue()).toBe(true);
   });
 
-  test("asks OpenAI about each VM's file at most once in a while", async () => {
+  test("asks ChatGPT about each VM's file at most once in a while", async () => {
     const { auth } = setup();
     await signInCodex(auth, codexFile("acct-1", "refresh-1", day));
-    const calls = fakeFetch(() => Response.json({ error: "invalid_grant" }, { status: 400 }));
-    const newer = (refresh: string) => JSON.stringify(codexFile("acct-1", refresh, 10 * day, new Date(Date.now() + 60_000)));
+    const calls = fakeFetch(() => new Response("{}", { status: 401 }));
     await auth.adoptCodex(newer("forged-1"), "vm-1");
     await auth.adoptCodex(newer("forged-2"), "vm-1");
     expect(calls).toHaveLength(1);

@@ -114,6 +114,21 @@ export async function completeDeviceCode(code: DeviceCode, signal: AbortSignal):
   return authFile((await response.json()) as { id_token: string; access_token: string; refresh_token: string });
 }
 
+/**
+ * The ChatGPT accounts an access token can use, from the endpoint Codex checks accounts with
+ * (`get_accounts_check` in codex-rs/backend-client). It only reads, so unlike a refresh it never rotates
+ * tokens someone else holds. Throws when ChatGPT does not accept the token.
+ */
+export async function codexTokenAccounts(accessToken: string): Promise<string[]> {
+  const response = await fetch("https://chatgpt.com/backend-api/wham/accounts/check", {
+    headers: { authorization: `Bearer ${accessToken}`, "user-agent": "codex-cli" },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new Error(`ChatGPT answered ${response.status} when checking the account.`);
+  const body = (await response.json()) as { accounts?: { id?: unknown; is_deactivated?: boolean }[] };
+  return (body.accounts ?? []).flatMap((account) => (typeof account.id === "string" && !account.is_deactivated ? [account.id] : []));
+}
+
 /** Trades the refresh token for new tokens. OpenAI rotates refresh tokens, so the old one stops working. */
 export async function refreshCodexAuth(file: CodexAuthFile): Promise<CodexAuthFile> {
   const response = await post(`${issuer}/oauth/token`, {
