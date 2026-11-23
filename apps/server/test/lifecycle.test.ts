@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -207,7 +208,7 @@ function setup(skillRoots?: string[]) {
     return fleet;
   };
   const fleet = newFleet();
-  return { t3, store, settings, secrets, fleet, newFleet, driver, box, events, traffic, recorded, signIns, files, server, skills, synced, order, calls };
+  return { t3, db, store, settings, secrets, fleet, newFleet, driver, box, events, traffic, recorded, signIns, files, server, skills, synced, order, calls };
 }
 
 describe("creating and deleting VMs", () => {
@@ -725,6 +726,22 @@ describe("sign-in changes", () => {
     await restarted.ensure(vm.id);
     expect(server.restarts).toBe(1);
     expect(server.env).toContain("export OPENCODE_API_KEY='oc-new'");
+  });
+
+  test("a VM whose T3 started with an unkeyed fingerprint from an older version restarts T3 with a keyed one", async () => {
+    const { fleet, newFleet, store, files, server, db } = setup();
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    const keyed = store.vm(vm.id)!.t3Credentials;
+    fleet.close();
+    const unkeyed = createHash("sha256").update("{}").digest("hex");
+    files["/workspace/.vmbridge/t3/credentials"] = unkeyed;
+    db.run("UPDATE vms SET t3_credentials = 'unkeyed'");
+
+    await newFleet().ensure(vm.id);
+    expect(server.restarts).toBe(1);
+    expect(store.vm(vm.id)?.t3Credentials).toBe(keyed);
+    expect(keyed).not.toBe(unkeyed);
   });
 
   test("after VM Bridge restarts, a busy VM with older sign-ins restarts T3 once its work ends", async () => {

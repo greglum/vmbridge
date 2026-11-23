@@ -229,6 +229,10 @@ export const migrations = [
     codex_auth TEXT
   );
   `,
+  // Sign-in fingerprints were plain SHA-256 hashes, which a copy of the database could check guessed secrets
+  // against. Now they are keyed (see `credentialsFingerprint`): a VM with an old one counts as behind on sign-ins, so
+  // it restarts T3 with the current ones, as after any sign-in change.
+  `UPDATE vms SET t3_credentials = 'unkeyed' WHERE t3_credentials IS NOT NULL;`,
 ];
 
 /**

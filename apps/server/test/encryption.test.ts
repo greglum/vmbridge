@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import { Encryption, EncryptionKeyError, keyPath, keyVariable, localKey, openEnc
 import { Secrets } from "../src/settings.ts";
 import { Skills } from "../src/skills.ts";
 import { Store } from "../src/store.ts";
+import { credentialsFingerprint } from "../src/vm/runtime.ts";
 
 const key = (fill: number) => new Uint8Array(32).fill(fill);
 const tempDir = () => mkdtempSync(join(tmpdir(), "vmbridge-encryption-"));
@@ -48,6 +50,14 @@ describe("sealing values", () => {
     const body = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData }, webKey, new TextEncoder().encode("from webcrypto"));
     expect(encryption.open(`v1:${Buffer.concat([iv, new Uint8Array(body)]).toString("base64")}`, "secret:a")).toBe("from webcrypto");
   });
+});
+
+test("the sign-ins fingerprint needs the key, so a copy of the database cannot confirm a guessed secret", () => {
+  const credentials = { env: { PASSWORD: "hunter2" } };
+  const fingerprint = credentialsFingerprint(credentials, new Encryption(key(1)));
+  expect(fingerprint).not.toBe(createHash("sha256").update(JSON.stringify(credentials)).digest("hex"));
+  expect(credentialsFingerprint(credentials, new Encryption(key(2)))).not.toBe(fingerprint);
+  expect(credentialsFingerprint(credentials, new Encryption(key(1)))).toBe(fingerprint);
 });
 
 describe("the local key", () => {

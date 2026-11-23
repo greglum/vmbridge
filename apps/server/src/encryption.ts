@@ -1,5 +1,5 @@
 import type { Sql } from "./sql.ts";
-import { createCipheriv, createDecipheriv, createSecretKey, randomBytes, type KeyObject } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, createSecretKey, hkdfSync, randomBytes, type KeyObject } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -20,10 +20,21 @@ export class EncryptionKeyError extends Error {}
 export class Encryption {
   // A KeyObject, not the bytes: logging it shows only its size.
   private readonly key: KeyObject;
+  /** Derived from the key with HKDF, so fingerprints never use the encryption key itself. */
+  private readonly fingerprintKey: KeyObject;
 
   constructor(key: Uint8Array) {
     if (key.length !== keyBytes) throw new EncryptionKeyError(`The encryption key must be ${keyBytes} bytes.`);
     this.key = createSecretKey(key);
+    this.fingerprintKey = createSecretKey(Buffer.from(hkdfSync("sha256", key, new Uint8Array(0), "vmbridge fingerprint", keyBytes)));
+  }
+
+  /**
+   * An HMAC of `text`, for telling when secret values changed without storing them. Unlike a plain hash, someone
+   * without the key cannot check a guessed value against it.
+   */
+  fingerprint(text: string): string {
+    return createHmac("sha256", this.fingerprintKey).update(text).digest("hex");
   }
 
   static isSealed(value: string) {

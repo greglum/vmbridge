@@ -126,7 +126,7 @@ export class Store {
 
   constructor(
     readonly db: Sql,
-    private readonly encryption: Encryption,
+    readonly encryption: Encryption,
   ) {}
 
   vms(): VmRow[] {
