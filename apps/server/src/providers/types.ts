@@ -74,6 +74,8 @@ export interface ProviderDefinition {
   defaultSize: VmSize;
   /** Its VMs have a desktop VM Bridge can stream to a watch link (see watch/). */
   screen?: boolean;
+  /** Why a new value for a secret field cannot be saved, or null when it can. Absent: any value can. */
+  check?(field: string, value: string): Promise<string | null>;
   open(config: ProviderConfig): Driver;
 }
 

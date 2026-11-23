@@ -3,7 +3,7 @@ import { parseAsStringLiteral, useQueryState } from "nuqs";
 import { toast } from "sonner";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { GithubIcon, LinkSquare02Icon, Plug01Icon, Robot01Icon } from "@hugeicons/core-free-icons";
-import { agentKinds, type AgentAuthMethod, type AgentKind, type AgentProfile, type ClaudeLogin, type CodexLogin, type GitHubAccount, type Overview, type ProviderId, type ProviderInfo, type SelectOption } from "@vmbridge/contracts";
+import { agentKinds, type AgentAuthMethod, type AgentKind, type AgentProfile, type ClaudeLogin, type CodexLogin, type GitHubAccount, type Overview, type ProviderField, type ProviderId, type ProviderInfo, type SelectOption } from "@vmbridge/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field";
@@ -170,6 +170,12 @@ function ProviderForm({ provider, onSaved }: { provider: ProviderInfo; onSaved: 
       toast.success(add ? `${provider.label} added.` : `${provider.label} settings saved and checked.`);
     });
 
+  const clear = (field: ProviderField) =>
+    save.run(async () => {
+      onSaved(await api<ProviderInfo>(`/providers/${provider.id}`, { method: "PUT", body: { values: { [field.key]: null } } }));
+      toast.success(`${field.label} removed.`);
+    });
+
   const makeDefault = () =>
     save.run(async () => {
       onSaved(await api<ProviderInfo>(`/providers/${provider.id}/default`, { body: {} }));
@@ -242,15 +248,22 @@ function ProviderForm({ provider, onSaved }: { provider: ProviderInfo; onSaved: 
             return (
               <Field key={field.key}>
                 <FieldLabel htmlFor={id}>{field.label}</FieldLabel>
-                <Input
-                  id={id}
-                  className="h-9"
-                  type={field.kind === "secret" ? "password" : "text"}
-                  autoComplete="off"
-                  placeholder={field.kind === "secret" && isSet ? "Saved. Type to replace it." : field.placeholder}
-                  value={values[field.key] ?? ""}
-                  onChange={(event) => setValues({ ...values, [field.key]: event.target.value })}
-                />
+                <div className="flex gap-2">
+                  <Input
+                    id={id}
+                    className="h-9 flex-1"
+                    type={field.kind === "secret" ? "password" : "text"}
+                    autoComplete="off"
+                    placeholder={field.kind === "secret" && isSet ? "Saved. Type to replace it." : field.placeholder}
+                    value={values[field.key] ?? ""}
+                    onChange={(event) => setValues({ ...values, [field.key]: event.target.value })}
+                  />
+                  {field.kind === "secret" && isSet && !field.required && (
+                    <Button type="button" variant="outline" size="lg" className="px-4" disabled={save.busy} onClick={() => void clear(field)}>
+                      Remove
+                    </Button>
+                  )}
+                </div>
                 {field.help && <FieldDescription>{field.help}</FieldDescription>}
               </Field>
             );
