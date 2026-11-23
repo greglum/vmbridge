@@ -15,7 +15,8 @@
     "check": "bun run typecheck && bun test",
     "test:workerd": "bun apps/server/dev/workerd/run.ts",
     "build": "bun scripts/build.ts",
-    "compile": "bun scripts/compile.ts"
+    "compile": "bun scripts/compile.ts",
+    "test:workers": "bun apps/server/dev/workers/run.ts"
   },
   "engines": {
     "bun": ">=1.4.4"

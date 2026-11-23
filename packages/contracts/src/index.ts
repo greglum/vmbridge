@@ -412,6 +412,8 @@ export interface Overview {
   savedInstructions: InstructionName[];
   /** VM Bridge can read skills and instructions files on the machine it runs on. False on Cloudflare Workers. */
   machine: boolean;
+  /** Where the password is changed instead of the dashboard, such as a Worker's secret. Null when the dashboard changes it. */
+  passwordSource: string | null;
 }
 
 export type Currency = "USD" | "EUR";

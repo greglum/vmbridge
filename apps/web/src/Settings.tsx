@@ -40,7 +40,7 @@ export function Settings({ overview, onLoggedOut }: { overview: Overview; onLogg
       {tab === "repos" && <RepoRules overview={overview} />}
       {tab === "env" && <Environment overview={overview} />}
       {tab === "addresses" && <Addresses />}
-      {tab === "password" && <Password onLoggedOut={onLoggedOut} />}
+      {tab === "password" && <Password source={overview.passwordSource} onLoggedOut={onLoggedOut} />}
     </Page>
   );
 }
@@ -490,10 +490,25 @@ function CloudflareTunnel({ info, onChange }: { info: CloudflareInfo; onChange: 
   );
 }
 
-function Password({ onLoggedOut }: { onLoggedOut: () => void }) {
+function Password({ source, onLoggedOut }: { source: string | null; onLoggedOut: () => void }) {
   const [current, setCurrent] = useState("");
   const [password, setPassword] = useState("");
   const action = useAction();
+  const logOut = () => void api("/logout", { body: {} }).finally(onLoggedOut);
+  if (source) {
+    return (
+      <Section title="Password">
+        <div className="flex flex-col gap-4">
+          <p className="text-[13px] text-muted-foreground">Change it in {source}. That logs out every browser.</p>
+          <div>
+            <Button type="button" variant="outline" size="lg" className="px-4" onClick={logOut}>
+              Log out
+            </Button>
+          </div>
+        </div>
+      </Section>
+    );
+  }
   return (
     <Section title="Password">
       <form
@@ -517,7 +532,7 @@ function Password({ onLoggedOut }: { onLoggedOut: () => void }) {
           <Button type="submit" size="lg" className="px-4" disabled={action.busy || !current || password.length < 8}>
             Change password
           </Button>
-          <Button type="button" variant="outline" size="lg" className="px-4" onClick={() => void api("/logout", { body: {} }).finally(onLoggedOut)}>
+          <Button type="button" variant="outline" size="lg" className="px-4" onClick={logOut}>
             Log out
           </Button>
         </div>
