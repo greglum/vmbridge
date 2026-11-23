@@ -7,6 +7,7 @@ import { AgentAuth } from "./agent-auth/profiles.ts";
 import { Clients } from "./auth/clients.ts";
 import { DashboardAuth } from "./auth/dashboard.ts";
 import { openDatabase } from "./db.ts";
+import { localKey, openEncryption } from "./encryption.ts";
 import { Fleet } from "./fleet.ts";
 import { fetchGitHubAccount } from "./github.ts";
 import { Clones } from "./gateway/clones.ts";
@@ -51,12 +52,21 @@ export async function start(options: StartOptions = {}) {
   const dir = options.dir ?? dataDir();
   const db = openDatabase(databasePath(dir));
   const settings = new Settings(db);
-  const secrets = new Secrets(db);
-  const store = new Store(db);
+  const { encryption, key: encryptionKey } = openEncryption(db, (create) => localKey(dir, create));
+  const secrets = new Secrets(db, encryption);
+  const store = new Store(db, encryption);
   const traffic = new Traffic(db);
 
-  const agents = new AgentAuth(join(dir, "auths"), settings);
-  const skills = new Skills(db);
+  const agents = new AgentAuth(join(dir, "auths"), settings, encryption);
+  const skills = new Skills(db, encryption);
+  // Data saved before encryption existed. Each table moves in one transaction and each file by rename, so a start
+  // cut short finishes the rest next time.
+  const sealed = secrets.sealPlaintext() + store.sealPlaintext() + skills.sealPlaintext() + agents.sealPlaintext();
+  if (sealed > 0) {
+    // Rewrites the database so the replaced plain text is not left behind in free pages or the write-ahead log.
+    db.run("VACUUM");
+    db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+  }
   const fleet = new Fleet(store, settings, secrets, traffic, agents, skills);
   skills.on("changed", () => {
     fleet.emit("changed");
@@ -134,6 +144,8 @@ export async function start(options: StartOptions = {}) {
     host,
     /** Opens first password setup in the dashboard. Null when a password exists. Show it only to whoever started VM Bridge. */
     setupCode: auth.createSetupCode(),
+    /** Where this install's encryption key lives, and whether this start made it. */
+    encryptionKey: { location: encryptionKey.location, created: encryptionKey.created },
     network: () => networkInfo(host, server.port ?? port),
     async stop() {
       clearInterval(sweep);

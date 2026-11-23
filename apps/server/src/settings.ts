@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { machineNameMaxLength, type AgentKind, type GitHubAccount, type ProviderId, type RepoRule, type VmSize } from "@vmbridge/contracts";
+import { Encryption } from "./encryption.ts";
 import type { ServerConfig } from "./gateway/types.ts";
 
 export interface ProviderPreference {
@@ -94,16 +95,20 @@ export class Settings {
   }
 }
 
-/** Secret values never leave the server through the admin API; only their presence does. */
+/** Secret values never leave the server through the admin API; only their presence does. Stored encrypted. */
 export class Secrets {
-  constructor(private readonly db: Database) {}
+  constructor(
+    private readonly db: Database,
+    private readonly encryption: Encryption,
+  ) {}
 
   get(name: string): string | undefined {
-    return this.db.query<{ value: string }, [string]>("SELECT value FROM secrets WHERE name = ?").get(name)?.value;
+    const value = this.db.query<{ value: string }, [string]>("SELECT value FROM secrets WHERE name = ?").get(name)?.value;
+    return value === undefined ? undefined : this.encryption.open(value, `secret:${name}`);
   }
 
   has(name: string): boolean {
-    return this.get(name) !== undefined;
+    return this.db.query("SELECT 1 FROM secrets WHERE name = ?").get(name) !== null;
   }
 
   set(name: string, value: string | null): void {
@@ -111,8 +116,18 @@ export class Secrets {
     else {
       this.db
         .query("INSERT INTO secrets (name, value) VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value")
-        .run(name, value);
+        .run(name, this.encryption.seal(value, `secret:${name}`));
     }
+  }
+
+  /** Encrypts values saved before secrets were encrypted. Returns how many. */
+  sealPlaintext(): number {
+    const rows = this.db.query<{ name: string; value: string }, []>("SELECT name, value FROM secrets").all();
+    const plain = rows.filter((row) => !Encryption.isSealed(row.value));
+    this.db.transaction(() => {
+      for (const row of plain) this.set(row.name, row.value);
+    })();
+    return plain.length;
   }
 }
 
