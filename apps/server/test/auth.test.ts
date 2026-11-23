@@ -179,6 +179,12 @@ describe("onboarding", () => {
     expect(new Settings(db).get("onboarded")).toBe(true);
   });
 
+  test("an install with a provider but no password still goes through onboarding", () => {
+    const db = openDatabase(":memory:");
+    db.run("INSERT INTO settings (key, value) VALUES ('providers', ?)", JSON.stringify(["boxd"]));
+    expect(new Settings(db).get("onboarded")).toBe(false);
+  });
+
   test("a new install, or one with only a password, is not, and adding a provider later does not change that", () => {
     const db = openDatabase(":memory:");
     expect(new Settings(db).get("onboarded")).toBe(false);

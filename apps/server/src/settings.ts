@@ -86,7 +86,7 @@ export class Settings {
     if (!this.db.one("SELECT 1 FROM settings WHERE key = 'bridgeId'")) this.set("bridgeId", defaults.bridgeId());
     // Installs from before onboarding existed that already have a password and a provider never need it.
     if (!this.db.one("SELECT 1 FROM settings WHERE key = 'onboarded'")) {
-      this.set("onboarded", this.get("dashboardKeyHash") !== undefined && this.get("providers").length > 0);
+      this.set("onboarded", this.get("dashboardKeyHash") !== null && this.get("providers").length > 0);
     }
   }
 
