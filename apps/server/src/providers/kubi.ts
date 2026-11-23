@@ -59,7 +59,14 @@ interface Me {
 export type KubiProvider = Provider<{ client: HttpClient<"api"> }, "pause"> & {
   /** Throws a readable error when the key is refused or lacks a permission VM Bridge needs. */
   verify(): Promise<void>;
+  /** A one-use ticket for a view-only stream of the screen, or null while it is not running. Never starts it. */
+  viewerTicket(id: string): Promise<string | null>;
 };
+
+const apiUrl = "https://api.trykubi.com/v1";
+
+/** Where a viewer ticket opens the screen's stream: a WebSocket carrying RFB 3.8, with the ticket as a subprotocol. */
+export const viewerUrl = (id: string) => new URL(`wss://api.trykubi.com/v1/screens/${encodeURIComponent(id)}/viewer`);
 
 export interface KubiOptions {
   apiKey: string;
@@ -163,7 +170,7 @@ export function kubi(options: KubiOptions): KubiProvider {
   const client = createHttpClient({
     provider: "kubi",
     label: "Kubi",
-    planes: { api: { baseUrl: "https://api.trykubi.com/v1", auth: () => ({ authorization: `Bearer ${apiKey}` }) } },
+    planes: { api: { baseUrl: apiUrl, auth: () => ({ authorization: `Bearer ${apiKey}` }) } },
     defaultPlane: "api",
     fetch: options.fetch,
     timeoutMs: callTimeoutMs,
@@ -462,6 +469,21 @@ export function kubi(options: KubiOptions): KubiProvider {
 
     native: () => ({ client }),
 
+    // A view link is good once, within 60 s, for a session of up to 60 minutes. Its ticket rides in the link's fragment.
+    viewerTicket: (id) =>
+      call(async () => {
+        let link: string;
+        try {
+          link = (await json<{ url: string }>("POST", `/screens/${encodeURIComponent(id)}/viewer`, id, undefined, { mode: "view" })).url;
+        } catch (error) {
+          if (error instanceof SandboxError && error.cause instanceof KubiProblem && error.cause.kubiCode === "SCREEN_NOT_RUNNING") return null;
+          throw error;
+        }
+        const ticket = new URLSearchParams(URL.parse(link)?.hash.slice(1)).get("t");
+        if (!ticket || !/^vt_[\w-]{1,100}$/.test(ticket)) throw fail("Kubi's live view link has no ticket", "provider", id);
+        return ticket;
+      }),
+
     pause: (id) => call(() => stop(id)),
     resume: (id) => call(() => start(id)),
   };
@@ -501,12 +523,20 @@ export const kubiProvider: ProviderDefinition = {
   // Kubi sells one machine.
   sizes: { small: "4 vCPU, 8 GB", medium: "4 vCPU, 8 GB", large: "4 vCPU, 8 GB" },
   defaultSize: "medium",
+  screen: true,
 
   open(config) {
     const provider = kubi({
       apiKey: required(config, "apiKey", "Kubi API key"),
       kind: config.values.kind === "disposable" ? "disposable" : "persistent",
     });
-    return { ...sdkDriver({ id: "kubi", provider, sleep: "pause" }), verify: provider.verify };
+    return {
+      ...sdkDriver({ id: "kubi", provider, sleep: "pause" }),
+      verify: provider.verify,
+      screen: async (sandboxId) => {
+        const ticket = await provider.viewerTicket(sandboxId);
+        return ticket ? { url: viewerUrl(sandboxId), protocols: ["kubi.v1", ticket] } : null;
+      },
+    };
   },
 };

@@ -1,9 +1,9 @@
 import type { OpenSocket } from "../runtime.ts";
 
 /** `OpenSocket` with Bun's WebSocket, which takes request headers as an option. */
-export const openSocket: OpenSocket = (url, headers, timeoutMs) =>
+export const openSocket: OpenSocket = (url, headers, timeoutMs, protocols) =>
   new Promise((resolve, reject) => {
-    const socket = new WebSocket(url, { headers });
+    const socket = new WebSocket(url, { headers, protocols });
     const settle = (error?: Error) => {
       clearTimeout(timer);
       socket.onopen = socket.onerror = socket.onclose = null;

@@ -241,6 +241,17 @@ export const migrations = [
     updated_at INTEGER NOT NULL
   );
   `,
+  // A link to watch a VM's screen live (see watch/links.ts), one per VM. The token is sealed with the context
+  // `watch:<vmId>`, so VM Bridge can give it to the VM again, and looked up by its hash. A row without a token is a
+  // link the user turned off, which VM Bridge then does not make again.
+  `
+  CREATE TABLE watch_links (
+    vm_id TEXT PRIMARY KEY REFERENCES vms(id) ON DELETE CASCADE,
+    token_hash TEXT UNIQUE,
+    token TEXT,
+    created_at INTEGER NOT NULL
+  );
+  `,
 ];
 
 /**

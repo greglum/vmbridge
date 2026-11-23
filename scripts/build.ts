@@ -1,13 +1,13 @@
-// Builds the dashboard into static files for Cloudflare Workers Static Assets: the page and its files under
-// dist/assets/dashboard (the dashboard lives at /dashboard), and a _headers file giving them the security headers the
-// Bun server sends. The Bun server bundles the dashboard itself and does not use these.
+// Builds the dashboard and the watch page into static files for Cloudflare Workers Static Assets: the pages and their
+// files under dist/assets/dashboard (the dashboard lives at /dashboard), and a _headers file giving them the security
+// headers the Bun server sends. The Bun server bundles the dashboard itself and does not use these.
 import tailwind from "bun-plugin-tailwind";
 import { securityHeaders } from "../apps/server/src/security-headers.ts";
 
 const root = "dist/assets";
 const outdir = `${root}/dashboard`;
 const result = await Bun.build({
-  entrypoints: ["apps/web/index.html"],
+  entrypoints: ["apps/web/index.html", "apps/web/watch.html"],
   outdir,
   publicPath: "/dashboard/",
   plugins: [tailwind],

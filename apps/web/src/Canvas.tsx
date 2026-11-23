@@ -44,7 +44,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { Field, FieldLabel } from "@/components/ui/field";
-import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -53,6 +53,7 @@ import { useAction } from "@/hooks/use-action";
 import { cn } from "@/lib/utils";
 import { ago, api, useTick } from "./api.ts";
 import { Logo, ProviderLogo } from "./brand.tsx";
+import { CopyButton } from "./CopyButton.tsx";
 
 /** A connection animates while it carried a request this recently. */
 const flowWindowMs = 8_000;
@@ -645,6 +646,48 @@ function Resources({ stats, now }: { stats: VmStats | null; now: number }) {
   );
 }
 
+/** A link that shows the VM's screen live. A new link stops pages open on the old one. */
+function WatchLink({ vmId, url }: { vmId: string; url: string | null }) {
+  const action = useAction();
+  const change = (method: "POST" | "DELETE") => void action.run(() => api(`/vms/${vmId}/watch`, { method, body: method === "POST" ? {} : undefined }));
+  return (
+    <section className="flex flex-col gap-2">
+      <h3 className="text-xs font-medium text-muted-foreground">Live screen</h3>
+      {url ? (
+        <Item variant="outline" size="sm">
+          <ItemContent className="min-w-0">
+            <a href={url} target="_blank" rel="noreferrer" className="truncate font-mono text-xs hover:underline">
+              {url}
+            </a>
+          </ItemContent>
+          <ItemActions>
+            <CopyButton value={url} label="Copy link" />
+          </ItemActions>
+        </Item>
+      ) : (
+        <p className="text-[13px] text-muted-foreground">Off.</p>
+      )}
+      <div className="flex gap-2">
+        {url ? (
+          <>
+            <Button variant="outline" size="sm" disabled={action.busy} onClick={() => change("POST")}>
+              New link
+            </Button>
+            <Button variant="ghost" size="sm" disabled={action.busy} onClick={() => change("DELETE")}>
+              Turn off
+            </Button>
+          </>
+        ) : (
+          <Button variant="outline" size="sm" disabled={action.busy} onClick={() => change("POST")}>
+            Turn on
+          </Button>
+        )}
+      </div>
+      {action.error && <p className="text-xs text-destructive">{action.error}</p>}
+    </section>
+  );
+}
+
 function VmDetails({ vm, overview, now, onClose }: { vm: VmInfo; overview: Overview; now: number; onClose: () => void }) {
   const action = useAction();
   const projects = overview.projects.filter((project) => vm.projects.includes(project.id));
@@ -691,6 +734,7 @@ function VmDetails({ vm, overview, now, onClose }: { vm: VmInfo; overview: Overv
           <p className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-[13px] text-destructive">{vm.problem}</p>
         )}
         {awake && <Resources stats={vm.stats} now={now} />}
+        {vm.watchLink && <WatchLink vmId={vm.id} url={vm.watchLink.url} />}
         <section className="flex flex-col gap-2">
           <h3 className="text-xs font-medium text-muted-foreground">Repositories</h3>
           {projects.length === 0 && <p className="text-[13px] text-muted-foreground">None yet. Clone one from T3.</p>}

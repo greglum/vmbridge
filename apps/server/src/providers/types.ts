@@ -26,6 +26,13 @@ export interface WakeVm extends CreateVm {
   checkpoint: string | null;
 }
 
+/** A live, view-only stream of a VM's screen: a WebSocket carrying RFB (VNC), opened with these subprotocols. */
+export interface ScreenStream {
+  url: URL;
+  /** They hold the stream's one-use credential, so they never leave VM Bridge. */
+  protocols: string[];
+}
+
 export interface Driver {
   readonly id: ProviderId;
   /** Throws a readable error when the credentials are missing or rejected. */
@@ -52,6 +59,8 @@ export interface Driver {
   destroy(sandboxId: string): Promise<void>;
   /** Deletes a checkpoint `sleep` made, or a base snapshot `snapshot` made, once nothing needs it. One already gone is fine. */
   deleteCheckpoint(checkpoint: string): Promise<void>;
+  /** A stream of the VM's screen, or null while it is not running. Never wakes it. Present when the definition's `screen` is. */
+  screen?(sandboxId: string): Promise<ScreenStream | null>;
 }
 
 export interface ProviderDefinition {
@@ -63,6 +72,8 @@ export interface ProviderDefinition {
   sizes: Record<VmSize, string>;
   /** The size new VMs get unless a setting or repository rule picks one: the closest to 2 vCPU and 8 GB. */
   defaultSize: VmSize;
+  /** Its VMs have a desktop VM Bridge can stream to a watch link (see watch/). */
+  screen?: boolean;
   open(config: ProviderConfig): Driver;
 }
 

@@ -22,15 +22,17 @@ import type { Hub } from "./gateway/hub.ts";
 import type { T3Gateway } from "./gateway/http.ts";
 import { githubName } from "./gateway/repos.ts";
 import { isWorking } from "./gateway/types.ts";
-import { providers } from "./providers/index.ts";
+import { hasScreen, providers } from "./providers/index.ts";
 import { envVars, machineName, saveEnvVars, type Secrets, type Settings } from "./settings.ts";
 import { InstructionsError, isInstructionName } from "./instructions.ts";
 import { SkillError, type Skills } from "./skills.ts";
-import type { Store } from "./store.ts";
+import type { Store, VmRow } from "./store.ts";
 import type { Traffic } from "./traffic.ts";
 import type { Usage } from "./usage.ts";
 import { envNameProblem, envValueProblem } from "./vm/runtime.ts";
+import type { SkillsState } from "./vm/skills.ts";
 import type { Stats } from "./vm/stats.ts";
+import type { Watch } from "./watch/watch.ts";
 
 /**
  * Where VM Bridge is reached, and the settings for it. Bun's covers loopback, Tailscale, the local network and
@@ -70,6 +72,7 @@ export interface AdminDeps {
   stats: Stats;
   skills: Skills;
   usage: Usage;
+  watch: Watch;
 }
 
 export class BadRequest extends Error {}
@@ -502,7 +505,8 @@ export class Admin {
     }
 
     if (section === "vms" && id) {
-      if (!store.vm(id)) return json({ error: "No such VM." }, 404);
+      const vm = store.vm(id);
+      if (!vm) return json({ error: "No such VM." }, 404);
       if (action === "wake" && method === "POST") {
         void fleet.ensure(id).catch(() => {});
         return json({ ok: true });
@@ -517,6 +521,12 @@ export class Admin {
         await fleet.destroy(id);
         hub.emit("shell");
         return json({ ok: true });
+      }
+      if (action === "watch" && (method === "POST" || method === "DELETE")) {
+        if (!hasScreen(vm.provider)) throw new BadRequest("This VM has no screen.");
+        if (method === "POST") this.deps.watch.renew(id);
+        else this.deps.watch.off(id);
+        return json({ url: this.deps.watch.url(id) });
       }
     }
     if (section === "vms" && !id && method === "POST") {
@@ -570,6 +580,7 @@ export class Admin {
     const projects = store.projects();
     const idleMs = settings.get("idleMinutes") * 60_000;
     const skills = this.deps.skills.state();
+    const screenSkills = this.deps.skills.state(true);
     const problems = this.deps.traffic.problems();
     const vms = store
       .vms()
@@ -608,9 +619,9 @@ export class Admin {
           t3Version: vm.t3Version,
           updatePending: fleet.behind(vm),
           stats: vm.state === "ready" || vm.state === "busy" ? this.deps.stats.get(vm.id) : null,
-          skillsPending:
-            vm.sandboxId !== null && vm.skills !== skills.fingerprint && (skills.skills.length > 0 || skills.instructions.length > 0 || vm.skills !== null),
+          skillsPending: this.skillsPending(vm, hasScreen(vm.provider) ? screenSkills : skills),
           problem: problems.vms.get(vm.id) ?? null,
+          watchLink: this.deps.watch.info(vm),
         };
       });
     return {
@@ -649,6 +660,10 @@ export class Admin {
       machine: this.deps.skills.hasMachine,
       passwordSource: this.deps.passwordSource,
     };
+  }
+
+  private skillsPending(vm: VmRow, skills: SkillsState) {
+    return vm.sandboxId !== null && vm.skills !== skills.fingerprint && (skills.skills.length > 0 || skills.instructions.length > 0 || vm.skills !== null);
   }
 
   /** Server-sent events: every traffic event, and a fresh overview whenever the fleet changes. */
