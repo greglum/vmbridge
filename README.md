@@ -36,7 +36,7 @@ Run the same command again to update.
 Each release file is signed with a build attestation that ties it to the GitHub Actions run and commit that built it. To check an installed file with the [GitHub CLI](https://cli.github.com):
 
 ```sh
-gh attestation verify "$(command -v vmbridge)" --repo vkpdeveloper/vmbridge
+gh attestation verify "${VMBRIDGE_INSTALL_DIR:-$HOME/.local/bin}/vmbridge" --repo vkpdeveloper/vmbridge
 ```
 
 ## Get started
