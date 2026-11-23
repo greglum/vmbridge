@@ -113,6 +113,37 @@ sign-ins, environment variables and GitHub token again.
 Updating from a version without encryption encrypts your saved data on first start. After that,
 older versions can't read it, so don't go back to one.
 
+## Cloudflare Tunnel
+
+Cloudflare Tunnel gives VM Bridge an HTTPS address on the public internet, without opening a port.
+Install Cloudflare's free `cloudflared` tool (`brew install cloudflared`) and a switch shows up under
+**Settings**, **Addresses**. It is off until you turn it on, because anyone on the internet can then
+reach your login page. Your dashboard password, pairing links and the one-time setup link still
+protect everything behind it. Its address then shows with the others: in Settings, in the links
+`vmbridge run` prints and in pairing links.
+
+- **Free address:** leave the domain empty. You get a random trycloudflare.com address, no account
+  needed, and it changes every time VM Bridge restarts.
+- **Your own domain:** run `cloudflared tunnel login` once, then type a hostname such as
+  `bridge.example.com` on a domain in your Cloudflare account. VM Bridge makes a tunnel named
+  `vmbridge-` plus the first 8 characters of its ID and adds the DNS record. It never replaces a
+  record you already have.
+- **Dashboard tunnel:** make a tunnel in the Cloudflare dashboard, paste its token and type the
+  hostname you gave it there. The token is kept with your other secrets.
+
+cloudflared connects to VM Bridge on a port of its own on this machine, picked the first time you
+turn the tunnel on and kept after that. Settings shows it: point a dashboard tunnel's hostname at
+`http://localhost:` plus that port. If another app takes the port, VM Bridge picks a new one, and you
+update the dashboard tunnel to match. The tunnel's config and credentials live in
+`~/.vmbridge/cloudflared`.
+
+- Free addresses cannot stream live updates, so the dashboard refreshes every 5 seconds there.
+- VM Bridge only believes the visitor address and HTTPS details Cloudflare adds when they arrive on
+  the tunnel's port from this machine, so failed logins are counted per visitor.
+- While it is on, the tunnel starts and stops with VM Bridge, including when you close its terminal.
+  If cloudflared stops on its own, VM Bridge starts it again after a second, waiting longer after
+  each failure, up to a minute. Its warnings and errors go to the VM Bridge log with tokens hidden.
+
 ## Commands
 
 ```
