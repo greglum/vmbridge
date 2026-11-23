@@ -78,10 +78,14 @@ export const minPassphraseLength = 32;
 const passphraseSalt = "vmbridge encryption key v1";
 const passphraseIterations = 100_000;
 
-/** The key `text` holds when it is base64 (or base64url) for exactly 32 bytes, otherwise null. */
+/**
+ * The key `text` holds when it is base64 (or base64url) for exactly 32 bytes, otherwise null. Whitespace inside is
+ * ignored, as Node's base64 decoding always did, so a key file wrapped across lines still reads as the same key.
+ */
 export function base64Key(text: string): Uint8Array | null {
-  if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(text)) return null;
-  const key = Buffer.from(text, "base64");
+  const compact = text.replace(/\s/g, "");
+  if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(compact)) return null;
+  const key = Buffer.from(compact, "base64");
   return key.length === keyBytes ? key : null;
 }
 
