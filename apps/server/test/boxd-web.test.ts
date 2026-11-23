@@ -30,8 +30,10 @@ function fakeBoxd(options: { local?: boolean } = {}) {
     return found;
   };
 
+  // dash where there is one: it is `sh` on Debian and Ubuntu guests, and stricter than macOS's bash-based `sh`.
+  const shell = Bun.which("dash") ?? "sh";
   const local: Exec = async (command) => {
-    const child = Bun.spawn(["sh", "-c", command], { stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawn([shell, "-c", command], { stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     return { stdout, stderr, exitCode };
   };
