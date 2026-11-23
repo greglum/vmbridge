@@ -33,6 +33,7 @@ const sections: DocsSection[] = [
   { id: "instructions", title: "AGENTS.md" },
   { id: "network", title: "Addresses and Tailscale" },
   { id: "security", title: "Data and security" },
+  { id: "encryption", title: "Encryption" },
   { id: "troubleshooting", title: "Troubleshooting" },
   { id: "develop", title: "Develop" },
 ];
@@ -452,6 +453,45 @@ bun run build          # dist/vmbridge
                   "Requests to VMs refuse redirects, so a token can never be sent to another site.",
                 ]}
               />
+            </Section>
+
+            <Section id="encryption" title="Encryption">
+              <p>
+                VM Bridge encrypts everything sensitive it saves, by default, with AES-256-GCM and a key that only your install has.
+              </p>
+              <List
+                items={[
+                  <>
+                    <strong>Encrypted:</strong> provider keys, the GitHub token, environment variables for VMs, each VM&apos;s T3 token, installed
+                    skill files and agent sign-ins.
+                  </>,
+                  <>
+                    <strong>Not encrypted:</strong> chat history, queued messages, logs and settings. They stay in files only your user can read.
+                  </>,
+                ]}
+              />
+              <p>
+                On first start VM Bridge makes a random key and saves it in <Code>~/.vmbridge/encryption.key</Code>, readable only by your user. To
+                use your own key, set <Code>VMBRIDGE_ENCRYPTION_KEY</Code> to 32 random bytes in base64. It takes the place of the file.
+              </p>
+              <Command text="openssl rand -base64 32" />
+              <p>
+                The key file sits next to your data, so a copy of the whole folder holds both. Keeping the key outside the folder, in{" "}
+                <Code>VMBRIDGE_ENCRYPTION_KEY</Code>, is stronger.
+              </p>
+              <p>
+                <strong>Back up the key</strong> somewhere apart from your data, such as a password manager: the contents of{" "}
+                <Code>encryption.key</Code>, or the value you set. To restore it, put the file back or set the variable again.
+              </p>
+              <p>
+                VM Bridge will not start with the wrong key or without its key, so it never overwrites what you saved. If the key is lost, no one
+                can read those values again, you included: start with a new data folder and add your provider keys, agent sign-ins, environment
+                variables and GitHub token again.
+              </p>
+              <p>
+                Updating from a version without encryption encrypts your saved data on first start. After that, older versions can&apos;t read it,
+                so don&apos;t go back to one.
+              </p>
             </Section>
 
             <Section id="troubleshooting" title="Troubleshooting">
