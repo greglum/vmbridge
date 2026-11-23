@@ -50,6 +50,12 @@ export class InvalidSignIn extends Error {}
 
 /** Refresh Codex well before its 10-day access token runs out, so no VM has to refresh it on its own. */
 const codexRefreshMarginMs = 2 * 24 * 60 * 60_000;
+/** A Codex access token lasts 10 days, so one running out much later than that did not come from OpenAI. */
+const codexAccessTokenMaxMs = 14 * 24 * 60 * 60_000;
+/** How far ahead a VM's clock may run when it stamps a refresh. */
+const clockSkewMs = 5 * 60_000;
+/** Each VM's auth.json is checked with OpenAI at most this often. */
+const codexAdoptIntervalMs = 10 * 60_000;
 
 const slug = (text: string) =>
   text
@@ -94,6 +100,8 @@ export class AgentAuth {
   private readonly claudeLogins = new Map<string, ClaudeSignIn>();
   /** Codex refreshes one at a time: OpenAI rotates refresh tokens, so two at once would break the sign-in. */
   private codexQueue: Promise<unknown> = Promise.resolve();
+  /** When each VM's auth.json was last checked with OpenAI. */
+  private readonly codexAdoptChecks = new Map<string, number>();
   onChange: () => void = () => {};
 
   constructor(
@@ -274,18 +282,45 @@ export class AgentAuth {
   }
 
   /**
-   * Takes a VM's auth.json when Codex on that VM refreshed the tokens itself, which retires the
-   * refresh token VM Bridge holds. Only for the same ChatGPT account, and only when newer.
+   * Takes over the tokens in a VM's auth.json when Codex on that VM refreshed them itself, which retires the
+   * refresh token VM Bridge holds. A VM can write anything to that file, so VM Bridge refreshes with the VM's
+   * refresh token and keeps what OpenAI sends back, only for the same ChatGPT account. That retires the VM's
+   * refresh token, so callers give VMs the new file when this returns true.
    */
-  adoptCodex(text: string) {
-    const current = this.codexInUse();
-    const theirs = parseCodexAuth(text);
-    if (!current || !theirs) return;
-    if (codexAccount(theirs).accountId !== codexAccount(current.file).accountId) return;
-    if (Date.parse(theirs.last_refresh) <= Date.parse(current.file.last_refresh)) return;
-    if (theirs.tokens.refresh_token === current.file.tokens.refresh_token) return;
-    this.writeCodex(current.profile.id, theirs);
-    if (current.profile.error) this.save({ ...current.profile, error: null });
+  adoptCodex(text: string, vmId: string): Promise<boolean> {
+    const run = async () => {
+      const current = this.codexInUse();
+      const theirs = parseCodexAuth(text);
+      if (!current || !theirs || !this.plausiblyNewer(theirs, current.file)) return false;
+      const lastCheck = this.codexAdoptChecks.get(vmId);
+      if (lastCheck !== undefined && Date.now() - lastCheck < codexAdoptIntervalMs) return false;
+      this.codexAdoptChecks.set(vmId, Date.now());
+      let fresh: CodexAuthFile;
+      try {
+        // Only the refresh token goes to OpenAI: the account must come from the ID token OpenAI sends back.
+        fresh = await refreshCodexAuth({ ...theirs, tokens: { ...theirs.tokens, id_token: "", access_token: "", account_id: null } });
+      } catch {
+        // VM Bridge's own tokens stay as they are.
+        return false;
+      }
+      if (codexAccount(fresh).accountId !== codexAccount(current.file).accountId) return false;
+      this.writeCodex(current.profile.id, fresh);
+      if (current.profile.error) this.save({ ...current.profile, error: null });
+      return true;
+    };
+    const next = this.codexQueue.then(run, run);
+    this.codexQueue = next;
+    return next;
+  }
+
+  /** Cheap checks before asking OpenAI: same account, a real date between ours and now, and a short-lived token. */
+  private plausiblyNewer(theirs: CodexAuthFile, ours: CodexAuthFile) {
+    if (theirs.tokens.refresh_token === ours.tokens.refresh_token) return false;
+    if (codexAccount(theirs).accountId !== codexAccount(ours).accountId) return false;
+    const refreshedAt = Date.parse(theirs.last_refresh);
+    if (!Number.isFinite(refreshedAt) || refreshedAt <= Date.parse(ours.last_refresh) || refreshedAt > Date.now() + clockSkewMs) return false;
+    const { expiresAt } = codexAccount(theirs);
+    return expiresAt !== null && expiresAt <= Date.now() + codexAccessTokenMaxMs;
   }
 
   private due(file: CodexAuthFile) {

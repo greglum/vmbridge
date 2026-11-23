@@ -429,7 +429,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
     // refresh token that retired would fail, so take the VM's first. Otherwise `prepareVm` keeps the newer file.
     if (this.agents.codexDue()) {
       const codexAuth = await readCodexAuth(box);
-      if (codexAuth) this.agents.adoptCodex(codexAuth);
+      if (codexAuth) await this.agents.adoptCodex(codexAuth, vm.id);
       watch.lap("read Codex sign-in");
     }
     const credentials = await this.credentials();
@@ -437,8 +437,8 @@ export class Fleet extends EventEmitter<FleetEvents> {
     const [prepared, preview] = await Promise.all([prepareVm(box, version, credentials, fingerprint), box.preview(t3Port)]);
     watch.lap("prepare VM, preview URL");
     if (prepared.codexAuth) {
-      this.agents.adoptCodex(prepared.codexAuth);
-      // A file VM Bridge did not adopt, such as another account's, is replaced after all.
+      await this.agents.adoptCodex(prepared.codexAuth, vm.id);
+      // Adopting retired the VM's refresh token, and a file VM Bridge did not adopt, such as another account's, must go too.
       const ours = (await this.credentials()).codexAuthJson;
       if (ours && ours !== prepared.codexAuth) await writeCodexAuth(box, ours);
       watch.lap("adopt Codex sign-in");
@@ -527,9 +527,9 @@ export class Fleet extends EventEmitter<FleetEvents> {
       return box ? [{ vmId, box }] : [];
     });
     // A VM's Codex may have refreshed its tokens since VM Bridge last saw them. Keep the newest before overwriting.
-    for (const { box } of awake) {
+    for (const { vmId, box } of awake) {
       const current = await readCodexAuth(box);
-      if (current) this.agents.adoptCodex(current);
+      if (current) await this.agents.adoptCodex(current, vmId);
     }
     const credentials = await this.credentials();
     const fingerprint = credentialsFingerprint(credentials, this.store.encryption);
@@ -997,14 +997,16 @@ fi`,
    */
   async syncCodexAuth() {
     if (!this.agents.codexDue()) return;
-    const boxes = [...this.boxes.values()];
-    for (const box of boxes) {
+    const boxes = [...this.boxes];
+    let adopted = false;
+    for (const [vmId, box] of boxes) {
       const current = await readCodexAuth(box);
-      if (current) this.agents.adoptCodex(current);
+      if (current && (await this.agents.adoptCodex(current, vmId))) adopted = true;
     }
-    const authJson = await this.agents.refreshCodex(true);
+    // Adopting refreshed the tokens, which retired the refresh token every VM holds, so they all need the new file.
+    const authJson = await this.agents.refreshCodex(!adopted);
     if (!authJson) return;
-    await Promise.all(boxes.map((box) => writeCodexAuth(box, authJson).catch(() => {})));
+    await Promise.all(boxes.map(([, box]) => writeCodexAuth(box, authJson).catch(() => {})));
   }
 
   close() {

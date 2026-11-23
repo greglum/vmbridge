@@ -167,16 +167,68 @@ describe("Codex sign-in", () => {
     expect(auth.codexDue()).toBe(false);
   });
 
-  test("takes tokens a VM refreshed itself, only for the same account and only when newer", async () => {
+  /** The refresh token VM Bridge holds, read without refreshing it. */
+  const bridgeRefreshToken = (db: ReturnType<typeof openDatabase>) => {
+    const id = "codex-chatgpt-account";
+    return (JSON.parse(testEncryption.open(stored(db, id).codexAuth!, `auths/${id}/auth.json`)) as CodexAuthFile).tokens.refresh_token;
+  };
+
+  test("takes tokens a VM refreshed itself once OpenAI accepts them for the same account", async () => {
+    const { db, auth } = setup();
+    await signInCodex(auth, codexFile("acct-1", "refresh-1", day));
+    const calls = fakeFetch(() => Response.json(codexFile("acct-1", "refresh-from-openai", 10 * day).tokens));
+    expect(await auth.adoptCodex(JSON.stringify(codexFile("acct-2", "other", 10 * day)), "vm-1")).toBe(false);
+    expect(await auth.adoptCodex(JSON.stringify(codexFile("acct-1", "older", 10 * day, new Date(Date.now() - 5 * day))), "vm-1")).toBe(false);
+    expect(calls).toHaveLength(0);
+    expect(bridgeRefreshToken(db)).toBe("refresh-1");
+
+    expect(await auth.adoptCodex(JSON.stringify(codexFile("acct-1", "from-vm", 10 * day, new Date(Date.now() + 60_000))), "vm-1")).toBe(true);
+    // Only the VM's refresh token goes to OpenAI, and VM Bridge keeps what OpenAI sent back.
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({ grant_type: "refresh_token", refresh_token: "from-vm" });
+    expect(auth.codexDue()).toBe(false);
+    expect(bridgeRefreshToken(db)).toBe("refresh-from-openai");
+  });
+
+  test("ignores a VM's file with a made-up date or expiry without asking OpenAI", async () => {
+    const { db, auth } = setup();
+    await signInCodex(auth, codexFile("acct-1", "refresh-1", day));
+    const calls = fakeFetch(() => Response.json(codexFile("acct-1", "attacker", 10 * day).tokens));
+    const farFuture = codexFile("acct-1", "attacker", 10 * day, new Date("9999-01-01T00:00:00Z"));
+    const notADate = { ...codexFile("acct-1", "attacker", 10 * day), last_refresh: "not a date" };
+    const longLived = codexFile("acct-1", "attacker", 365 * day, new Date(Date.now() + 60_000));
+    for (const file of [farFuture, notADate, longLived]) expect(await auth.adoptCodex(JSON.stringify(file), "vm-1")).toBe(false);
+    expect(calls).toHaveLength(0);
+    expect(bridgeRefreshToken(db)).toBe("refresh-1");
+    expect(auth.codexDue()).toBe(true);
+  });
+
+  test("keeps its own tokens when OpenAI refuses the VM's, or they belong to another account", async () => {
+    const { db, auth } = setup();
+    await signInCodex(auth, codexFile("acct-1", "refresh-1", day));
+    const newer = (refresh: string) => JSON.stringify(codexFile("acct-1", refresh, 10 * day, new Date(Date.now() + 60_000)));
+
+    fakeFetch(() => Response.json({ error: { code: "refresh_token_invalidated" } }, { status: 401 }));
+    expect(await auth.adoptCodex(newer("forged"), "vm-1")).toBe(false);
+    // The ID token claims acct-1, but OpenAI says the refresh token is someone else's.
+    fakeFetch(() => Response.json(codexFile("acct-other", "theirs", 10 * day).tokens));
+    expect(await auth.adoptCodex(newer("foreign"), "vm-2")).toBe(false);
+
+    expect(bridgeRefreshToken(db)).toBe("refresh-1");
+    expect(auth.list()[0]?.error).toBeNull();
+    expect(auth.codexDue()).toBe(true);
+  });
+
+  test("asks OpenAI about each VM's file at most once in a while", async () => {
     const { auth } = setup();
     await signInCodex(auth, codexFile("acct-1", "refresh-1", day));
-    auth.adoptCodex(JSON.stringify(codexFile("acct-2", "other", 10 * day)));
-    auth.adoptCodex(JSON.stringify(codexFile("acct-1", "older", 10 * day, new Date(Date.now() - 5 * day))));
-    expect(JSON.parse((await auth.vmSecrets()).codexAuthJson!).tokens.refresh_token).toBe("refresh-1");
-
-    auth.adoptCodex(JSON.stringify(codexFile("acct-1", "from-vm", 10 * day, new Date(Date.now() + 60_000))));
-    expect(auth.codexDue()).toBe(false);
-    expect(JSON.parse((await auth.vmSecrets()).codexAuthJson!).tokens.refresh_token).toBe("from-vm");
+    const calls = fakeFetch(() => Response.json({ error: "invalid_grant" }, { status: 400 }));
+    const newer = (refresh: string) => JSON.stringify(codexFile("acct-1", refresh, 10 * day, new Date(Date.now() + 60_000)));
+    await auth.adoptCodex(newer("forged-1"), "vm-1");
+    await auth.adoptCodex(newer("forged-2"), "vm-1");
+    expect(calls).toHaveLength(1);
+    await auth.adoptCodex(newer("from-vm-2"), "vm-2");
+    expect(calls).toHaveLength(2);
   });
 
   test("VMs tell a new Codex sign-in apart from a token refresh", async () => {
