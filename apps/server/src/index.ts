@@ -20,6 +20,7 @@ import { Secrets, Settings } from "./settings.ts";
 import { Skills } from "./skills.ts";
 import { Store } from "./store.ts";
 import { Traffic } from "./traffic.ts";
+import { CloudflareTunnel } from "./tunnel.ts";
 import { Usage } from "./usage.ts";
 import { Stats } from "./vm/stats.ts";
 
@@ -87,29 +88,36 @@ export async function start(options: StartOptions = {}) {
   const rpc = new Rpc(hub, clones, branches, traffic, () => secrets.has("github.token"));
   const gateway = new T3Gateway(hub, rpc, clients);
   const auth = new DashboardAuth(db, settings);
-  const admin = new Admin({ version, startedAt: Date.now(), host, port, settings, secrets, store, fleet, hub, traffic, clients, auth, gateway, agents, stats, skills, usage });
+  // Defined before the server starts listening; its listener only opens once the tunnel is on.
+  let tunnel: CloudflareTunnel;
+  const admin = new Admin({ version, startedAt: Date.now(), host, port, settings, secrets, store, fleet, hub, traffic, clients, auth, gateway, agents, stats, skills, usage, tunnel: () => tunnel });
 
-  const server = Bun.serve<SocketData>({
-    hostname: host,
-    port,
-    maxRequestBodySize: 2 * 1024 * 1024,
-    // Long enough for the dashboard's event stream between heartbeats.
-    idleTimeout: 60,
-    development: process.env.VMBRIDGE_DEV === "1",
-    // The dashboard lives under /dashboard, a path T3 clients never request.
-    routes: {
-      "/dashboard": dashboard,
-      "/dashboard/onboarding": dashboard,
-      "/": new Response(null, { status: 302, headers: { location: "/dashboard" } }),
-    },
-    fetch(request, server) {
-      const path = new URL(request.url).pathname;
-      if (path.startsWith("/admin/api/")) return admin.fetch(request, server);
-      if (isT3Path(path)) return gateway.fetch(request, server);
-      return new Response("Not found", { status: 404 });
-    },
-    websocket: gateway.websocket,
-  });
+  /** `viaTunnel` marks the loopback listener only cloudflared forwards to, whose proxy headers can be trusted. */
+  const serve = (hostname: string, port: number, viaTunnel: boolean) =>
+    Bun.serve<SocketData>({
+      hostname,
+      port,
+      maxRequestBodySize: 2 * 1024 * 1024,
+      // Long enough for the dashboard's event stream between heartbeats.
+      idleTimeout: 60,
+      development: process.env.VMBRIDGE_DEV === "1",
+      // The dashboard lives under /dashboard, a path T3 clients never request.
+      routes: {
+        "/dashboard": dashboard,
+        "/dashboard/onboarding": dashboard,
+        "/": new Response(null, { status: 302, headers: { location: "/dashboard" } }),
+      },
+      fetch(request, server) {
+        const path = new URL(request.url).pathname;
+        if (path.startsWith("/admin/api/")) return admin.fetch(request, server, viaTunnel);
+        if (isT3Path(path)) return gateway.fetch(request, server);
+        return new Response("Not found", { status: 404 });
+      },
+      websocket: gateway.websocket,
+    });
+  const server = serve(host, port, false);
+  tunnel = new CloudflareTunnel({ settings, secrets, traffic, dir, listen: (tunnelPort) => serve("127.0.0.1", tunnelPort, true) });
+  void tunnel.apply();
 
   let sweeping = false;
   const sweep = setInterval(() => {
@@ -146,13 +154,16 @@ export async function start(options: StartOptions = {}) {
     setupCode: auth.createSetupCode(),
     /** Where this install's encryption key lives, and whether this start made it. */
     encryptionKey: { location: encryptionKey.location, created: encryptionKey.created },
-    network: () => networkInfo(host, server.port ?? port),
+    network: () => networkInfo(host, server.port ?? port, tunnel.info()),
+    /** Waits a little for the Cloudflare Tunnel's address, so it can be printed with the others. */
+    tunnelReady: () => tunnel.ready(20_000),
     async stop() {
       clearInterval(sweep);
       clearInterval(codexSync);
       clearInterval(statsTimer);
       clearInterval(skillWatch);
       gateway.close();
+      await tunnel.stop();
       await server.stop(true);
       // Some providers have no idle timeout of their own: a VM left awake here would run until VM Bridge starts again.
       await hub.sleepIdle(15_000);
