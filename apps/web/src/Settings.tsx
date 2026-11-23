@@ -296,6 +296,13 @@ function Addresses() {
   const [network, setNetwork] = useState<NetworkInfo | null>(null);
   const action = useAction();
   useEffect(() => void action.run(async () => setNetwork(await api<NetworkInfo>("/network"))), []);
+  const cloudflare = network?.cloudflare;
+  // Until the tunnel works or gives up, check again every few seconds.
+  useEffect(() => {
+    if (!cloudflare?.enabled || cloudflare.state === "running") return;
+    const timer = setTimeout(() => void api<NetworkInfo>("/network").then(setNetwork, () => {}), 3_000);
+    return () => clearTimeout(timer);
+  }, [network]);
   const tailscale = network?.tailscale;
   return (
     <>
@@ -304,7 +311,10 @@ function Addresses() {
           {network?.addresses.map((address) => (
             <Item key={address.url} variant="outline" size="sm">
               <ItemContent className="min-w-0">
-                <ItemTitle>{address.label}</ItemTitle>
+                <ItemTitle>
+                  {address.label}
+                  {address.kind === "cloudflare" && <TunnelBadge state="running" />}
+                </ItemTitle>
                 <ItemDescription className="truncate font-mono text-xs">
                   {address.url}
                 </ItemDescription>
@@ -314,6 +324,17 @@ function Addresses() {
               </ItemActions>
             </Item>
           ))}
+          {cloudflare?.enabled && !cloudflare.url && cloudflare.state !== "off" && (
+            <Item variant="outline" size="sm">
+              <ItemContent className="min-w-0">
+                <ItemTitle>
+                  Cloudflare Tunnel
+                  <TunnelBadge state={cloudflare.state} />
+                </ItemTitle>
+                <ItemDescription>{cloudflare.state === "failed" ? cloudflare.error : gettingReady}</ItemDescription>
+              </ItemContent>
+            </Item>
+          )}
         </ItemGroup>
       </Section>
       {network && (
@@ -348,7 +369,17 @@ function Addresses() {
   );
 }
 
-const tunnelBadge: Record<CloudflareInfo["state"], string> = { off: "Off", starting: "Starting", running: "On", failed: "Not working" };
+const gettingReady = "Getting the address ready, this can take up to a minute.";
+const tunnelStatus: Record<CloudflareInfo["state"], string> = { off: "Off", starting: "Getting ready", running: "Working", failed: "Not working" };
+
+function TunnelBadge({ state }: { state: CloudflareInfo["state"] }) {
+  return (
+    <Badge variant={state === "failed" ? "destructive" : "secondary"} className="gap-1.5">
+      {state === "running" && <span className="size-1.5 rounded-full bg-success" />}
+      {tunnelStatus[state]}
+    </Badge>
+  );
+}
 
 function CloudflareTunnel({ info, onChange }: { info: CloudflareInfo; onChange: (network: NetworkInfo) => void }) {
   const [hostname, setHostname] = useState(info.hostname ?? "");
@@ -370,9 +401,9 @@ function CloudflareTunnel({ info, onChange }: { info: CloudflareInfo; onChange: 
     );
   }
 
-  const status = info.url ?? (info.state === "starting" ? "Starting..." : "Opens VM Bridge to the internet, behind your password.");
+  const status = info.url ?? (info.enabled && info.state === "starting" ? gettingReady : "Opens VM Bridge to the internet, behind your password.");
   return (
-    <Section title="Cloudflare Tunnel" actions={<Badge variant="secondary">{info.enabled ? tunnelBadge[info.state] : "Off"}</Badge>}>
+    <Section title="Cloudflare Tunnel" actions={<TunnelBadge state={info.enabled ? info.state : "off"} />}>
       <Item variant="outline">
         <ItemContent className="min-w-0">
           <ItemTitle>

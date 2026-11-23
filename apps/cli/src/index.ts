@@ -125,7 +125,7 @@ async function run(options: { host: string; port: number }) {
   if (network.tailscale.running && !network.tailscale.httpsUrl) console.log("\n  Turn on Tailscale HTTPS in the dashboard settings for an https:// address.");
   if (cloudflare.installed && !cloudflare.enabled) console.log("\n  Cloudflare Tunnel is available: turn it on in Settings > Addresses.");
   else if (cloudflare.state === "failed") console.log(`\n  Cloudflare Tunnel did not start: ${cloudflare.error}`);
-  else if (cloudflare.enabled && !cloudflare.url) console.log("\n  Cloudflare Tunnel is still starting. Its address shows in Settings > Addresses.");
+  else if (cloudflare.enabled && !cloudflare.url) console.log("\n  Cloudflare Tunnel is getting its address ready. It shows in Settings > Addresses once it works.");
   else if (cloudflare.mode === "quick" && cloudflare.url) console.log("\n  The Cloudflare Tunnel address changes every time VM Bridge restarts.");
   if (setupCode) console.log("\nOpen a link to choose your password and finish setup. Press Ctrl+C to stop.");
   else if (server.setupCode) console.log("\nNo dashboard password yet. Set one with `vmbridge password`, or start `vmbridge run` in a terminal for a setup link.");
