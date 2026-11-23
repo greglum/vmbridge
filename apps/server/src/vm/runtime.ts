@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AgentSecrets } from "../agent-auth/profiles.ts";
 import type { Box } from "../providers/index.ts";
 
@@ -227,7 +228,7 @@ printf '%s' "$stamp" > ${setupStampPath}
  * when it connects.
  */
 export function setupStamp(t3Version: string) {
-  return new Bun.CryptoHasher("sha256").update(`${setupScript}\n${t3Version}`).digest("hex");
+  return createHash("sha256").update(`${setupScript}\n${t3Version}`).digest("hex");
 }
 
 // Sets only VMBRIDGE_ variables, which the dashboard cannot: assigning a name the env file exported would change it for T3
@@ -280,7 +281,7 @@ export async function check(box: Box, command: string, what: string, timeoutMs =
  */
 export function credentialsFingerprint(credentials: VmCredentials) {
   const { codexAuthJson: _refreshes, ...rest } = credentials;
-  return new Bun.CryptoHasher("sha256").update(JSON.stringify(rest)).digest("hex");
+  return createHash("sha256").update(JSON.stringify(rest)).digest("hex");
 }
 
 /** Writes a file atomically, creating its folder, from base64 on stdin. */

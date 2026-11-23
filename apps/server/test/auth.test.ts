@@ -80,6 +80,32 @@ describe("dashboard key", () => {
     }
   });
 
+  test("stores a salted PBKDF2 hash", async () => {
+    const db = openDatabase(":memory:");
+    const settings = new Settings(db);
+    const auth = new DashboardAuth(db, settings);
+    await auth.setKey("correct horse");
+    const first = settings.get("dashboardKeyHash")!;
+    await auth.setKey("correct horse");
+    expect(first).toMatch(/^\$pbkdf2-sha256\$i=100000\$[\w+/=]+\$[\w+/=]+$/);
+    expect(settings.get("dashboardKeyHash")).not.toBe(first);
+  });
+
+  test("an argon2 hash from an older version still logs in, once, and is replaced by PBKDF2", async () => {
+    const db = openDatabase(":memory:");
+    const settings = new Settings(db);
+    settings.set("dashboardKeyHash", await Bun.password.hash("correct horse"));
+    const auth = new DashboardAuth(db, settings);
+    expect(await auth.login("wrong key!", "a", false)).toBeNull();
+    expect(settings.get("dashboardKeyHash")).toStartWith("$argon2");
+    const cookie = (await auth.login("correct horse", "a", false))!.split(";")[0]!;
+    expect(settings.get("dashboardKeyHash")).toStartWith("$pbkdf2-sha256$");
+    // Rehashing keeps the session it was logged in with.
+    expect(auth.authenticated(request(cookie))).toBe(true);
+    expect(await auth.login("correct horse", "a", false)).not.toBeNull();
+    expect(await auth.login("wrong key!", "a", false)).toBeNull();
+  });
+
   test("a stopped watch is not called", async () => {
     const db = openDatabase(":memory:");
     const auth = new DashboardAuth(db, new Settings(db));
