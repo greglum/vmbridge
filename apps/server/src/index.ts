@@ -108,7 +108,11 @@ export async function start(options: StartOptions = {}) {
         "/": new Response(null, { status: 302, headers: { location: "/dashboard" } }),
       },
       fetch(request, server) {
-        const path = new URL(request.url).pathname;
+        const { pathname: path, search } = new URL(request.url);
+        // Routes match exactly, so /dashboard/ would miss. The browser keeps the fragment (onboarding's #code=) across the redirect.
+        if (path.startsWith("/dashboard/") && path.endsWith("/")) {
+          return new Response(null, { status: 302, headers: { location: `${path.replace(/\/+$/, "")}${search}` } });
+        }
         if (path.startsWith("/admin/api/")) return admin.fetch(request, server, viaTunnel);
         if (isT3Path(path)) return gateway.fetch(request, server);
         return new Response("Not found", { status: 404 });
