@@ -1,15 +1,9 @@
 import { createHash } from "node:crypto";
-import type { AgentKind } from "@vmbridge/contracts";
+import type { AgentKind, SkillFile } from "@vmbridge/contracts";
 import type { Box } from "../providers/index.ts";
 import { check, root } from "./runtime.ts";
 
-/** One file of a skill, relative to its folder. */
-export interface SkillFile {
-  path: string;
-  /** Base64, so scripts and images survive as they are. */
-  data: string;
-  executable?: boolean;
-}
+export type { SkillFile };
 
 /** The global instructions files every VM should have, one per agent. */
 export type InstructionsState = { agent: AgentKind; hash: string; text: string }[];

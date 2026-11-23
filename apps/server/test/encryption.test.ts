@@ -136,24 +136,26 @@ describe("encrypting data saved in plain text", () => {
     db.run("INSERT INTO vms (id, provider, name, size, state, created_at, t3_token) VALUES ('vm1', 'e2b', 'one', 'medium', 'ready', 0, 't3-plain')");
     const files = JSON.stringify([{ path: "SKILL.md", data: Buffer.from("skill-plain").toString("base64") }]);
     db.run("INSERT INTO skills (name, source, ref, hash, files, installed_at, updated_at) VALUES ('mine', 'local', '/x', 'h', ?, 0, 0)", files);
+    db.run("INSERT INTO instructions (name, text, updated_at) VALUES ('AGENTS.md', 'agents-plain', 0)");
 
     const secrets = new Secrets(db, encryption);
     const store = new Store(db, encryption);
-    const skills = new Skills(db, encryption, () => []);
+    const skills = new Skills(db, encryption);
     const seal = () => [...secrets.plaintext("seal"), ...store.plaintext("seal"), ...skills.plaintext("seal")].length;
-    expect(seal()).toBe(4);
+    expect(seal()).toBe(5);
     expect(seal()).toBe(0);
 
     const raw = db
-      .all<{ value: string }>("SELECT value FROM secrets UNION ALL SELECT t3_token FROM vms UNION ALL SELECT files FROM skills")
+      .all<{ value: string }>("SELECT value FROM secrets UNION ALL SELECT t3_token FROM vms UNION ALL SELECT files FROM skills UNION ALL SELECT text FROM instructions")
       .map((row) => row.value)
       .join("\n");
-    for (const plain of ["e2b-plain", "env-plain", "t3-plain", Buffer.from("skill-plain").toString("base64")]) expect(raw).not.toContain(plain);
+    for (const plain of ["e2b-plain", "env-plain", "t3-plain", "agents-plain", Buffer.from("skill-plain").toString("base64")]) expect(raw).not.toContain(plain);
 
     expect(secrets.get("provider.e2b.apiKey")).toBe("e2b-plain");
     expect(secrets.get("env")).toBe('{"FOO":"env-plain"}');
     expect(store.vm("vm1")?.t3Token).toBe("t3-plain");
     expect(skills.files("mine")).toEqual(JSON.parse(files));
+    expect(skills.instructions.saved()).toEqual({ "AGENTS.md": "agents-plain" });
   });
 
   test("a value moved to another record does not open", () => {
