@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/bun/sqlite.ts";
-import { skillDescription, Skills } from "../src/skills.ts";
+import { readSkillFolder, skillDescription, Skills } from "../src/skills.ts";
 import { applyScript, instructionHash, skillHash, type InstructionsState, type SkillFile } from "../src/vm/skills.ts";
 import { testEncryption } from "./key.ts";
 
@@ -138,4 +138,78 @@ test("switching sync all says so even when no skill changes, so the dashboard re
     expect(skills.syncAll).toBe(sync);
     expect(changes).toBe(1);
   }
+});
+
+describe("local skill folders", () => {
+  /** A temp folder holding a skill root (as in ~/.claude/skills), a skill in it, and a secret file outside it. */
+  function machine() {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "vmbridge-local-")));
+    temps.push(base);
+    const root = join(base, "skills");
+    const skill = join(root, "review");
+    mkdirSync(join(skill, "docs"), { recursive: true });
+    writeFileSync(join(skill, "SKILL.md"), "---\nname: review\ndescription: Reviews code.\n---\n");
+    writeFileSync(join(skill, "docs", "guide.md"), "the guide");
+    const secrets = join(base, "secrets");
+    mkdirSync(secrets);
+    writeFileSync(join(secrets, "key"), "SECRET");
+    return { base, root, skill, secrets };
+  }
+
+  const paths = (files: SkillFile[]) => files.map((entry) => entry.path).sort();
+  const texts = (files: SkillFile[]) => files.map((entry) => Buffer.from(entry.data, "base64").toString("utf8"));
+
+  test("links out of the skill are skipped, links inside it are followed", () => {
+    const { skill, secrets } = machine();
+    symlinkSync(join(secrets, "key"), join(skill, "notes.txt"));
+    symlinkSync("../../secrets", join(skill, "outside"));
+    symlinkSync("docs/guide.md", join(skill, "guide.md"));
+    symlinkSync("docs", join(skill, "more"));
+    // A link back up the tree is walked once, not forever.
+    symlinkSync("..", join(skill, "docs", "up"));
+    Bun.spawnSync(["mkfifo", join(skill, "pipe")]);
+
+    const files = readSkillFolder(skill);
+    expect(paths(files)).toEqual(["SKILL.md", "docs/guide.md", "guide.md", "more/guide.md"]);
+    expect(texts(files)).not.toContain("SECRET");
+  });
+
+  test("a skill folder that is itself a link is read", () => {
+    const { base, skill } = machine();
+    const link = join(base, "linked");
+    symlinkSync(skill, link);
+    expect(paths(readSkillFolder(link))).toEqual(["SKILL.md", "docs/guide.md"]);
+  });
+
+  test("never reads VM Bridge's data folder", () => {
+    const { skill } = machine();
+    const data = join(skill, "data");
+    mkdirSync(data);
+    writeFileSync(join(data, "encryption.key"), "SECRET");
+    const files = readSkillFolder(skill, data);
+    expect(paths(files)).toEqual(["SKILL.md", "docs/guide.md"]);
+    expect(texts(files)).not.toContain("SECRET");
+  });
+
+  test("installs only skills found in this machine's skill folders", () => {
+    const { base, root, skill } = machine();
+    const elsewhere = join(base, "elsewhere");
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, "SKILL.md"), "---\nname: elsewhere\n---\n");
+    // A skill kept in some repository and linked into the skill folder is fine.
+    const repo = join(base, "repo", "deploy");
+    mkdirSync(repo, { recursive: true });
+    writeFileSync(join(repo, "SKILL.md"), "---\nname: deploy\n---\n");
+    symlinkSync(repo, join(root, "deploy"));
+    const skills = new Skills(openDatabase(":memory:"), testEncryption, () => [root]);
+
+    // A folder outside them, and one that does not exist, get the same answer.
+    expect(() => skills.installLocal(elsewhere)).toThrow(`${elsewhere} is not a skill in this machine's skill folders.`);
+    expect(() => skills.installLocal(join(base, "missing"))).toThrow(`${join(base, "missing")} is not a skill in this machine's skill folders.`);
+    expect(skills.list()).toEqual([]);
+
+    skills.installLocal(skill);
+    skills.installLocal(join(root, "deploy"));
+    expect(skills.list().map((entry) => entry.name)).toEqual(["deploy", "review"]);
+  });
 });

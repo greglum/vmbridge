@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -832,18 +832,23 @@ describe("environment variables", () => {
 });
 
 describe("skills", () => {
+  /** This machine's skill folder, the only place local skills install from. */
+  let root = "";
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "vmbridge-skill-"));
+    temps.push(root);
+  });
+
   /** A local skill folder holding just a SKILL.md, as written on this machine. */
   function folder(name: string, body: string) {
-    const base = mkdtempSync(join(tmpdir(), "vmbridge-skill-"));
-    temps.push(base);
-    const dir = join(base, name);
+    const dir = join(root, name);
     mkdirSync(dir);
     writeFileSync(join(dir, "SKILL.md"), `---\nname: ${name}\ndescription: ${body}\n---\n${body}\n`);
     return dir;
   }
 
   test("reach an awake VM at once, even mid-turn, without restarting T3", async () => {
-    const { fleet, store, skills, t3, synced, server } = setup();
+    const { fleet, store, skills, t3, synced, server } = setup([root]);
     const vm = await fleet.create();
     const backend = await fleet.ensure(vm.id);
     t3.state.shell = { threads: [{ id: "t1", status: "running" }] };
@@ -861,7 +866,7 @@ describe("skills", () => {
   });
 
   test("only a skill whose files changed is sent again", async () => {
-    const { fleet, skills, synced } = setup();
+    const { fleet, skills, synced } = setup([root]);
     const review = folder("review", "Reviews code.");
     skills.installLocal(review);
     skills.installLocal(folder("deploy", "Deploys."));
@@ -876,7 +881,7 @@ describe("skills", () => {
   });
 
   test.each(["pause", "stop"])("a VM asleep (%s) through changes has them before anything uses it on wake", async (style) => {
-    const { fleet, store, skills, driver, events, server, synced, order } = setup();
+    const { fleet, store, skills, driver, events, server, synced, order } = setup([root]);
     if (style === "stop") {
       driver.sleep = async () => {
         events.push("sleep");
@@ -947,7 +952,7 @@ describe("skills", () => {
   });
 
   test("a new VM has every skill before T3 first starts", async () => {
-    const { fleet, skills, order } = setup();
+    const { fleet, skills, order } = setup([root]);
     skills.installLocal(folder("review", "Reviews code."));
     await fleet.ensure((await fleet.create()).id);
     expect(order).toEqual(["skills", "start"]);
