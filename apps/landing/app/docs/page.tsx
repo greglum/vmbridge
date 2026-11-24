@@ -1,4 +1,4 @@
-import { ArrowDown01Icon, ArrowRight01Icon, GithubIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, ArrowRight01Icon, CloudUploadIcon, GithubIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -9,7 +9,7 @@ import { Command, CopyButton } from "@/components/CopyButton";
 import { type DocsGroup, DocsNav } from "@/components/DocsNav";
 import { Topology } from "@/components/Topology";
 import { copy } from "@/lib/copy";
-import { commands, github, install, providers } from "@/lib/data";
+import { commands, deployToCloudflare, github, install, providers } from "@/lib/data";
 import { openGraph, site } from "@/lib/site";
 import { innerPad, primaryButton, railShell, secondaryButton } from "@/lib/styles";
 
@@ -30,6 +30,7 @@ const groups: DocsGroup[] = [
     sections: [
       { id: "overview", title: "Overview" },
       { id: "install", title: "Install" },
+      { id: "deploy-cloudflare", title: "Deploy to Cloudflare" },
       { id: "run", title: "Run" },
       { id: "setup", title: "Set up the dashboard" },
       { id: "pair", title: "Pair T3 Code" },
@@ -242,6 +243,23 @@ cd vmbridge
 bun install
 bun run compile        # dist/vmbridge
 ./dist/vmbridge`}</Block>
+            </Section>
+
+            <Section id="deploy-cloudflare" title="Deploy to Cloudflare">
+              <p>
+                No machine of your own? Run VM Bridge on Cloudflare Workers instead. You need a Cloudflare account, and the free Workers plan is
+                enough. The deploy screen asks for a dashboard password and an encryption key.
+              </p>
+              <a href={deployToCloudflare} target="_blank" rel="noopener noreferrer" className={secondaryButton}>
+                <HugeiconsIcon icon={CloudUploadIcon} size={15} />
+                Deploy to Cloudflare
+              </a>
+              <p>
+                <a href={`${github}/blob/main/docs/cloudflare.md`} className="text-foreground underline underline-offset-4">
+                  The Cloudflare guide
+                </a>{" "}
+                covers the secrets, what gets deployed, limits and cost.
+              </p>
             </Section>
 
             <Section id="run" title="Run">

@@ -1,8 +1,8 @@
-import { ArrowRight01Icon, GithubIcon } from "@hugeicons/core-free-icons";
+import { ArrowRight01Icon, CloudUploadIcon, GithubIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import Link from "next/link";
 import { copy } from "@/lib/copy";
-import { github, install } from "@/lib/data";
+import { deployToCloudflare, github, install } from "@/lib/data";
 import { innerPad, primaryButton, secondaryButton } from "@/lib/styles";
 import { Command } from "./CopyButton";
 import { Topology } from "./Topology";
@@ -49,6 +49,10 @@ export function Hero() {
             <a href={github} className={secondaryButton}>
               <HugeiconsIcon icon={GithubIcon} size={15} />
               {copy.nav.github}
+            </a>
+            <a href={deployToCloudflare} target="_blank" rel="noopener noreferrer" className={secondaryButton}>
+              <HugeiconsIcon icon={CloudUploadIcon} size={15} />
+              {copy.hero.cloudflare}
             </a>
           </div>
         </div>
