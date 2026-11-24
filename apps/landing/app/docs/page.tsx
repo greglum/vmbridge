@@ -11,7 +11,7 @@ import { Topology } from "@/components/Topology";
 import { copy } from "@/lib/copy";
 import { commands, deployToCloudflare, github, install, providers } from "@/lib/data";
 import { openGraph, site } from "@/lib/site";
-import { innerPad, primaryButton, railShell, secondaryButton } from "@/lib/styles";
+import { cloudflareButton, innerPad, primaryButton, railShell, secondaryButton } from "@/lib/styles";
 
 const title = "VM Bridge docs: install, providers, sleep and wake";
 const description =
@@ -250,7 +250,7 @@ bun run compile        # dist/vmbridge
                 No machine of your own? Run VM Bridge on Cloudflare Workers instead. You need a Cloudflare account, and the free Workers plan is
                 usually enough. The deploy screen asks for a dashboard password and an encryption key.
               </p>
-              <a href={deployToCloudflare} target="_blank" rel="noopener noreferrer" className={secondaryButton}>
+              <a href={deployToCloudflare} target="_blank" rel="noopener noreferrer" className={cloudflareButton}>
                 <HugeiconsIcon icon={CloudUploadIcon} size={15} />
                 Deploy to Cloudflare
               </a>
