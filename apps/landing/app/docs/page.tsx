@@ -615,7 +615,7 @@ bun run compile        # dist/vmbridge
               <List
                 items={[
                   <>
-                    Everything is in <Code>~/.vmbridge/main.db</Code>, readable only by your user.
+                    Everything is in <Code>~/.vmbridge/main.db</Code>, readable only by your user. On Cloudflare it is in the Durable Object&apos;s storage instead.
                   </>,
                   "The dashboard API never returns a saved secret. You can replace a key, not read it back.",
                   "Logs record which call went where and how long it took. They never hold message contents or tokens.",
