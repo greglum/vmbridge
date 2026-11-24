@@ -3,7 +3,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import Link from "next/link";
 import { copy } from "@/lib/copy";
 import { deployToCloudflare, github, install } from "@/lib/data";
-import { innerPad, primaryButton, secondaryButton } from "@/lib/styles";
+import { cloudflareButton, innerPad, primaryButton, secondaryButton } from "@/lib/styles";
 import { Command } from "./CopyButton";
 import { Topology } from "./Topology";
 
@@ -50,7 +50,7 @@ export function Hero() {
               <HugeiconsIcon icon={GithubIcon} size={15} />
               {copy.nav.github}
             </a>
-            <a href={deployToCloudflare} target="_blank" rel="noopener noreferrer" className={secondaryButton}>
+            <a href={deployToCloudflare} target="_blank" rel="noopener noreferrer" className={cloudflareButton}>
               <HugeiconsIcon icon={CloudUploadIcon} size={15} />
               {copy.hero.cloudflare}
             </a>

@@ -21,6 +21,9 @@ export const primaryButton =
   "inline-flex h-10 items-center gap-2 rounded-md bg-white px-4 font-mono text-[13px] text-black transition-[color,background-color,transform] duration-150 hover:bg-white/85 active:bg-white/70 active:scale-[0.97]";
 export const secondaryButton =
   "inline-flex h-10 items-center gap-2 rounded-md bg-muted px-4 font-mono text-[13px] text-foreground transition-[color,background-color,transform] duration-150 hover:bg-white/10 active:scale-[0.97]";
+/** Cloudflare's brand orange, for the Deploy to Cloudflare link. Black text keeps it readable at 13px. */
+export const cloudflareButton =
+  "inline-flex h-10 items-center gap-2 rounded-md bg-[#f38020] px-4 font-mono text-[13px] text-black transition-[color,background-color,transform] duration-150 hover:bg-[#f69a4c] active:bg-[#d96f15] active:scale-[0.97]";
 
 /** Shared pill for the sliding-indicator tab rows (dashboard shots, CLI commands). */
 export const pill =
