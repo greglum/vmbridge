@@ -98,11 +98,30 @@ describe("preview RPC", () => {
     hub.close();
   });
 
+  test("a thread's tabs are opened and changed on its own VM, and a VM that is not awake is not woken for it", async () => {
+    const vm1 = fakeVm();
+    const { hub, rpc } = setup({ vm1: vm1.backend });
+    const { sent, rpcClient } = client();
+    const tags = ["preview.open", "preview.resize", "preview.adjust"];
+    for (const [index, tag] of tags.entries()) {
+      await rpc.handle(rpcClient, { _tag: "Request", id: index, tag, payload: { threadId: "t1", tabId: "tab1", url: "https://example.com" } });
+    }
+    await Bun.sleep(0);
+    expect(vm1.requests.map((request) => request.tag)).toEqual(tags);
+    expect(sent.map((frame) => frame.exit)).toEqual(tags.map((tag) => ({ _tag: "Success", value: { from: tag } })));
+
+    // t2 is vm2's, which is asleep.
+    await rpc.handle(rpcClient, { _tag: "Request", id: 9, tag: "preview.open", payload: { threadId: "t2", url: "https://example.com" } });
+    expect(JSON.stringify(sent.at(-1))).toContain("This VM is asleep.");
+    expect(vm1.requests).toHaveLength(tags.length);
+    hub.close();
+  });
+
   test("other preview methods stay refused", async () => {
     const vm1 = fakeVm();
     const { hub, rpc } = setup({ vm1: vm1.backend });
     const { sent, rpcClient } = client();
-    const refused = ["preview.open", "preview.resize", "preview.adjust", "preview.reportStatus", "preview.clearProfile", "preview.stopLocalServer", "preview.listX"];
+    const refused = ["preview.reportStatus", "preview.clearProfile", "preview.stopLocalServer", "preview.listX"];
     for (const [index, tag] of refused.entries()) {
       await rpc.handle(rpcClient, { _tag: "Request", id: index, tag, payload: { threadId: "t1", tabId: "tab1", pid: 1, port: 3000 } });
     }
