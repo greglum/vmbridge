@@ -248,7 +248,7 @@ bun run compile        # dist/vmbridge
             <Section id="deploy-cloudflare" title="Deploy to Cloudflare">
               <p>
                 No machine of your own? Run VM Bridge on Cloudflare Workers instead. You need a Cloudflare account, and the free Workers plan is
-                enough. The deploy screen asks for a dashboard password and an encryption key.
+                usually enough. The deploy screen asks for a dashboard password and an encryption key.
               </p>
               <a href={deployToCloudflare} target="_blank" rel="noopener noreferrer" className={secondaryButton}>
                 <HugeiconsIcon icon={CloudUploadIcon} size={15} />
