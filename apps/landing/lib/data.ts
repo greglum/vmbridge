@@ -146,6 +146,8 @@ export const providers: Provider[] = [
 ];
 
 export const github = "https://github.com/vkpdeveloper/vmbridge";
+/** Cloudflare's deploy flow for this repository; docs/cloudflare.md walks through it. */
+export const deployToCloudflare = `https://deploy.workers.cloudflare.com/?url=${github}`;
 export const install = `curl -fsSL https://raw.githubusercontent.com/vkpdeveloper/vmbridge/main/install.sh | sh`;
 
 export const commands = [

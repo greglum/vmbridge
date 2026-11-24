@@ -21,6 +21,8 @@ export const copy = {
     body: "Pair an unchanged T3 Code client once. VM Bridge creates VMs on your provider, sleeps them when idle, and wakes them when you send a message.",
     /** 20 */
     docs: "Read the docs",
+    /** 20 */
+    cloudflare: "Deploy to Cloudflare",
     /** 40. Sits under the diagram, which visitors can click. */
     hint: "Click a VM to sleep or wake it",
   },
