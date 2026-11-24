@@ -47,9 +47,11 @@ type StreamEvent = "shell" | "config" | "scheduledTasks" | "clones";
 
 /**
  * Requests T3 clients may forward to a VM. Anything else is refused rather than guessed at. Of the preview methods,
- * only reading and closing a thread's tabs: agents open them, and the client watches them through the relayed stream.
+ * the ones on a thread's own tabs: the client opens a tab with `preview.open` when it reopens tabs a restarted T3 lost
+ * (every Kubi wake restarts it) and when a link is opened in T3 Code's browser. Neither wakes a sleeping VM.
  */
-const forwardable = /^(orchestration\.|projects\.|vcs\.|sourceControl\.|git\.|review\.|filesystem\.|server\.(getProvider|refreshProvider)|preview\.(list|close)$)/;
+const forwardable =
+  /^(orchestration\.|projects\.|vcs\.|sourceControl\.|git\.|review\.|filesystem\.|server\.(getProvider|refreshProvider)|preview\.(list|close|open|resize|adjust)$)/;
 /** Stands in for a T3 server's epoch in the empty tab list of a VM that is not awake. */
 const asleepEpoch = "vmbridge-asleep";
 const mutation = /\.(create|write|mutate|switch|remove|stop|forceStop|pull$|runStackedAction$|preparePullRequestThread$|publishRepository$)/i;
