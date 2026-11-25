@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, test } from "bun:test";
 import { openDatabase } from "../src/bun/sqlite.ts";
 import type { Fleet } from "../src/fleet.ts";
+import type { FileTrees } from "../src/gateway/files.ts";
 import { Hub } from "../src/gateway/hub.ts";
 import { Rpc, type RpcClient } from "../src/gateway/rpc.ts";
 import type { Shell } from "../src/gateway/types.ts";
@@ -16,8 +17,9 @@ const unmeasured = { get: () => null, lastDisk: () => null };
 /**
  * vm1 sleeps and holds project p1 with thread t1 and archived thread t2. vm2 is awake and holds thread t3. Thread t4
  * is on no VM yet. `ensure` never resolves, as a real wake is still running when the call that started it is answered.
+ * `files` stands in for the GitHub file lists a sleeping VM's @ search is answered from.
  */
-function setup() {
+function setup(files?: FileTrees) {
   const store = new Store(openDatabase(":memory:"), testEncryption);
   store.insertVm({ id: "vm1", provider: "boxd", name: "vm1", size: "medium", state: "sleeping", createdAt: 0 });
   store.insertVm({ id: "vm2", provider: "boxd", name: "vm2", size: "medium", state: "ready", createdAt: 0 });
@@ -44,7 +46,7 @@ function setup() {
   }) as unknown as Fleet;
   const traffic = { record: () => {} } as unknown as Traffic;
   const hub = new Hub(store, new Settings(store.db), fleet, traffic, unmeasured);
-  const rpc = new Rpc(hub, {} as never, {} as never, traffic, () => false);
+  const rpc = new Rpc(hub, {} as never, {} as never, traffic, () => false, files);
   const client = (clientId = "c1") => {
     const sent: { exit?: { _tag: string } }[] = [];
     const call = async (tag: string, payload: object) => {
@@ -94,7 +96,14 @@ describe("waking a thread's VM before its message", () => {
     expect(woken).toEqual([]);
   });
 
-  test("searching files with @ on a sleeping VM starts waking it and still answers that the VM is asleep", async () => {
+  test("searching files with @ on a sleeping VM starts waking it, answered from its cached file list", async () => {
+    const files = { search: async () => ({ entries: [], truncated: false }) } as unknown as FileTrees;
+    const { woken, client } = setup(files);
+    expect(await client().call("projects.searchEntries", { cwd: "/projects/p1/app", query: "src", limit: 20 })).toBe("Success");
+    expect(woken).toEqual(["vm1"]);
+  });
+
+  test("searching files with @ on a sleeping VM with no cached file list starts waking it and answers that it is asleep", async () => {
     const { woken, client } = setup();
     expect(await client().call("projects.searchEntries", { cwd: "/projects/p1/app", query: "src", limit: 20 })).toBe("Failure");
     expect(woken).toEqual(["vm1"]);
