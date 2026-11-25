@@ -14,11 +14,10 @@ import { parseEnvPaste } from "@/lib/env-paste";
 import { api } from "./api.ts";
 import { Section } from "./Page.tsx";
 
-/** A pasted variable waiting to be saved, with why the server refused it if it did. */
+/** A pasted variable waiting to be saved. */
 interface Draft {
   name: string;
   value: string;
-  error?: string;
 }
 
 const plural = (count: number, word: string) => `${count} ${count === 1 ? word : `${word}s`}`;
@@ -52,21 +51,15 @@ export function Environment({ overview }: { overview: Overview }) {
     setValue("");
   };
 
-  // Each saves on its own, so one the server refuses stays for review without holding back the rest.
+  // One request, so VMs update once. If the server refuses one, nothing is saved and the drafts stay for review.
   const saveDrafts = () =>
-    void action.run(async () => {
-      const failed: Draft[] = [];
-      for (const draft of drafts) {
-        try {
-          await api(`/env/${encodeURIComponent(draft.name)}`, { method: "PUT", body: { value: draft.value } });
-        } catch (cause) {
-          failed.push({ ...draft, error: cause instanceof Error ? cause.message : String(cause) });
-        }
-      }
-      setDrafts(failed);
-      const saved = drafts.length - failed.length;
-      if (saved > 0) toast.success(`${plural(saved, "variable")} saved. VMs get them as soon as nothing is running on them.`);
-    });
+    void action
+      .run(() => api("/env", { method: "PUT", body: { vars: Object.fromEntries(drafts.map((draft) => [draft.name, draft.value])) } }))
+      .then((ok) => {
+        if (!ok) return;
+        toast.success(`${plural(drafts.length, "variable")} saved. VMs get them as soon as nothing is running on them.`);
+        setDrafts([]);
+      });
 
   return (
     <Section title="Environment variables" actions={overview.env.length > 0 && <Badge variant="secondary">{overview.env.length}</Badge>}>
@@ -121,7 +114,6 @@ export function Environment({ overview }: { overview: Overview }) {
                   <div className="min-w-0 flex-1">
                     {/* Wrapped, not cut off: pasted names often share a long prefix, and the end is what tells them apart. */}
                     <code className="block font-mono text-sm break-all">{draft.name}</code>
-                    {draft.error && <p className="text-[13px] text-destructive">{draft.error}</p>}
                   </div>
                   {overview.env.includes(draft.name) && <Badge variant="outline">Replaces</Badge>}
                   <span className="text-sm tracking-widest text-faint select-none">••••••</span>

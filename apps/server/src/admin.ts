@@ -349,6 +349,23 @@ export class Admin {
       return json({ ok: true });
     }
 
+    // Several at once, as pasted: every one is checked before any is saved, so VMs get them in a single update.
+    if (path === "/env" && method === "PUT") {
+      const { vars } = await body(request);
+      if (!vars || typeof vars !== "object" || Array.isArray(vars)) throw new BadRequest("Send the variables.");
+      const added: Record<string, string> = {};
+      for (const [name, value] of Object.entries(vars)) {
+        const problem = envNameProblem(name) ?? (typeof value === "string" ? envValueProblem(value) : "The value must be text.");
+        // Reserved-name problems already say the name.
+        if (problem) throw new BadRequest(problem.startsWith(name) ? problem : `${name}: ${problem}`);
+        added[name] = value as string;
+      }
+      saveEnvVars(secrets, { ...envVars(secrets), ...added });
+      fleet.emit("changed");
+      void hub.credentialsChanged().catch(() => {});
+      return json(Object.keys(envVars(secrets)));
+    }
+
     // Environment variables for every VM. Values go in and never come out.
     if (section === "env" && id) {
       const name = decodeURIComponent(id);
