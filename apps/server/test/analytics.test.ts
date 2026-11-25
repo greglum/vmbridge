@@ -80,7 +80,7 @@ describe("report", () => {
     const boxd = pricing("boxd");
     const boxdDay = (boxd.runningHourly.medium + 23 * boxd.asleepHourly.medium!) * eurUsd.rate;
     expect(days[1]!.providers[1]!.estimate.amount).toBeCloseTo(boxdDay, 6);
-    // Matches what the Costs page totals, in US dollars.
+    // Matches what the Costs tab totals, in US dollars.
     expect(total.amount).toBeCloseTo(4 * 0.036 + boxdDay, 6);
   });
 

@@ -47,7 +47,7 @@ describe("where a new VM goes", () => {
 
   test("a VM can only be created on an added provider", async () => {
     const { fleet } = setup();
-    await expect(fleet.create({ provider: "daytona" })).rejects.toThrow("Add Daytona in Setup first.");
+    await expect(fleet.create({ provider: "daytona" })).rejects.toThrow("Add Daytona in Accounts first.");
   });
 });
 

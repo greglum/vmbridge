@@ -57,7 +57,7 @@ describe("monthly budget", () => {
     expect(setup(hoursFor(0.9), { monthlyUsd: 1, stopAtLimit: true }).budget.refusal(at)).toBeNull();
     const refusal = setup(hoursFor(1.1), { monthlyUsd: 1, stopAtLimit: true }).budget.refusal(at);
     expect(refusal).toContain("budget of $1.00");
-    expect(refusal).toContain("Costs page of the VM Bridge dashboard");
+    expect(refusal).toContain("Usage page of the VM Bridge dashboard");
   });
 
   test("early wakes stop at 100% even with the setting off", () => {

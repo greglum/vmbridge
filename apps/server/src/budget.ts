@@ -20,7 +20,7 @@ const dollars = (amount: number) => `$${amount.toFixed(2)}`;
 export class BudgetReached extends Error {}
 
 /**
- * One monthly budget for all providers, checked against the same estimate the Costs page shows. It never stops or
+ * One monthly budget for all providers, checked against the same estimate the Usage page's Costs tab shows. It never stops or
  * deletes anything: at the limit, early wakes stop, and with `stopAtLimit` on, new VMs and wakes are refused too.
  */
 export class Budget {
@@ -53,7 +53,7 @@ export class Budget {
   refusal(now = Date.now()): string | null {
     const status = this.status(now);
     if (status.level !== "over" || !status.stopAtLimit || status.monthlyUsd === null) return null;
-    return `VM Bridge reached this month's budget of ${dollars(status.monthlyUsd)}, so it is not starting or waking VMs. Raise the budget on the Costs page of the VM Bridge dashboard.`;
+    return `VM Bridge reached this month's budget of ${dollars(status.monthlyUsd)}, so it is not starting or waking VMs. Raise the budget on the Usage page of the VM Bridge dashboard.`;
   }
 
   /** Early wakes are only a guess that a message follows, so they stop at the limit even without `stopAtLimit`. */

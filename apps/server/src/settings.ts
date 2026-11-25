@@ -15,7 +15,7 @@ interface SettingValues {
   onboarded: boolean;
   /** The name T3 shows for this machine. */
   machineName: string;
-  /** Providers added in Setup, in order. VMs on a removed provider keep running but get no new VMs beside them. */
+  /** Providers added in Accounts, in order. VMs on a removed provider keep running but get no new VMs beside them. */
   providers: ProviderId[];
   /** One of `providers`. New VMs go here unless a repository rule picks another. */
   defaultProvider: ProviderId | null;

@@ -270,7 +270,7 @@ const tookTooLong = `Setup took longer than ${baseSetupLimitMs / 60_000} minutes
 /** Why a build failed, short enough to show next to a provider. */
 function failureReason(provider: ProviderId, error: unknown) {
   // A key that was rotated or revoked fails every build, and the provider's HTTP error does not say what to do.
-  if (error instanceof SandboxError && error.code === "auth") return `${providers[provider].label} refused the API key. Enter a new one in Setup.`;
+  if (error instanceof SandboxError && error.code === "auth") return `${providers[provider].label} refused the API key. Enter a new one in Accounts.`;
   const line = (error instanceof Error ? error.message : String(error)).trim().split("\n")[0] ?? "";
   if (!line) return "The build failed.";
   return line.length > 200 ? `${line.slice(0, 197)}...` : line;

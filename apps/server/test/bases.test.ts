@@ -341,7 +341,7 @@ describe("setting up a provider", () => {
       fleet.prepareBase("boxd");
       await fleet.bases.settled();
       // A rotated or revoked key: the reason says what to do, not the HTTP error.
-      expect(fleet.setup("boxd")).toEqual({ state: "failed", reason: "boxd refused the API key. Enter a new one in Setup." });
+      expect(fleet.setup("boxd")).toEqual({ state: "failed", reason: "boxd refused the API key. Enter a new one in Accounts." });
       driver.create = create;
       fleet.prepareBase("boxd", true);
       await fleet.bases.settled();
@@ -351,7 +351,7 @@ describe("setting up a provider", () => {
     }
     expect(logs).toEqual([
       "[base boxd:medium] build started",
-      expect.stringMatching(/^\[base boxd:medium\] build failed after \d+ s: boxd refused the API key\. Enter a new one in Setup\.$/),
+      expect.stringMatching(/^\[base boxd:medium\] build failed after \d+ s: boxd refused the API key\. Enter a new one in Accounts\.$/),
       "[base boxd:medium] build started",
       expect.stringMatching(/^\[base boxd:medium\] ready in \d+ s$/),
     ]);

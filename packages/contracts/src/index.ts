@@ -47,7 +47,7 @@ export interface ProviderInfo {
   values: Record<string, string>;
   secretsSet: string[];
   configured: boolean;
-  /** Added in Setup, so VM Bridge can create VMs on it. */
+  /** Added in Accounts, so VM Bridge can create VMs on it. */
   added: boolean;
   /** New VMs go here unless a repository rule picks another provider. */
   isDefault: boolean;

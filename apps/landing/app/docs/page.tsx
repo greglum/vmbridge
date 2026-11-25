@@ -293,7 +293,7 @@ bun run compile        # dist/vmbridge
 
             <Section id="setup" title="Set up the dashboard">
               <p>
-                Open <Code>/dashboard</Code> on any address VM Bridge printed and log in with your password. Setup has three tabs.
+                Open <Code>/dashboard</Code> on any address VM Bridge printed and log in with your password. Accounts has three tabs.
               </p>
               <List
                 items={[
@@ -316,13 +316,13 @@ bun run compile        # dist/vmbridge
 
             <Section id="pair" title="Pair T3 Code">
               <p>
-                Under <strong>Devices</strong>, name the device and create a pairing link. In T3 Code, add a remote environment and paste the link.
+                Under <strong>Settings</strong>, <strong>Devices</strong>, name the device and create a pairing link. In T3 Code, add a remote environment and paste the link.
               </p>
               <List
                 items={[
                   "Each link works once and expires after 15 minutes.",
                   "Pairing swaps the link for a token that only that device holds. VM Bridge stores a hash of it.",
-                  "Remove a device under Devices to sign it out right away.",
+                  "Remove a device under Settings, Devices to sign it out right away.",
                 ]}
               />
             </Section>
@@ -437,7 +437,7 @@ bun run compile        # dist/vmbridge
 
             <Section id="sign-in" title="Agent sign-ins and GitHub">
               <p>
-                Agents and git sign in only with what you add in Setup, never with sign-ins from the VM provider. Each agent sign-in is a profile saved, encrypted, in{" "}
+                Agents and git sign in only with what you add in Accounts, never with sign-ins from the VM provider. Each agent sign-in is a profile saved, encrypted, in{" "}
                 <Code>~/.vmbridge/main.db</Code>. Each agent uses one profile at a time, and VMs get it when they start.
               </p>
               <Table
@@ -668,7 +668,7 @@ bun run compile        # dist/vmbridge
               <Table
                 head={["What you see", "What to do"]}
                 rows={[
-                  ["An agent shows as signed out on a VM", "Add its sign-in under Setup, or in your provider's dashboard if it supplies them."],
+                  ["An agent shows as signed out on a VM", "Add its sign-in under Accounts, or in your provider's dashboard if it supplies them."],
                   ["The pairing link does not work", "Links work once and expire after 15 minutes. Create a new one."],
                   ["The T3 server on a VM did not answer", "The VM may be busy or the provider slow. Check the VM on the dashboard canvas, then retry."],
                   ["Waking takes longer than usual", "Stopped VMs (Daytona, Boat) start T3 cold, which adds a few seconds over a paused VM."],
