@@ -21,6 +21,9 @@ Website and docs: [vmbridge.ordinity.com](https://vmbridge.ordinity.com)
   reach every VM, for Claude Code and Codex.
 - Your global `AGENTS.md` and `CLAUDE.md`, pasted in the dashboard or read from this machine, can
   follow you to every VM.
+- Attach images and files to a message in T3 Code, as on a local T3 server. VM Bridge hands them
+  to the thread's VM.
+- Thread search and the pull requests list work across your VMs, without waking sleeping ones.
 - Works over Tailscale, Cloudflare Tunnel and, once you turn it on, your local network. Or deploy it
   to Cloudflare Workers with one button.
 
@@ -71,6 +74,22 @@ one turn alone, 3 per vCPU took 2x, and 4 per vCPU took over 3x, with tests star
 - The project's branch list shows branches from all its VMs, without pushing. A new thread started
   from a branch only some VMs have goes to one of those, even a busy one, since a new VM would not have
   it. If those VMs are gone, the usual rules apply.
+
+## Kubi VMs
+
+A Kubi VM is a whole desktop, and VM Bridge lets you and its agents use it:
+
+- **Watch link:** every Kubi VM gets a private link that shows its screen live, view-only, in any
+  browser, with no dashboard login. Copy it, make a new one or turn it off in the VM's details.
+  Opening it never wakes the VM.
+- **In T3 Code:** ask the agent to show its screen and it opens the watch link in T3 Code's browser.
+- **Browser and desktop tools:** Claude Code, Codex and OpenCode get a browser tool attached to the
+  VM's Chromium and a desktop tool for screenshots, mouse and keyboard, so every step shows on the
+  screen.
+- **Kubi screen control:** add an optional second Kubi key, with only `read` and `control`, in the
+  provider's settings and agents also get Kubi's own screen-control tools.
+
+How it works: [docs/PROVIDERS.md](docs/PROVIDERS.md).
 
 ## Environment variables
 
@@ -193,8 +212,9 @@ update the dashboard tunnel to match. The tunnel's config and credentials live i
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/vkpdeveloper/vmbridge)
 
-The button copies VM Bridge to your GitHub account and runs it on your Cloudflare account, on the
-free Workers plan. It asks for two secrets:
+The button copies VM Bridge to your GitHub account and runs it on your Cloudflare account. The free
+Workers plan is usually enough: VM Bridge uses most of its daily Durable Object time, so an account
+with other busy Durable Objects needs Workers Paid ($5 a month). It asks for two secrets:
 
 - `VMBRIDGE_PASSWORD`: the dashboard password, at least 12 characters.
 - `VMBRIDGE_ENCRYPTION_KEY`: the output of `openssl rand -base64 32`, or a passphrase of at least 32
