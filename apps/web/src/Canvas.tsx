@@ -16,7 +16,7 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Add01Icon, Alert02Icon, Cancel01Icon, CenterFocusIcon, Delete02Icon, Folder01Icon, InformationCircleIcon, LaptopIcon, Message01Icon, Moon02Icon, PowerIcon, ZoomInIcon, ZoomOutIcon } from "@hugeicons/core-free-icons";
+import { Add01Icon, Alert02Icon, Cancel01Icon, CenterFocusIcon, Delete02Icon, InformationCircleIcon, LaptopIcon, Message01Icon, Moon02Icon, PowerIcon, ZoomInIcon, ZoomOutIcon } from "@hugeicons/core-free-icons";
 import { vmSizes, type BridgeUpdate, type ClientInfo, type Overview, type ProjectInfo, type ProviderId, type TrafficEvent, type Usage, type VmInfo, type VmSize, type VmState, type VmStats } from "@vmbridge/contracts";
 import {
   AlertDialog,
@@ -54,7 +54,7 @@ import { useAction } from "@/hooks/use-action";
 import { sinceText } from "@/lib/devices";
 import { cn } from "@/lib/utils";
 import { ago, api, useTick } from "./api.ts";
-import { Logo, ProviderLogo } from "./brand.tsx";
+import { Logo, ProjectIcon, ProviderLogo } from "./brand.tsx";
 import { CopyButton } from "./CopyButton.tsx";
 
 /** A connection animates while it carried a request this recently. */
@@ -254,7 +254,7 @@ function VmCard({ data }: NodeProps<VmNode>) {
       <div className="flex flex-col gap-1.5 px-3.5 pb-3 text-[13px] text-muted-foreground">
         {shown.map((project) => (
           <span key={project.id} className="flex min-w-0 items-center gap-2">
-            <HugeiconsIcon icon={Folder01Icon} className="size-4 shrink-0 text-faint" strokeWidth={1.75} />
+            <ProjectIcon icon={project.icon} />
             <span className="truncate">{project.title}</span>
             {project.vmIds.length > 1 && (
               <span className="ml-auto shrink-0 text-xs text-faint">
@@ -816,8 +816,8 @@ function VmDetails({ vm, overview, now, onClose }: { vm: VmInfo; overview: Overv
           <ItemGroup className="gap-1.5">
             {projects.map((project) => (
               <Item key={project.id} variant="outline" size="sm">
-                <ItemMedia variant="icon">
-                  <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} />
+                <ItemMedia>
+                  <ProjectIcon icon={project.icon} className="size-5" />
                 </ItemMedia>
                 <ItemContent>
                   <ItemTitle>{project.title}</ItemTitle>
@@ -831,17 +831,25 @@ function VmDetails({ vm, overview, now, onClose }: { vm: VmInfo; overview: Overv
           <h3 className="text-xs font-medium text-muted-foreground">Sessions</h3>
           {vm.sessions.length === 0 && <p className="text-[13px] text-muted-foreground">No sessions.</p>}
           <ItemGroup className="gap-1.5">
-            {vm.sessions.map((session) => (
-              <Item key={session.threadId} variant="outline" size="sm">
-                <ItemContent>
-                  <ItemTitle className="w-full justify-between">
-                    <span className="truncate">{session.title}</span>
-                    <Badge variant={session.working ? "default" : "secondary"}>{session.status}</Badge>
-                  </ItemTitle>
-                  <ItemDescription className="font-mono text-xs">{[session.provider, session.model].filter(Boolean).join(" · ") || "No model"}</ItemDescription>
-                </ItemContent>
-              </Item>
-            ))}
+            {vm.sessions.map((session) => {
+              const project = overview.projects.find((entry) => entry.id === session.projectId);
+              return (
+                <Item key={session.threadId} variant="outline" size="sm">
+                  {project && (
+                    <ItemMedia className="self-start pt-0.5" title={project.title}>
+                      <ProjectIcon icon={project.icon} className="size-5" />
+                    </ItemMedia>
+                  )}
+                  <ItemContent>
+                    <ItemTitle className="w-full justify-between">
+                      <span className="truncate">{session.title}</span>
+                      <Badge variant={session.working ? "default" : "secondary"}>{session.status}</Badge>
+                    </ItemTitle>
+                    <ItemDescription className="font-mono text-xs">{[session.provider, session.model].filter(Boolean).join(" · ") || "No model"}</ItemDescription>
+                  </ItemContent>
+                </Item>
+              );
+            })}
           </ItemGroup>
         </section>
       </div>

@@ -7,6 +7,7 @@ import type { Clones } from "./clones.ts";
 import type { FileTrees } from "./files.ts";
 import { isHeldCommand } from "./held.ts";
 import type { Hub } from "./hub.ts";
+import { iconAssetUrl } from "./icons.ts";
 import { projectForPath, projectRoot } from "./paths.ts";
 import { githubName, githubRepository, type RemoteBranches } from "./repos.ts";
 import { str, type Row, type Wire } from "./types.ts";
@@ -695,7 +696,8 @@ export class Rpc {
 
   /**
    * An asset URL from the VM that has the asset, made to point at VM Bridge, which relays it. Like other reads, it does
-   * not wake a sleeping VM. An upload VM Bridge still holds is its own to answer for.
+   * not wake a sleeping VM. An upload VM Bridge still holds is its own to answer for, and so is a sleeping VM's project
+   * logo it kept.
    */
   private async assetUrl(call: Call) {
     const resource = (call.payload.resource ?? {}) as Wire;
@@ -706,7 +708,13 @@ export class Rpc {
     // The client tells this error apart: a pending upload it cannot find is one to upload again.
     if (!vmId) return call.client.send(tagged(call.id, { _tag: "AssetAttachmentNotFoundError", resource }));
     const backend = this.hub.fleet.backend(vmId);
-    if (!backend) throw new Error("This VM is asleep. Sending a message wakes it.");
+    if (!backend) {
+      const cwd = resource._tag === "project-favicon" ? str(resource.cwd) : undefined;
+      const project = cwd ? projectForPath(cwd, this.hub.projects()) : undefined;
+      const icon = project ? this.hub.icons.get(project.id) : undefined;
+      if (icon) return this.reply(call, { relativeUrl: iconAssetUrl(icon), expiresAt: Date.now() + 60 * 60_000 });
+      throw new Error("This VM is asleep. Sending a message wakes it.");
+    }
     const exit = await new Promise<Frame>((resolve, reject) => {
       try {
         backend.request(call.tag, this.hub.into(call.payload, vmId), (frame) => frame._tag === "Exit" && resolve(frame));
