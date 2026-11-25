@@ -176,7 +176,10 @@ export class Rpc {
       "preview.reportProfiles": (call) => this.reply(call, null),
       // T3 asks for an upload URL without naming a thread, so VM Bridge takes the upload. See `Attachments`.
       "attachments.createUploadUrl": (call) => this.reply(call, hub.attachments.mint(call.payload, call.client.clientId)),
-      "attachments.delete": (call) => this.reply(call, hub.attachments.remove(String(call.payload.attachmentId))),
+      "attachments.delete": (call) => {
+        hub.attachments.remove(String(call.payload.attachmentId));
+        this.reply(call, null);
+      },
       "assets.createUrl": (call) => this.assetUrl(call),
     };
   }
