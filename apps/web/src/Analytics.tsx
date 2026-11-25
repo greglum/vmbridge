@@ -2,15 +2,13 @@ import { useEffect, useState, type ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Analytics01Icon } from "@hugeicons/core-free-icons";
 import { agentKinds, providerIds, type AnalyticsDay, type AnalyticsReport, type Overview, type ProviderActivity, type ProviderId } from "@vmbridge/contracts";
-import { Button } from "@/components/ui/button";
-import { ButtonGroup } from "@/components/ui/button-group";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { FieldError } from "@/components/ui/field";
 import { cn } from "@/lib/utils";
 import { api, useTick } from "./api.ts";
 import { AgentLogo, ProviderLogo } from "./brand.tsx";
-import { Bars, days, hours, money, rangeStart, ranges, Rows, Tile, type Range } from "./Costs.tsx";
-import { Page, Section } from "./Page.tsx";
+import { Bars, days, hours, money, rangeStart, Rows, Tile, type Range } from "./Costs.tsx";
+import { Section } from "./Page.tsx";
 
 /** One fixed color per provider, so a provider keeps its color in every chart and range. */
 const providerColors: Record<ProviderId, string> = {
@@ -26,8 +24,7 @@ const providerColors: Record<ProviderId, string> = {
 };
 const otherColor = "#5c5c5c";
 
-export function Analytics({ overview }: { overview: Overview }) {
-  const [range, setRange] = useState<Range>("month");
+export function Analytics({ overview, range }: { overview: Overview; range: Range }) {
   const [report, setReport] = useState<AnalyticsReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Awake time adds up while the page is open, and a VM waking or sleeping changes it.
@@ -49,22 +46,10 @@ export function Analytics({ overview }: { overview: Overview }) {
   const label = (id: ProviderId) => overview.providers.find((provider) => provider.id === id)?.label ?? id[0]!.toUpperCase() + id.slice(1);
 
   return (
-    <Page
-      title="Analytics"
-      wide
-      actions={
-        <ButtonGroup>
-          {ranges.map((entry) => (
-            <Button key={entry.id} variant={range === entry.id ? "secondary" : "outline"} size="lg" className="h-9" onClick={() => setRange(entry.id)}>
-              {entry.label}
-            </Button>
-          ))}
-        </ButtonGroup>
-      }
-    >
+    <>
       {error && <FieldError>{error}</FieldError>}
       {report && <Report report={report} label={label} />}
-    </Page>
+    </>
   );
 }
 

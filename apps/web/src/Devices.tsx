@@ -23,7 +23,7 @@ import { useAction } from "@/hooks/use-action";
 import { failingReason, sinceText } from "@/lib/devices";
 import { ago, api, useTick } from "./api.ts";
 import { CopyButton } from "./CopyButton.tsx";
-import { Page, Section } from "./Page.tsx";
+import { Section } from "./Page.tsx";
 
 export function Devices({ overview, traffic }: { overview: Overview; traffic: TrafficEvent[] }) {
   const now = useTick(15_000);
@@ -36,7 +36,7 @@ export function Devices({ overview, traffic }: { overview: Overview; traffic: Tr
   const pending = links.filter((link) => !link.redeemedAt && link.expiresAt > now);
 
   return (
-    <Page title="Devices">
+    <>
       <Pair onCreated={refresh} />
 
       <Section title="Paired devices" actions={overview.clients.length > 0 && <Badge variant="secondary">{overview.clients.length}</Badge>}>
@@ -82,7 +82,7 @@ export function Devices({ overview, traffic }: { overview: Overview; traffic: Tr
           </ItemGroup>
         </Section>
       )}
-    </Page>
+    </>
   );
 }
 

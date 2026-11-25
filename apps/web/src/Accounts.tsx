@@ -18,20 +18,20 @@ import { CopyButton } from "./CopyButton.tsx";
 import { Page, Section, type Tab } from "./Page.tsx";
 import { Private } from "./Private.tsx";
 
-type SetupTab = "provider" | "github" | "agents";
+type AccountsTab = "provider" | "github" | "agents";
 
 const sleepModes = { pause: "Pauses: memory and disk kept", stop: "Stops: disk kept", checkpoint: "Checkpoints: disk kept, new sandbox on wake" };
 
 
-export function Setup({ overview }: { overview: Overview }) {
-  const tabs: Tab<SetupTab>[] = [
+export function Accounts({ overview }: { overview: Overview }) {
+  const tabs: Tab<AccountsTab>[] = [
     { id: "provider", label: "Providers", icon: Plug01Icon, attention: !overview.setup.provider },
     { id: "github", label: "GitHub", icon: GithubIcon, attention: !overview.setup.github },
     { id: "agents", label: "Agent sign-in", icon: Robot01Icon, attention: !overview.setup.agents },
   ];
   const [tab, setTab] = useQueryState("tab", parseAsStringLiteral(tabs.map((entry) => entry.id)).withDefault(overview.setup.provider ? "agents" : "provider"));
   return (
-    <Page title="Setup" tabs={tabs} tab={tab} onTab={setTab}>
+    <Page title="Accounts" tabs={tabs} tab={tab} onTab={setTab}>
       {tab === "provider" && <Providers overview={overview} />}
       {tab === "github" && <GitHub account={overview.github} />}
       {tab === "agents" && <Agents profiles={overview.agents} />}

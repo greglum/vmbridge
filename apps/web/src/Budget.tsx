@@ -37,7 +37,7 @@ export function BudgetBanner({ budget, onView }: { budget: BudgetStatus; onView:
   );
 }
 
-/** The monthly budget on the Costs page: this month's spend against it, and its settings. */
+/** The monthly budget on the Usage page's Costs tab: this month's spend against it, and its settings. */
 export function BudgetSection({ budget: live }: { budget: BudgetStatus }) {
   // What a save returned, until the next overview brings the same.
   const [budget, setBudget] = useState(live);

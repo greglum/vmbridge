@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { flushSync } from "react-dom";
 import { parseAsString, parseAsStringLiteral, useQueryStates } from "nuqs";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { Analytics01Icon, Coins01Icon, File01Icon, FlowConnectionIcon, LaptopIcon, Logout01Icon, MagicWand01Icon, Plug01Icon, Settings01Icon } from "@hugeicons/core-free-icons";
+import { Analytics01Icon, File01Icon, FlowConnectionIcon, Logout01Icon, MagicWand01Icon, Settings01Icon, UserAccountIcon } from "@hugeicons/core-free-icons";
 import { Button } from "@/components/ui/button";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -13,35 +13,42 @@ import { failingDevices, sinceText } from "@/lib/devices";
 import { cn } from "@/lib/utils";
 import { api, onLoggedOut, useLive, useTick } from "./api.ts";
 import { Logo } from "./brand.tsx";
-import { Analytics } from "./Analytics.tsx";
+import { Accounts } from "./Accounts.tsx";
 import { Canvas } from "./Canvas.tsx";
 import { BudgetBanner } from "./Budget.tsx";
-import { Costs } from "./Costs.tsx";
-import { Devices } from "./Devices.tsx";
 import { Logs } from "./Logs.tsx";
 import { boxStyle, NavIndicator, useSlidingNav } from "./nav.tsx";
 import { Onboarding } from "./Onboarding.tsx";
-import { Settings } from "./Settings.tsx";
-import { Setup } from "./Setup.tsx";
+import { Settings, type SettingsTab } from "./Settings.tsx";
 import { Skills } from "./Skills.tsx";
+import { Usage, type UsageTab } from "./Usage.tsx";
 
 const views = [
   { id: "canvas", label: "Canvas", icon: FlowConnectionIcon },
   { id: "logs", label: "Logs", icon: File01Icon },
-  { id: "costs", label: "Costs", icon: Coins01Icon },
-  { id: "analytics", label: "Analytics", icon: Analytics01Icon },
-  { id: "setup", label: "Setup", icon: Plug01Icon },
+  { id: "usage", label: "Usage", icon: Analytics01Icon },
+  { id: "accounts", label: "Accounts", icon: UserAccountIcon },
   { id: "skills", label: "Skills", icon: MagicWand01Icon },
-  { id: "devices", label: "Devices", icon: LaptopIcon },
   { id: "settings", label: "Settings", icon: Settings01Icon },
 ] as const satisfies readonly { id: string; label: string; icon: IconSvgElement }[];
 
 type View = (typeof views)[number]["id"];
 
-/** The view and its page's tab live in the URL so a reload keeps your place. A new view starts on its first tab. */
+/** Tabs that other pages link straight to. */
+interface ViewTabs {
+  usage: UsageTab;
+  settings: SettingsTab;
+}
+
+type Place = { [V in View]: { view: V; tab?: V extends keyof ViewTabs ? ViewTabs[V] : never } }[View];
+
+/**
+ * The view and its page's tab live in the URL so a reload keeps your place. A new view starts on its first tab unless the link names one.
+ * Links from before pages were merged are rewritten in main.tsx.
+ */
 function useView() {
-  const [{ view }, setUrl] = useQueryStates({ view: parseAsStringLiteral(views.map((entry) => entry.id)), tab: parseAsString });
-  return [view, (next: View) => void setUrl({ view: next, tab: null })] as const;
+  const [{ view, tab }, setUrl] = useQueryStates({ view: parseAsStringLiteral(views.map((entry) => entry.id)), tab: parseAsString });
+  return [view, tab, (next: Place) => void setUrl({ view: next.view, tab: next.tab ?? null })] as const;
 }
 
 interface AuthState {
@@ -115,12 +122,12 @@ function Login({ onLoggedIn }: { onLoggedIn: () => void }) {
 
 function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
   const { overview, traffic, online } = useLive();
-  const [chosen, go] = useView();
-  const view: View = chosen ?? (overview && !overview.setup.provider ? "setup" : "canvas");
+  const [chosen, tab, go] = useView();
+  const view: View = chosen ?? (overview && !overview.setup.provider ? "accounts" : "canvas");
   const setupDone = overview && overview.setup.provider && overview.setup.github && overview.setup.agents;
   const current = views.find((entry) => entry.id === view)!;
   const now = useTick(30_000);
-  // Only failures: a device that is just away, such as a closed laptop, shows on the Devices page.
+  // Only failures: a device that is just away, such as a closed laptop, shows on the Devices tab.
   const failing = overview ? failingDevices(overview.clients, traffic, now) : [];
   const trouble = overview?.connectTrouble ?? null;
 
@@ -137,13 +144,13 @@ function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
           {online ? "Live" : "Reconnecting"}
         </div>
       </header>
-      {overview && <BudgetBanner budget={overview.budget} onView={() => go("costs")} />}
+      {overview && <BudgetBanner budget={overview.budget} onView={() => go({ view: "usage", tab: "costs" })} />}
 
       <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
         <Sidebar
           view={overview ? view : undefined}
           setupPending={Boolean(overview && !setupDone)}
-          onView={go}
+          onView={(next) => go({ view: next })}
           onLogOut={() => void api("/logout", { body: {} }).finally(onLoggedOut)}
         />
 
@@ -153,12 +160,12 @@ function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
               <span className="min-w-0 flex-1">
                 T3 Code reached VM Bridge {trouble.reads} times since {sinceText(trouble.since, now)} but could not connect.
               </span>
-              <Button variant="outline" size="sm" onClick={() => go("settings")}>
+              <Button variant="outline" size="sm" onClick={() => go({ view: "settings", tab: "addresses" })}>
                 Test connection
               </Button>
             </div>
           )}
-          {failing.length > 0 && view !== "devices" && (
+          {failing.length > 0 && !(view === "settings" && tab === "devices") && (
             <div role="status" className="flex items-center gap-3 rounded-xl border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
               <span className="min-w-0 flex-1">
                 {failing.map((client) => (
@@ -167,20 +174,18 @@ function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
                   </span>
                 ))}
               </span>
-              <Button variant="outline" size="sm" onClick={() => go("devices")}>
+              <Button variant="outline" size="sm" onClick={() => go({ view: "settings", tab: "devices" })}>
                 Devices
               </Button>
             </div>
           )}
           <main className="relative min-h-0 flex-1 overflow-hidden rounded-xl border bg-background [view-transition-name:panel]">
-            {overview && view === "canvas" && <Canvas overview={overview} traffic={traffic} onPair={() => go("devices")} />}
+            {overview && view === "canvas" && <Canvas overview={overview} traffic={traffic} onPair={() => go({ view: "settings", tab: "devices" })} />}
             {overview && view === "logs" && <Logs overview={overview} traffic={traffic} />}
-            {overview && view === "costs" && <Costs overview={overview} />}
-            {overview && view === "analytics" && <Analytics overview={overview} />}
-            {overview && view === "setup" && <Setup overview={overview} />}
+            {overview && view === "usage" && <Usage overview={overview} />}
+            {overview && view === "accounts" && <Accounts overview={overview} />}
             {overview && view === "skills" && <Skills overview={overview} />}
-            {overview && view === "devices" && <Devices overview={overview} traffic={traffic} />}
-            {overview && view === "settings" && <Settings overview={overview} onLoggedOut={onLoggedOut} />}
+            {overview && view === "settings" && <Settings overview={overview} traffic={traffic} onLoggedOut={onLoggedOut} />}
           </main>
         </div>
       </div>
@@ -225,7 +230,7 @@ function Sidebar({ view, setupPending, onView, onLogOut }: { view?: View; setupP
           className={cn(item, view === entry.id && "text-foreground")}
         >
           <HugeiconsIcon icon={entry.icon} className="size-5" strokeWidth={1.75} />
-          {entry.id === "setup" && setupPending && <span className="absolute top-2 right-2 size-1.5 rounded-full bg-warning" />}
+          {entry.id === "accounts" && setupPending && <span className="absolute top-2 right-2 size-1.5 rounded-full bg-warning" />}
         </Button>
       ))}
       <Button {...itemProps("logout", "Log out")} variant="ghost" size="icon-lg" aria-label="Log out" className={cn(item, "max-sm:hidden sm:mt-auto")} onClick={onLogOut}>

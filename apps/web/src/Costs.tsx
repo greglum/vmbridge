@@ -3,15 +3,13 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Coins01Icon } from "@hugeicons/core-free-icons";
 import { vmSizes, type Estimate, type ExchangeRate, type Overview, type ProviderPricing, type UsageReport } from "@vmbridge/contracts";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { ButtonGroup } from "@/components/ui/button-group";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { FieldError } from "@/components/ui/field";
 import { cn } from "@/lib/utils";
 import { api, useTick } from "./api.ts";
 import { ProviderLogo } from "./brand.tsx";
 import { BudgetSection } from "./Budget.tsx";
-import { Page, Section } from "./Page.tsx";
+import { Section } from "./Page.tsx";
 
 export const ranges = [
   { id: "month", label: "This month" },
@@ -26,8 +24,7 @@ export const rangeStart = (range: Range, now: number) => {
   return new Date(today.getFullYear(), today.getMonth(), 1).getTime();
 };
 
-export function Costs({ overview }: { overview: Overview }) {
-  const [range, setRange] = useState<Range>("month");
+export function Costs({ overview, range }: { overview: Overview; range: Range }) {
   const [report, setReport] = useState<UsageReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Awake VMs add up while the page is open, and a VM waking or sleeping changes what counts.
@@ -48,23 +45,11 @@ export function Costs({ overview }: { overview: Overview }) {
   const added = overview.providers.map((provider) => provider.id);
 
   return (
-    <Page
-      title="Costs"
-      wide
-      actions={
-        <ButtonGroup>
-          {ranges.map((entry) => (
-            <Button key={entry.id} variant={range === entry.id ? "secondary" : "outline"} size="lg" className="h-9" onClick={() => setRange(entry.id)}>
-              {entry.label}
-            </Button>
-          ))}
-        </ButtonGroup>
-      }
-    >
+    <>
       <BudgetSection budget={overview.budget} />
       {error && <FieldError>{error}</FieldError>}
       {report && <Report report={report} added={added} />}
-    </Page>
+    </>
   );
 }
 

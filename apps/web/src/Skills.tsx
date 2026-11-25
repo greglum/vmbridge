@@ -49,7 +49,7 @@ import { cn } from "@/lib/utils";
 import { skillFromFile, skillFromFolderPick, skillsFromDrop, type SkillUpload } from "@/lib/skill-upload";
 import { api } from "./api.ts";
 import { Page, Section, type Tab } from "./Page.tsx";
-import { agentNames } from "./Setup.tsx";
+import { agentNames } from "./Accounts.tsx";
 
 type SkillsTab = "installed" | "machine" | "instructions";
 
