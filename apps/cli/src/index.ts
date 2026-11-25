@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { compiled, dashboardKey, dataDir, defaultPort, start, version } from "@vmbridge/server";
 import { pidFile, restartSignal, runningPid, stopProcess } from "./process.ts";
-import { logPath, protectLog, service, serviceAddresses } from "./service.ts";
+import { protectLog, service, serviceAddresses } from "./service.ts";
 import { update, updateFromDashboard } from "./update.ts";
 
 const help = `VM Bridge ${version}
@@ -168,9 +168,9 @@ async function run(options: { host?: string; port: number }) {
   process.on(restartSignal, () => stop(true));
 }
 
-function backgroundNotice(pid: number) {
+async function backgroundNotice(pid: number) {
   console.log(`VM Bridge is already running in the background (process ${pid}), and keeps running after this terminal closes.\n`);
-  const addresses = existsSync(logPath()) ? serviceAddresses(readFileSync(logPath(), "utf8")) : [];
+  const addresses = serviceAddresses(await service.output());
   for (const address of addresses) console.log(address);
   if (addresses.length) console.log("");
   console.log("To run it in this terminal instead, stop the background service first with `vmbridge stop`.");
@@ -216,7 +216,7 @@ async function main() {
         if (existing) throw new Error(`VM Bridge is already running in a terminal (process ${existing}). Stop it first.`);
         const options = serverOptions(values);
         await service.install(options);
-        return console.log(`VM Bridge now runs in the background on port ${options.port}. Logs: ${logPath()}`);
+        return console.log(`VM Bridge now runs in the background on port ${options.port}. Logs: ${service.logLocation()}`);
       }
       if (subcommand === "uninstall") {
         await service.uninstall();

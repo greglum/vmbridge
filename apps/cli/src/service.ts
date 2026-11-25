@@ -1,12 +1,12 @@
 import { spawn } from "node:child_process";
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { childEnv, compiled, dataDir } from "@vmbridge/server";
 
 const label = "dev.vmbridge";
 
-/** The background service's output on macOS. It can hold provider errors and addresses, so only the owner reads it. */
+/** The background service's output on macOS (Linux uses the journal). It can hold provider errors and addresses, so only the owner reads it. */
 export const logPath = () => join(dataDir(), "vmbridge.log");
 
 /** launchd appends to the log with whatever mode it already has, and makes a new one world-readable. */
@@ -151,6 +151,13 @@ ${env}
     await this.stop();
     rmSync(this.plist(), { force: true });
   },
+
+  /** Where to read the service's output. */
+  logLocation: () => logPath(),
+
+  async output() {
+    return existsSync(logPath()) ? readFileSync(logPath(), "utf8") : "";
+  },
 };
 
 const systemdQuote = (value: string) => `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%")}"`;
@@ -224,6 +231,13 @@ WantedBy=default.target
     rmSync(this.unit(), { force: true });
     await exec(["systemctl", "--user", "daemon-reload"]);
   },
+
+  /** systemd keeps the service's output in the journal, not in a file. */
+  logLocation: () => "journalctl --user -u vmbridge",
+
+  async output() {
+    return (await exec(["journalctl", "--user", "--unit", "vmbridge.service", "--output", "cat", "--lines", "200", "--no-pager"])).stdout;
+  },
 };
 
 const unsupported = {
@@ -235,6 +249,8 @@ const unsupported = {
   start: async () => {},
   detached: async (_: string[], __: string) => 1,
   uninstall: async () => {},
+  logLocation: () => "",
+  output: async () => "",
 };
 
 export const service = process.platform === "darwin" ? launchd : process.platform === "linux" ? systemd : unsupported;
