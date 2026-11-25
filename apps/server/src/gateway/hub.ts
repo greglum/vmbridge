@@ -12,7 +12,7 @@ import { T3Rejected, type Backend, type Frame } from "../vm/backend.ts";
 import type { Stats } from "../vm/stats.ts";
 import { defaultAgents, pendingAgent, presentAgent, type AgentReport } from "./agents.ts";
 import { Attachments, maxUploadBytes } from "./attachments.ts";
-import { applyHeldCommand } from "./held.ts";
+import { applyHeldCommand, nextTurnCommandTypes } from "./held.ts";
 import { isPathKey, projectForPath, projectRoot, translate, vmForPath, type Environments } from "./paths.ts";
 import { repositoryIdentity } from "./repos.ts";
 import {
@@ -107,8 +107,8 @@ export class Hub extends EventEmitter<HubEvents> {
   private readonly shells = new Map<string, Shell>();
   /** Held commands a VM accepted, by command ID, with the sequence its shell shows them at. */
   private readonly answered = new Map<string, number>();
-  /** VMs being sent their held commands, so each gets them one at a time and in order. */
-  private readonly replaying = new Set<string>();
+  /** VMs being sent their held commands, so each gets them one at a time and in order, with the commands each refused. */
+  private readonly replaying = new Map<string, Promise<Wire[]>>();
   private readonly configs: Map<string, ServerConfig>;
   private readonly schedules: Map<string, ScheduledTasks>;
   private readonly setupProgress = new Map<string, Wire>();
@@ -336,9 +336,9 @@ export class Hub extends EventEmitter<HubEvents> {
   }
 
   /**
-   * Applies a sidebar-only thread command (see `heldCommandTypes`) to the merged shell at once and saves it for the
-   * thread's VM, which gets it in the background: now when it is connected, when it next connects otherwise.
-   * Returns the shell sequence to answer with.
+   * Applies a thread command VM Bridge holds (see `isHeldCommand` and `Rpc.detachesAway`) to the merged shell at once
+   * and saves it for the thread's VM, which gets it in the background: now when it is connected, when it next connects
+   * otherwise. Returns the shell sequence to answer with.
    */
   holdCommand(payload: Wire): number {
     const threadId = str(payload.threadId);
@@ -359,32 +359,52 @@ export class Hub extends EventEmitter<HubEvents> {
    * Sends held commands to a connected VM, one at a time and in the order they were given. A command the VM rejects
    * is dropped, so the thread shows the VM's own state again. One the VM accepted stays laid over its shell until
    * the shell shows it, so the thread does not flicker back in between. One that did not get an answer (the socket
-   * dropped, a timeout) stays, with those after it, for the next try.
+   * dropped, a timeout) stays, with those after it, for the next try. Resolves, once none is left to send, to the
+   * commands the VM refused meanwhile.
    */
-  private async replayHeld(vmId: string) {
-    if (this.replaying.has(vmId)) return;
-    this.replaying.add(vmId);
-    try {
-      while (true) {
-        const backend = this.fleet.backend(vmId);
-        const held = this.store.heldCommands(vmId).find((row) => !this.answered.has(row.id));
-        if (!backend || !held) return;
-        const outcome = await backend.call<{ sequence?: number }>("orchestration.dispatchCommand", held.payload).then(
-          (result) => result?.sequence ?? 0,
-          (error) => (error instanceof T3Rejected ? ("rejected" as const) : ("unanswered" as const)),
-        );
-        this.traffic.record({ kind: "system", operation: `replay ${String(held.payload.type)}`, vmId, status: typeof outcome === "number" ? "ok" : "error" });
-        if (outcome === "unanswered") return;
-        if (outcome === "rejected") this.store.dropHeldCommand(held.id);
-        else this.answered.set(held.id, outcome);
-        if (outcome === "rejected" || this.dropShown(vmId)) {
-          this.overlay(vmId);
-          this.bump();
-          this.emit("shell");
-        }
+  private replayHeld(vmId: string) {
+    const running = this.replaying.get(vmId);
+    if (running) return running;
+    const replay = this.sendHeld(vmId).finally(() => this.replaying.delete(vmId));
+    this.replaying.set(vmId, replay);
+    return replay;
+  }
+
+  private async sendHeld(vmId: string) {
+    const refused: Wire[] = [];
+    while (true) {
+      const backend = this.fleet.backend(vmId);
+      const held = this.store.heldCommands(vmId).find((row) => !this.answered.has(row.id));
+      if (!backend || !held) return refused;
+      const outcome = await backend.call<{ sequence?: number }>("orchestration.dispatchCommand", held.payload).then(
+        (result) => result?.sequence ?? 0,
+        (error) => (error instanceof T3Rejected ? ("rejected" as const) : ("unanswered" as const)),
+      );
+      this.traffic.record({ kind: "system", operation: `replay ${String(held.payload.type)}`, vmId, status: typeof outcome === "number" ? "ok" : "error" });
+      if (outcome === "unanswered") return refused;
+      if (outcome === "rejected") {
+        this.store.dropHeldCommand(held.id);
+        refused.push(held.payload);
+      } else this.answered.set(held.id, outcome);
+      if (outcome === "rejected" || this.dropShown(vmId)) {
+        this.overlay(vmId);
+        this.bump();
+        this.emit("shell");
       }
-    } finally {
-      this.replaying.delete(vmId);
+    }
+  }
+
+  /**
+   * Waits until a connected VM has been sent the commands VM Bridge holds for it, so a command sent after them reaches
+   * it after them, as it would reach T3 after them. Fails when a setting held for the thread a message goes to was
+   * refused: T3 clients send those settings just before a message and stop when one fails, so the message would
+   * otherwise run with the setting the user moved away from.
+   */
+  async afterHeld(vmId: string, payload: Wire) {
+    const refused = await this.replayHeld(vmId);
+    const setting = refused.find((command) => command.threadId === payload.threadId && nextTurnCommandTypes.has(String(command.type)));
+    if (payload.type === "message.dispatch" && setting) {
+      throw new Error("This thread's VM refused the change to its settings, so the message was not sent. Check them and send it again.");
     }
   }
 

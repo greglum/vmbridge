@@ -4,7 +4,7 @@ import { primaryVm } from "../store.ts";
 import type { Frame } from "../vm/backend.ts";
 import { heldAssetUrl, relayedAssetUrl } from "./attachments.ts";
 import type { Clones } from "./clones.ts";
-import { heldCommandTypes } from "./held.ts";
+import { isHeldCommand } from "./held.ts";
 import type { Hub } from "./hub.ts";
 import { projectForPath, projectRoot } from "./paths.ts";
 import { githubName, githubRepository, type RemoteBranches } from "./repos.ts";
@@ -833,6 +833,17 @@ export class Rpc {
     this.reply(call, merged);
   }
 
+  /**
+   * T3 clients detach a thread's agent sessions, and wait for it, before they delete the thread. A VM that is not
+   * connected has no session to detach until it connects, so the detach is held like the delete, to reach it just
+   * before the delete, instead of waking it. A connected VM gets it at once, as any stop.
+   */
+  private detachesAway(payload: Wire) {
+    const threadId = str(payload.threadId);
+    const vmId = threadId ? this.hub.store.threadVm(threadId) : null;
+    return payload.type === "provider-session.detach" && vmId !== null && !this.hub.fleet.backend(vmId);
+  }
+
   /** Routes a request to its VM, waking the VM only for requests that change something. */
   private async forward(call: Call) {
     const { tag, payload, client } = call;
@@ -846,7 +857,7 @@ export class Rpc {
     if (scheduled && (payload.schedule as Wire | undefined)?.type === "webhook") {
       throw new Error("Webhook automations need a directly reachable T3 server.");
     }
-    if (tag === "orchestration.dispatchCommand" && heldCommandTypes.has(String(payload.type))) {
+    if (tag === "orchestration.dispatchCommand" && (isHeldCommand(payload) || this.detachesAway(payload))) {
       return this.reply(call, { sequence: this.hub.holdCommand(payload) });
     }
     const mutating = scheduled || tag === "orchestration.launchThread" || tag === "orchestration.dispatchCommand" || mutation.test(tag);
@@ -891,6 +902,7 @@ export class Rpc {
     if (mutating) {
       try {
         outgoing = await this.hub.attachments.handOver(routed.payload, vmId, backend);
+        await this.hub.afterHeld(vmId, payload);
       } catch (error) {
         release();
         throw error;
