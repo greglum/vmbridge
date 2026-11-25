@@ -3,7 +3,7 @@ import { parseAsStringLiteral, useQueryState } from "nuqs";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "sonner";
 import { Add01Icon, CommandLineIcon, ComputerIcon, Delete02Icon, GitBranchIcon, GithubIcon, GlobalIcon, Key01Icon, UnfoldMoreIcon } from "@hugeicons/core-free-icons";
-import { machineNameMaxLength, vmSizes, type BridgeNetworkInfo, type BridgeSettings, type CloudflareInfo, type Overview, type ProviderId, type RepoRule, type VmSize } from "@vmbridge/contracts";
+import { agentFeedbackModes, machineNameMaxLength, vmSizes, type AgentFeedbackMode, type BridgeNetworkInfo, type BridgeSettings, type CloudflareInfo, type Overview, type ProviderId, type RepoRule, type VmSize } from "@vmbridge/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -108,6 +108,22 @@ function VmSettings({ overview }: { overview: Overview }) {
             <Input id="t3-version" className="h-9" value={form.t3Version ?? ""} placeholder="Latest" onChange={(event) => setForm({ ...form, t3Version: event.target.value || null })} />
             <FieldDescription>New VMs install this version.</FieldDescription>
           </Field>
+          <Field>
+            <FieldLabel htmlFor="agent-feedback">Feedback cards</FieldLabel>
+            <Select value={form.agentFeedback} onValueChange={(value) => setForm({ ...form, agentFeedback: value as AgentFeedbackMode })}>
+              <SelectTrigger id="agent-feedback" className="w-full data-[size=default]:h-9">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {agentFeedbackModes.map((mode) => (
+                  <SelectItem key={mode} value={mode}>
+                    {feedbackLabels[mode]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <FieldDescription>{feedbackDescriptions[form.agentFeedback]}</FieldDescription>
+          </Field>
         </FieldGroup>
         {action.error && <FieldError>{action.error}</FieldError>}
         <div>
@@ -121,6 +137,15 @@ function VmSettings({ overview }: { overview: Overview }) {
 }
 
 const fallback = "default";
+
+/** T3's own names for its agent feedback modes. */
+const feedbackLabels: Record<AgentFeedbackMode, string> = { off: "Off", "on-request": "When I ask", auto: "Automatic" };
+
+const feedbackDescriptions: Record<AgentFeedbackMode, string> = {
+  off: "Agents never offer to send a report to the T3 team.",
+  "on-request": "When you ask, an agent shows a report card. It goes to the T3 team only if you press Send.",
+  auto: "Agents also offer a report on their own when T3 Code fails them.",
+};
 
 /** Provider and size pickers for one repository rule. "Default" leaves the choice to the VM settings. */
 function RuleChoices({ overview, rule, onChange }: { overview: Overview; rule: RepoRule; onChange: (change: Partial<RepoRule>) => void }) {

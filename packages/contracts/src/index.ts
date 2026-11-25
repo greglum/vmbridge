@@ -8,6 +8,10 @@ export type VmSize = (typeof vmSizes)[number];
 
 export const machineNameMaxLength = 40;
 
+/** T3's agent feedback modes: whether agents may show a card offering to send a report to the T3 team. */
+export const agentFeedbackModes = ["off", "on-request", "auto"] as const;
+export type AgentFeedbackMode = (typeof agentFeedbackModes)[number];
+
 export interface ProviderField {
   key: string;
   label: string;
@@ -391,6 +395,8 @@ export interface BridgeSettings {
   vmSize: VmSize | null;
   idleMinutes: number;
   t3Version: string | null;
+  /** Set in T3 on every VM. */
+  agentFeedback: AgentFeedbackMode;
 }
 
 export interface Overview {
