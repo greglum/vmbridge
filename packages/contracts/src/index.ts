@@ -423,6 +423,8 @@ export interface Overview {
   env: string[];
   settings: BridgeSettings;
   clients: ClientInfo[];
+  /** T3 clients keep reaching VM Bridge but never open a connection, as when their browser refuses its answers. */
+  connectTrouble: { since: number; reads: number } | null;
   vms: VmInfo[];
   projects: ProjectInfo[];
   skills: SkillInfo[];

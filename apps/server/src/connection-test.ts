@@ -1,5 +1,6 @@
 import type { AddressTest, ConnectionStep } from "@vmbridge/contracts";
 import { message } from "./fleet.ts";
+import { connectionTestHeader } from "./gateway/http.ts";
 
 type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -80,7 +81,7 @@ async function preflight(fetcher: Fetch, base: string, caller: Caller) {
 }
 
 async function environment(fetcher: Fetch, base: string, caller: Caller, environmentId: string) {
-  const { response, body } = await send(fetcher, `${base}/.well-known/t3/environment`, { headers: headersFor(caller, { accept: "application/json" }) });
+  const { response, body } = await send(fetcher, `${base}/.well-known/t3/environment`, { headers: headersFor(caller, { accept: "application/json", [connectionTestHeader]: "1" }) });
   const problem = statusProblem(response) ?? allowOriginProblem(response, caller.checkedAs);
   if (problem) return problem;
   let descriptor: unknown;
