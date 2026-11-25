@@ -13,6 +13,19 @@ export function protectLog() {
   if (existsSync(logPath())) chmodSync(logPath(), 0o600);
 }
 
+/** The address lines of the last start in the service's log, as `run` printed them, such as "  This machine  http://...". */
+export function serviceAddresses(log: string) {
+  const started = log.lastIndexOf(" is running.\n");
+  if (started === -1) return [];
+  const lines = log.slice(started).split("\n").slice(1);
+  const addresses = [];
+  for (const line of lines.slice(lines[0] === "" ? 1 : 0)) {
+    if (!/^ {2}\S.* https?:\/\/\S+$/.test(line)) break;
+    addresses.push(line);
+  }
+  return addresses;
+}
+
 interface ServiceOptions {
   host?: string;
   port: number;

@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { dashboardKey, dataDir, defaultPort, start, version } from "@vmbridge/server";
 import { pidFile, restartSignal, runningPid, stopProcess } from "./process.ts";
-import { logPath, protectLog, service } from "./service.ts";
+import { logPath, protectLog, service, serviceAddresses } from "./service.ts";
 import { update } from "./update.ts";
 
 const help = `VM Bridge ${version}
@@ -106,8 +106,11 @@ function serverOptions(values: { host?: string; port?: string }) {
 }
 
 async function run(options: { host?: string; port: number }) {
-  // The newest start wins, so an old VM Bridge that is slow to exit, or stuck, never keeps serving old code.
   const existing = runningPid();
+  // The background service is left running: taken over, it would exit for good, and VM Bridge would stop with this
+  // terminal. launchd and systemd only start it again after a crash.
+  if (existing && existing === (await service.pid())) return backgroundNotice(existing);
+  // Otherwise the newest start wins, so an old VM Bridge that is slow to exit, or stuck, never keeps serving old code.
   if (existing) {
     console.log(`Stopping the VM Bridge already running (process ${existing}).`);
     await stopProcess(existing, restartSignal, restartDeadlineMs + 5_000);
@@ -160,6 +163,14 @@ async function run(options: { host?: string; port: number }) {
   // Closing the terminal window. Without this, VM Bridge would end without stopping cloudflared.
   process.on("SIGHUP", () => stop(false));
   process.on(restartSignal, () => stop(true));
+}
+
+function backgroundNotice(pid: number) {
+  console.log(`VM Bridge is already running in the background (process ${pid}), and keeps running after this terminal closes.\n`);
+  const addresses = existsSync(logPath()) ? serviceAddresses(readFileSync(logPath(), "utf8")) : [];
+  for (const address of addresses) console.log(address);
+  if (addresses.length) console.log("");
+  console.log("To run it in this terminal instead, stop the background service first with `vmbridge stop`.");
 }
 
 async function stop() {
