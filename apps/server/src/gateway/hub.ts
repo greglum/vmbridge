@@ -13,7 +13,7 @@ import type { Stats } from "../vm/stats.ts";
 import { defaultAgents, pendingAgent, presentAgent, type AgentReport } from "./agents.ts";
 import { Attachments, maxUploadBytes } from "./attachments.ts";
 import { applyHeldCommand, nextTurnCommandTypes } from "./held.ts";
-import { isPathKey, projectForPath, projectRoot, translate, vmForPath, type Environments } from "./paths.ts";
+import { isPathKey, projectForPath, projectRoot, translate, vmForPath, within, type Environments } from "./paths.ts";
 import { repositoryIdentity } from "./repos.ts";
 import {
   hasLiveWork,
@@ -834,6 +834,26 @@ export class Hub extends EventEmitter<HubEvents> {
     if (direct) return direct;
     const vms = new Set(this.store.threads().filter((thread) => attachmentThreadSegment(thread.id) === segment).map((thread) => thread.vmId));
     return vms.size === 1 ? [...vms][0]! : null;
+  }
+
+  /**
+   * The project, branch and folder in it (relative, "" for the top) that a client path points into on a VM, from what
+   * the VM last reported: the project's checkout, at the project's branch, or a thread's worktree, at the thread's.
+   */
+  checkoutAt(cwd: string, vmId: string): { project: ProjectRow; branch: string | null; folder: string } | undefined {
+    const projects = this.projects();
+    const project = projectForPath(cwd, projects);
+    if (project) {
+      const root = projectRoot(project);
+      return within(cwd, root) ? { project, branch: project.branch, folder: cwd.slice(root.length + 1) } : undefined;
+    }
+    const path = this.into({ cwd }, vmId).cwd;
+    for (const thread of threadsOf(this.shells.get(vmId))) {
+      const worktree = str(thread.worktreePath);
+      const owner = projects.find((entry) => entry.id === thread.projectId);
+      if (worktree && owner && within(path, worktree)) return { project: owner, branch: str(thread.branch) ?? null, folder: path.slice(worktree.length + 1) };
+    }
+    return undefined;
   }
 
   routeOrNull(payload: unknown) {

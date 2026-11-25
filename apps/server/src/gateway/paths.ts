@@ -17,7 +17,7 @@ export const projectRoot = (project: Pick<ProjectRow, "id" | "url">) => `/projec
 
 const vmRoot = (vmId: string) => `/vms/${vmId}`;
 
-const within = (path: string, base: string) => path === base || path.startsWith(`${base}/`);
+export const within = (path: string, base: string) => path === base || path.startsWith(`${base}/`);
 
 export type Direction = "in" | "out";
 
