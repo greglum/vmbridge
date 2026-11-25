@@ -1,7 +1,7 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type ClipboardEvent } from "react";
 import { toast } from "sonner";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Add01Icon, Delete02Icon, PencilEdit02Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, Cancel01Icon, Delete02Icon, PencilEdit02Icon } from "@hugeicons/core-free-icons";
 import type { Overview } from "@vmbridge/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,13 +10,24 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAction } from "@/hooks/use-action";
+import { parseEnvPaste } from "@/lib/env-paste";
 import { api } from "./api.ts";
 import { Section } from "./Page.tsx";
+
+/** A pasted variable waiting to be saved, with why the server refused it if it did. */
+interface Draft {
+  name: string;
+  value: string;
+  error?: string;
+}
+
+const plural = (count: number, word: string) => `${count} ${count === 1 ? word : `${word}s`}`;
 
 /** Environment variables every VM gets. Values are write-only: the server never sends them back. */
 export function Environment({ overview }: { overview: Overview }) {
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
+  const [drafts, setDrafts] = useState<Draft[]>([]);
   const valueInput = useRef<HTMLTextAreaElement>(null);
   const action = useAction();
   const key = name.trim();
@@ -25,6 +36,37 @@ export function Environment({ overview }: { overview: Overview }) {
 
   const remove = (target: string) =>
     void action.run(() => api(`/env/${encodeURIComponent(target)}`, { method: "DELETE" })).then((ok) => ok && toast.success(`${target} removed. If it was a secret, revoke it at its source too.`));
+
+  // Pasting `.env` text turns each `NAME=value` line into a draft to review before saving.
+  const pasteMany = (event: ClipboardEvent, field: "name" | "value") => {
+    const paste = parseEnvPaste(event.clipboardData.getData("text/plain"));
+    if (!paste) return;
+    // A single `X=y` pasted as a value is more likely the value itself, so the value field only takes clear lists.
+    if (field === "value" && (value !== "" || paste.badLines.length > 0 || paste.vars.size + paste.invalidNames.length < 2)) return;
+    event.preventDefault();
+    if (paste.invalidNames.length > 0) toast.warning(`Skipped ${paste.invalidNames.join(", ")}. Names use letters, digits and underscores, not starting with a digit.`);
+    if (paste.badLines.length > 0) toast.warning(`Skipped ${paste.badLines.length === 1 ? "line" : "lines"} ${paste.badLines.join(", ")}: not NAME=value.`);
+    if (paste.vars.size === 0) return;
+    setDrafts([...paste.vars].map(([name, value]) => ({ name, value })));
+    setName("");
+    setValue("");
+  };
+
+  // Each saves on its own, so one the server refuses stays for review without holding back the rest.
+  const saveDrafts = () =>
+    void action.run(async () => {
+      const failed: Draft[] = [];
+      for (const draft of drafts) {
+        try {
+          await api(`/env/${encodeURIComponent(draft.name)}`, { method: "PUT", body: { value: draft.value } });
+        } catch (cause) {
+          failed.push({ ...draft, error: cause instanceof Error ? cause.message : String(cause) });
+        }
+      }
+      setDrafts(failed);
+      const saved = drafts.length - failed.length;
+      if (saved > 0) toast.success(`${plural(saved, "variable")} saved. VMs get them as soon as nothing is running on them.`);
+    });
 
   return (
     <Section title="Environment variables" actions={overview.env.length > 0 && <Badge variant="secondary">{overview.env.length}</Badge>}>
@@ -42,7 +84,7 @@ export function Environment({ overview }: { overview: Overview }) {
                       size="icon-sm"
                       aria-label={`Change ${entry}`}
                       className="text-muted-foreground"
-                      disabled={action.busy}
+                      disabled={action.busy || drafts.length > 0}
                       onClick={() => {
                         setName(entry);
                         setValue("");
@@ -72,46 +114,87 @@ export function Environment({ overview }: { overview: Overview }) {
               </div>
             </div>
           ))}
-          <form
-            className="flex flex-col gap-2 bg-muted/30 p-3 sm:flex-row sm:items-start"
-            // The fields stay read-only while a save is pending, so clearing them after it cannot drop a newer draft.
-            onSubmit={(event) => {
-              event.preventDefault();
-              void action.run(() => api(`/env/${encodeURIComponent(key)}`, { method: "PUT", body: { value } })).then((ok) => {
-                if (!ok) return;
-                toast.success(`${key} saved. VMs get it as soon as nothing is running on them.`);
-                setName("");
-                setValue("");
-              });
-            }}
-          >
-            <Input
-              aria-label="Name"
-              placeholder="NAME"
-              className="h-8 font-mono sm:w-52"
-              autoComplete="off"
-              spellCheck={false}
-              value={name}
-              readOnly={action.busy}
-              onChange={(event) => setName(event.target.value)}
-            />
-            <Textarea
-              ref={valueInput}
-              aria-label="Value"
-              placeholder={exists ? "New value" : "Value"}
-              rows={1}
-              className="min-h-8 flex-1 resize-none py-1.5 font-mono"
-              autoComplete="off"
-              spellCheck={false}
-              value={value}
-              readOnly={action.busy}
-              onChange={(event) => setValue(event.target.value)}
-            />
-            <Button type="submit" size="sm" className="h-8 px-3" disabled={action.busy || !key}>
-              {!exists && <HugeiconsIcon icon={Add01Icon} data-icon="inline-start" strokeWidth={2} />}
-              {exists ? "Save" : "Add"}
-            </Button>
-          </form>
+          {drafts.length > 0 ? (
+            <div className="divide-y bg-muted/30">
+              {drafts.map((draft) => (
+                <div key={draft.name} className="flex items-center gap-3 py-2 pr-2 pl-3.5">
+                  <div className="min-w-0 flex-1">
+                    {/* Wrapped, not cut off: pasted names often share a long prefix, and the end is what tells them apart. */}
+                    <code className="block font-mono text-sm break-all">{draft.name}</code>
+                    {draft.error && <p className="text-[13px] text-destructive">{draft.error}</p>}
+                  </div>
+                  {overview.env.includes(draft.name) && <Badge variant="outline">Replaces</Badge>}
+                  <span className="text-sm tracking-widest text-faint select-none">••••••</span>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Leave out ${draft.name}`}
+                        className="text-muted-foreground"
+                        disabled={action.busy}
+                        onClick={() => setDrafts((current) => current.filter((entry) => entry.name !== draft.name))}
+                      >
+                        <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Leave out</TooltipContent>
+                  </Tooltip>
+                </div>
+              ))}
+              <div className="flex justify-end gap-2 p-3">
+                <Button variant="ghost" size="sm" className="h-8" disabled={action.busy} onClick={() => setDrafts([])}>
+                  Cancel
+                </Button>
+                <Button size="sm" className="h-8 px-3" disabled={action.busy} onClick={saveDrafts}>
+                  Save {plural(drafts.length, "variable")}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <form
+              className="flex flex-col gap-2 bg-muted/30 p-3 sm:flex-row sm:items-start"
+              // The fields stay read-only while a save is pending, so clearing them after it cannot drop a newer draft.
+              onSubmit={(event) => {
+                event.preventDefault();
+                void action.run(() => api(`/env/${encodeURIComponent(key)}`, { method: "PUT", body: { value } })).then((ok) => {
+                  if (!ok) return;
+                  toast.success(`${key} saved. VMs get it as soon as nothing is running on them.`);
+                  setName("");
+                  setValue("");
+                });
+              }}
+            >
+              <Input
+                aria-label="Name"
+                placeholder="NAME"
+                className="h-8 font-mono sm:w-52"
+                autoComplete="off"
+                spellCheck={false}
+                value={name}
+                readOnly={action.busy}
+                onChange={(event) => setName(event.target.value)}
+                onPaste={(event) => pasteMany(event, "name")}
+              />
+              <Textarea
+                ref={valueInput}
+                aria-label="Value"
+                placeholder={exists ? "New value" : "Value"}
+                rows={1}
+                className="min-h-8 flex-1 resize-none py-1.5 font-mono"
+                autoComplete="off"
+                spellCheck={false}
+                value={value}
+                readOnly={action.busy}
+                onChange={(event) => setValue(event.target.value)}
+                onPaste={(event) => pasteMany(event, "value")}
+              />
+              <Button type="submit" size="sm" className="h-8 px-3" disabled={action.busy || !key}>
+                {!exists && <HugeiconsIcon icon={Add01Icon} data-icon="inline-start" strokeWidth={2} />}
+                {exists ? "Save" : "Add"}
+              </Button>
+            </form>
+          )}
         </div>
         {action.error && <FieldError>{action.error}</FieldError>}
         <p className="text-[13px] text-muted-foreground">
