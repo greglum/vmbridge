@@ -61,18 +61,18 @@ export function openBridge(runtime: BridgeRuntime) {
   const stats = new Stats(fleet);
   const usage = new Usage(store, () => fleet.connected());
   for (const event of ["changed", "awake", "offline"] as const) fleet.on(event, () => usage.sync());
+  const branches = new RemoteBranches(() => secrets.get("github.token"), runtime.resolve);
+  const files = new FileTrees(db, () => secrets.get("github.token"), branches);
   const budget = new Budget(settings, usage);
   fleet.refusal = () => budget.refusal();
-  const hub = new Hub(store, settings, fleet, traffic, stats, budget);
+  const hub = new Hub(store, settings, fleet, traffic, stats, budget, files);
   agents.onChange = () => {
     fleet.emit("changed");
     void hub.credentialsChanged().catch(() => {});
   };
   const clones = new Clones(hub);
-  const branches = new RemoteBranches(() => secrets.get("github.token"), runtime.resolve);
   const clients = new Clients(db);
-  const files = new FileTrees(db, () => secrets.get("github.token"), branches);
-  // What a VM's agents pushed before it slept is what the "@" menu lists while it sleeps.
+  // What a VM's agents pushed before it slept is what the "@" menu lists while it sleeps, when the VM gave no list.
   fleet.on("offline", (vmId) => {
     if (store.vm(vmId)?.state === "sleeping") void files.refresh(store.projects().filter((project) => project.vms.some((entry) => entry.vmId === vmId)));
   });

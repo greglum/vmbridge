@@ -1,5 +1,8 @@
+import type { Box } from "../providers/index.ts";
+import { sleep } from "../runtime.ts";
 import type { Sql } from "../sql.ts";
 import type { ProjectRow } from "../store.ts";
+import { quote } from "../vm/runtime.ts";
 import { githubName, type RemoteBranches } from "./repos.ts";
 import type { Wire } from "./types.ts";
 
@@ -23,6 +26,12 @@ interface Tree {
   fetchedAt: number;
 }
 
+/** A checkout or thread worktree on a VM, by its path there. */
+export interface Worktree {
+  projectId: string;
+  path: string;
+}
+
 /** A tree older than this is still searched, and fetched again in the background. */
 const freshMs = 5 * 60_000;
 /** Trees kept in memory at once. The rest are read back from the database when searched again. */
@@ -35,6 +44,28 @@ const images = /\.(avif|bmp|gif|ico|heic|heif|jpeg|jpg|png|svg|tif|tiff|webp|icn
 const parentOf = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
 
 const collator = new Intl.Collator();
+
+/** Paths, one per line, in rows of at most `chunkChars`. Always at least one row, so an empty list is kept too. */
+function chunked(files: readonly string[]) {
+  const chunks: string[] = [];
+  let chunk: string[] = [];
+  let size = 0;
+  for (const path of files) {
+    if (size + path.length > chunkChars && chunk.length) {
+      chunks.push(chunk.join("\n"));
+      chunk = [];
+      size = 0;
+    }
+    chunk.push(path);
+    size += path.length + 1;
+  }
+  if (chunk.length || !chunks.length) chunks.push(chunk.join("\n"));
+  return chunks;
+}
+
+const unchunked = (rows: readonly { paths: string }[]) => rows.flatMap((row) => (row.paths ? row.paths.split("\n") : []));
+
+const listedKey = (vmId: string, path: string) => `vm\0${vmId}\0${path}`;
 
 /** Every file and every folder above one, sorted shallow first, then by path. */
 export function indexTree(files: readonly string[]): Indexed[] {
@@ -147,15 +178,16 @@ export function searchEntries(entries: readonly Indexed[], input: Wire, incomple
 }
 
 /**
- * The files of each repository VM Bridge has projects for, from GitHub, so the composer's "@" menu can list them while
- * the project's VM sleeps. Kept in the database, and searched in memory. Only what is pushed is listed: a sleeping
- * VM's uncommitted and unpushed files are not, so an awake VM is always asked instead.
+ * The files of each project's checkouts and worktrees, so the composer's "@" menu can list them while their VM sleeps.
+ * Kept in the database, and searched in memory. An awake VM is always asked instead.
  *
- * The ref searched is the thread's branch when GitHub has it, and otherwise the project's branch or the repository's
- * default branch. A new thread's branch is often only on its VM until it is pushed, and starts from the default.
+ * The list a VM gave as it went to sleep comes first: it has the worktree's uncommitted and unpushed files, and works
+ * for any git host. Without one, the files GitHub has are listed, at the thread's branch when GitHub has it, and
+ * otherwise the project's branch or the repository's default branch. A new thread's branch is often only on its VM
+ * until it is pushed, and starts from the default.
  */
 export class FileTrees {
-  /** Trees by `<projectId> <ref>`, least recently searched first. */
+  /** GitHub's trees by `<projectId> <ref>` and VMs' lists by `listedKey`, least recently searched first. */
   private readonly trees = new Map<string, Tree>();
   private readonly pending = new Map<string, Promise<Tree>>();
 
@@ -163,20 +195,48 @@ export class FileTrees {
     private readonly db: Sql,
     private readonly githubToken: () => string | undefined,
     private readonly branches: Pick<RemoteBranches, "branches">,
+    /** How long listing a VM's files may hold up its sleep. Lists that take longer are not waited for. */
+    private readonly captureMs = 10_000,
   ) {}
 
   /**
-   * T3's `projects.searchEntries` answer for `folder` (relative to the repository root, "" for the root) at `branch`.
-   * Undefined when the repository is not on GitHub or its files cannot be read.
+   * T3's `projects.searchEntries` answer for `folder` (relative to the worktree root, "" for the root) of the worktree
+   * at `worktree.path` on its VM, or at `branch` on GitHub when the VM gave no list. Undefined when neither can be read.
    */
-  async search(project: ProjectRow, branch: string | null, folder: string, input: Wire) {
-    const ref = await this.ref(project, branch).catch(() => null);
-    const tree = ref ? await this.tree(project, ref).catch(() => null) : null;
+  async search(project: ProjectRow, branch: string | null, folder: string, input: Wire, worktree?: { vmId: string; path: string }) {
+    const tree = (worktree && this.listed(worktree.vmId, worktree.path)) ?? (await this.pushed(project, branch));
     if (!tree) return undefined;
     const scoped = folder
       ? tree.entries.flatMap((entry) => (entry.path.startsWith(`${folder}/`) ? [{ ...entry, path: entry.path.slice(folder.length + 1), lower: entry.lower.slice(folder.length + 1) }] : []))
       : tree.entries;
     return searchEntries(scoped, input, tree.truncated);
+  }
+
+  /**
+   * Lists the files of each worktree on a VM about to sleep, as git sees them: committed or not, minus what it ignores.
+   * Returns within `captureMs` whatever the VM does, so sleeping never waits long. A worktree that cannot be listed
+   * keeps its last list. Lists of the VM's worktrees not named here are dropped, as their threads are gone.
+   */
+  async capture(vmId: string, box: Pick<Box, "run">, worktrees: readonly Worktree[]) {
+    const named = new Set(worktrees.map((worktree) => worktree.path));
+    for (const { path } of this.db.all<{ path: string }>("SELECT DISTINCT path FROM vm_file_lists WHERE vm_id = ?", vmId)) {
+      if (named.has(path)) continue;
+      this.db.run("DELETE FROM vm_file_lists WHERE vm_id = ? AND path = ?", vmId, path);
+      this.trees.delete(listedKey(vmId, path));
+    }
+    const listing = Promise.all(
+      worktrees.map(async ({ projectId, path }) => {
+        const command = `git -C ${quote(path)} ls-files -z --cached --others --exclude-standard`;
+        const result = await box.run(command, { timeoutMs: this.captureMs }).catch(() => null);
+        if (!result?.ok) return;
+        // Unmerged files are listed once per side. A name with a line break cannot be kept, as for GitHub's.
+        const files = [...new Set(result.stdout.split("\0"))].filter((file) => file && !file.includes("\n"));
+        const tree = { entries: indexTree(files), truncated: false, fetchedAt: Date.now() };
+        this.keep(listedKey(vmId, path), tree);
+        this.saveListed(projectId, vmId, path, files, tree.fetchedAt);
+      }),
+    );
+    await Promise.race([listing, sleep(this.captureMs)]);
   }
 
   /** Fetches again every tree kept for these projects, or each one's default tree when none is, as when their VM goes to sleep. */
@@ -188,6 +248,29 @@ export class FileTrees {
         await Promise.all(refs.flatMap((ref) => (ref ? [this.fetchTree(project, ref)] : [])));
       }),
     ).catch(() => {});
+  }
+
+  /** The list the VM gave for this worktree as it went to sleep. */
+  private listed(vmId: string, path: string): Tree | undefined {
+    const key = listedKey(vmId, path);
+    let tree = this.trees.get(key);
+    if (!tree) {
+      const rows = this.db.all<{ paths: string; captured_at: number }>(
+        "SELECT paths, captured_at FROM vm_file_lists WHERE vm_id = ? AND path = ? ORDER BY seq",
+        vmId,
+        path,
+      );
+      if (!rows.length) return undefined;
+      tree = { entries: indexTree(unchunked(rows)), truncated: false, fetchedAt: rows[0]!.captured_at };
+    }
+    this.keep(key, tree);
+    return tree;
+  }
+
+  /** The files GitHub has for the thread's branch, or for the branch it started from. */
+  private async pushed(project: ProjectRow, branch: string | null) {
+    const ref = await this.ref(project, branch).catch(() => null);
+    return ref ? await this.tree(project, ref).catch(() => null) : null;
   }
 
   private async ref(project: ProjectRow, branch: string | null) {
@@ -223,8 +306,7 @@ export class FileTrees {
     );
     if (!rows.length) return undefined;
     // An empty repository is kept as one empty row.
-    const files = rows.flatMap((row) => (row.paths ? row.paths.split("\n") : []));
-    return { entries: indexTree(files), truncated: rows[0]!.truncated === 1, fetchedAt: rows[0]!.fetched_at };
+    return { entries: indexTree(unchunked(rows)), truncated: rows[0]!.truncated === 1, fetchedAt: rows[0]!.fetched_at };
   }
 
   /** Fetches a tree from GitHub and keeps it. Searches arriving meanwhile share the one request. */
@@ -268,23 +350,10 @@ export class FileTrees {
   }
 
   private save(projectId: string, ref: string, files: readonly string[], tree: Tree) {
-    const chunks: string[] = [];
-    let chunk: string[] = [];
-    let size = 0;
-    for (const path of files) {
-      if (size + path.length > chunkChars && chunk.length) {
-        chunks.push(chunk.join("\n"));
-        chunk = [];
-        size = 0;
-      }
-      chunk.push(path);
-      size += path.length + 1;
-    }
-    if (chunk.length || !chunks.length) chunks.push(chunk.join("\n"));
     try {
       this.db.transaction(() => {
         this.db.run("DELETE FROM file_trees WHERE project_id = ? AND ref = ?", projectId, ref);
-        chunks.forEach((paths, seq) => {
+        chunked(files).forEach((paths, seq) => {
           this.db.run(
             "INSERT INTO file_trees (project_id, ref, seq, paths, truncated, fetched_at) VALUES (?, ?, ?, ?, ?, ?)",
             projectId,
@@ -298,6 +367,27 @@ export class FileTrees {
       });
     } catch {
       // The project was removed while its tree was fetched. Memory still answers until it is dropped.
+    }
+  }
+
+  private saveListed(projectId: string, vmId: string, path: string, files: readonly string[], capturedAt: number) {
+    try {
+      this.db.transaction(() => {
+        this.db.run("DELETE FROM vm_file_lists WHERE vm_id = ? AND path = ?", vmId, path);
+        chunked(files).forEach((paths, seq) => {
+          this.db.run(
+            "INSERT INTO vm_file_lists (project_id, vm_id, path, seq, paths, captured_at) VALUES (?, ?, ?, ?, ?, ?)",
+            projectId,
+            vmId,
+            path,
+            seq,
+            paths,
+            capturedAt,
+          );
+        });
+      });
+    } catch {
+      // The project left the VM while it was listed. Memory still answers until it is dropped.
     }
   }
 }

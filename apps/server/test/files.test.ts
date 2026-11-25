@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test } from "bun:test";
 import { openDatabase } from "../src/bun/sqlite.ts";
 import type { Fleet } from "../src/fleet.ts";
+import type { Box } from "../src/providers/index.ts";
 import { FileTrees, indexTree, searchEntries } from "../src/gateway/files.ts";
 import { Hub } from "../src/gateway/hub.ts";
 import { Rpc, type RpcClient } from "../src/gateway/rpc.ts";
@@ -41,6 +42,24 @@ function github(trees: Record<string, string[]>, truncated = false) {
   }) as typeof fetch;
   return asked;
 }
+
+/** A VM's `box.run` for `git ls-files -z`, listing `lists` by worktree path, or failing for the rest. */
+function vm(lists: Record<string, string[]>) {
+  const asked: string[] = [];
+  const box = {
+    run: async (command: string) => {
+      const path = /^git -C '(.+)' ls-files -z --cached --others --exclude-standard$/.exec(command)?.[1] ?? "";
+      asked.push(path);
+      const list = lists[path];
+      if (!list) return { ok: false, exitCode: 128, stdout: "", stderr: "fatal: not a git repository", output: "" };
+      return { ok: true, exitCode: 0, stdout: list.map((file) => `${file}\0`).join(""), stderr: "", output: "" };
+    },
+  } as unknown as Box;
+  return { box, asked };
+}
+
+const app = "/workspace/app";
+const local = "/workspace/.t3/worktrees/app/local";
 
 const branches = { branches: async () => ({ names: ["main", "feature/login"], defaultBranch: "main", at: 0 }) };
 
@@ -168,6 +187,57 @@ describe("file search while a VM sleeps", () => {
     wake();
     expect((await search({ cwd: "/projects/p1/app", query: "unc" })).value?.entries).toEqual([{ path: "uncommitted.ts", kind: "file" }]);
     expect(requests).toEqual(["projects.searchEntries"]);
+  });
+
+  test("a sleeping VM's own list answers first, worktree by worktree, with files only on the VM", async () => {
+    const asked = github({ main: files, "feature/login": ["src/login.tsx"] });
+    const { trees, search } = setup();
+    const { box } = vm({ [app]: [...files, "notes/untracked.md"], [local]: ["src/only-here.ts", "src/only-here.ts"] });
+    await trees.capture("vm1", box, [
+      { projectId: "p1", path: app },
+      { projectId: "p1", path: local },
+    ]);
+    expect((await search({ cwd: "/projects/p1/app", query: "untracked" })).value).toEqual({ entries: [{ path: "notes/untracked.md", kind: "file" }], truncated: false });
+    // A branch GitHub never saw, listed once although git named it twice.
+    expect((await search({ cwd: "/vms/vm1/workspace/.t3/worktrees/app/local/src", query: "only" })).value?.entries).toEqual([{ path: "only-here.ts", kind: "file" }]);
+    // No list for this worktree: GitHub's files at its branch.
+    expect((await search({ cwd: "/vms/vm1/workspace/.t3/worktrees/app/login", query: "log" })).value?.entries).toEqual([{ path: "src/login.tsx", kind: "file" }]);
+    expect(asked).toEqual(["feature/login"]);
+  });
+
+  test("a worktree that cannot be listed keeps its last list, and worktrees no longer named fall back to GitHub", async () => {
+    const asked = github({ main: files });
+    const { store, trees, search } = setup();
+    await trees.capture("vm1", vm({ [app]: ["first.ts"], [local]: ["local.ts"] }).box, [
+      { projectId: "p1", path: app },
+      { projectId: "p1", path: local },
+    ]);
+    // The checkout fails to list, and the thread's worktree is gone.
+    const again = vm({});
+    await trees.capture("vm1", again.box, [{ projectId: "p1", path: app }]);
+    expect(again.asked).toEqual([app]);
+
+    const restarted = new FileTrees(store.db, () => "token", branches);
+    const project = store.project("p1")!;
+    expect((await restarted.search(project, null, "", { query: "first", limit: 10 }, { vmId: "vm1", path: app }))?.entries).toEqual([{ path: "first.ts", kind: "file" }]);
+    expect((await search({ cwd: "/vms/vm1/workspace/.t3/worktrees/app/local", query: "card" })).value?.entries).toEqual([{ path: "src/components/Card.tsx", kind: "file" }]);
+    expect(asked).toEqual(["main"]);
+  });
+
+  test("a VM's long list is kept in rows under the database's value limit and read back whole", async () => {
+    const { store, trees } = setup();
+    // Multibyte names: about 1.5 MB of text, more than one 500,000 character row holds.
+    const long = Array.from({ length: 3_000 }, (_, index) => `src/${"ü".repeat(240)}/${index}.ts`);
+    await trees.capture("vm1", vm({ [app]: long }).box, [{ projectId: "p1", path: app }]);
+    const rows = store.db.all<{ size: number }>("SELECT length(paths) AS size FROM vm_file_lists WHERE vm_id = 'vm1' ORDER BY seq");
+    expect(rows.length).toBe(2);
+    for (const row of rows) expect(row.size).toBeLessThanOrEqual(500_000);
+
+    const restarted = new FileTrees(store.db, () => "token", branches);
+    const found = await restarted.search(store.project("p1")!, null, "", { query: "", kind: "file", limit: 200 }, { vmId: "vm1", path: app });
+    expect(found?.truncated).toBe(true);
+    const all = await restarted.search(store.project("p1")!, null, "", { query: "2999.ts", kind: "file", limit: 1 }, { vmId: "vm1", path: app });
+    expect(all?.entries).toEqual([{ path: long.at(-1)!, kind: "file" }]);
   });
 
   test("going to sleep fetches the kept trees again", async () => {
