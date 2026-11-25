@@ -24,6 +24,8 @@ Website and docs: [vmbridge.ordinity.com](https://vmbridge.ordinity.com)
 - Attach images and files to a message in T3 Code, as on a local T3 server. VM Bridge hands them
   to the thread's VM.
 - Thread search and the pull requests list work across your VMs, without waking sleeping ones.
+- Answer an agent's cards in T3 Code: a request for a secret, or an offer to send feedback to the T3
+  team. Feedback cards are off until you turn them on under **Settings**, **VMs**.
 - Works over Tailscale, Cloudflare Tunnel and, once you turn it on, your local network. Or deploy it
   to Cloudflare Workers with one button.
 
@@ -97,8 +99,9 @@ Under **Settings**, **Environment**, add variables such as `NPM_TOKEN` or `API_U
 them: T3, the agents and the commands they run, and login or interactive shells such as SSH. Awake
 VMs restart T3 to apply a change once nothing runs on them, so a running turn is never cut off.
 Sleeping VMs apply it when they wake, before serving anything. Values are stored with your other
-secrets and never shown again. Names VM Bridge sets itself, such as `PATH`, `HOME`,
-`CLAUDE_CONFIG_DIR` or `GH_TOKEN`, are refused.
+secrets and never shown again. To add many at once, paste a `.env` file or a block of
+`export NAME=value` lines into the name field, check the list, and save them together. Names VM
+Bridge sets itself, such as `PATH`, `HOME`, `CLAUDE_CONFIG_DIR` or `GH_TOKEN`, are refused.
 
 ## Skills
 
