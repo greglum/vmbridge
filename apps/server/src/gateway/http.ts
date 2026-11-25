@@ -86,10 +86,10 @@ export class T3Gateway {
       json({ error: "bridge_unavailable", message: message(error) }, 503),
     );
     if (!response) return undefined;
-    if (origin) {
-      response.headers.set("access-control-allow-origin", origin);
-      response.headers.set("vary", "Origin");
-    }
+    // T3's desktop app strips `Origin` from its requests but its renderer still checks the answer, so a request with no
+    // `Origin` gets the wildcard, as T3's own server sends. Nothing here is sent with cookies, so `*` is enough.
+    response.headers.set("access-control-allow-origin", origin ?? "*");
+    response.headers.set("vary", "Origin");
     // Assets keep the caching T3 gives them: their URLs are signed anew for each new copy.
     if (!response.headers.has("cache-control")) response.headers.set("cache-control", "no-store");
     if (!seen.clientId) {
