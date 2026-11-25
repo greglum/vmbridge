@@ -4,6 +4,7 @@ import { primaryVm } from "../store.ts";
 import type { Frame } from "../vm/backend.ts";
 import { heldAssetUrl, relayedAssetUrl } from "./attachments.ts";
 import type { Clones } from "./clones.ts";
+import type { FileTrees } from "./files.ts";
 import { isHeldCommand } from "./held.ts";
 import type { Hub } from "./hub.ts";
 import { projectForPath, projectRoot } from "./paths.ts";
@@ -98,6 +99,8 @@ export class Rpc {
     private readonly branches: RemoteBranches,
     private readonly traffic: Traffic,
     private readonly githubConnected: () => boolean,
+    /** Answers the composer's file search while a VM sleeps. Without it, that search fails as any read of a sleeping VM. */
+    private readonly files?: FileTrees,
   ) {
     this.local = {
       "server.probe": (call) => this.reply(call, {}),
@@ -844,6 +847,13 @@ export class Rpc {
     return payload.type === "provider-session.detach" && vmId !== null && !this.hub.fleet.backend(vmId);
   }
 
+  /** The composer's file search on a sleeping VM, from the files its repository has on GitHub. */
+  private async searchAsleep(payload: Wire, vmId: string) {
+    const cwd = str(payload.cwd);
+    const checkout = cwd ? this.hub.checkoutAt(cwd, vmId) : undefined;
+    return checkout && this.files?.search(checkout.project, checkout.branch, checkout.folder, payload);
+  }
+
   /** Routes a request to its VM, waking the VM only for requests that change something. */
   private async forward(call: Call) {
     const { tag, payload, client } = call;
@@ -874,6 +884,8 @@ export class Rpc {
     if (!mutating && !awake) {
       const cached = tag === "orchestration.getThreadProjection" ? this.hub.store.projection(String(payload.threadId), vmId) : null;
       if (cached) return this.reply(call, this.hub.out(cached, vmId));
+      const found = tag === "projects.searchEntries" ? await this.searchAsleep(payload, vmId) : undefined;
+      if (found) return this.reply(call, found);
       throw new Error("This VM is asleep. Sending a message wakes it.");
     }
 

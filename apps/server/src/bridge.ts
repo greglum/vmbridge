@@ -7,6 +7,7 @@ import type { Passwords } from "./auth/password.ts";
 import { type Encryption, openEncryption, type KeySource } from "./encryption.ts";
 import { Fleet } from "./fleet.ts";
 import { Clones } from "./gateway/clones.ts";
+import { FileTrees } from "./gateway/files.ts";
 import { T3Gateway } from "./gateway/http.ts";
 import { Hub } from "./gateway/hub.ts";
 import { RemoteBranches } from "./gateway/repos.ts";
@@ -67,7 +68,12 @@ export function openBridge(runtime: BridgeRuntime) {
   const clones = new Clones(hub);
   const branches = new RemoteBranches(() => secrets.get("github.token"), runtime.resolve);
   const clients = new Clients(db);
-  const rpc = new Rpc(hub, clones, branches, traffic, () => secrets.has("github.token"));
+  const files = new FileTrees(db, () => secrets.get("github.token"), branches);
+  // What a VM's agents pushed before it slept is what the "@" menu lists while it sleeps.
+  fleet.on("offline", (vmId) => {
+    if (store.vm(vmId)?.state === "sleeping") void files.refresh(store.projects().filter((project) => project.vms.some((entry) => entry.vmId === vmId)));
+  });
+  const rpc = new Rpc(hub, clones, branches, traffic, () => secrets.has("github.token"), files);
   const gateway = new T3Gateway(hub, rpc, clients);
   const auth = new DashboardAuth(db, secrets, runtime.passwords);
   const watch = new Watch({

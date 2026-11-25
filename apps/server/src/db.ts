@@ -276,6 +276,19 @@ export const migrations = [
     PRIMARY KEY (upload_id, seq)
   );
   `,
+  // Each project's files on GitHub at the refs searched while its VM slept (see gateway/files.ts), one path per line,
+  // split over rows to stay under Durable Object SQL's 2 MB value limit.
+  `
+  CREATE TABLE file_trees (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    ref TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    paths TEXT NOT NULL,
+    truncated INTEGER NOT NULL,
+    fetched_at INTEGER NOT NULL,
+    PRIMARY KEY (project_id, ref, seq)
+  );
+  `,
 ];
 
 /**
