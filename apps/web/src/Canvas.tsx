@@ -591,7 +591,7 @@ function CanvasMenu({
   );
 }
 
-/** With one provider, creates a VM there right away. With several, asks which provider and size first. */
+/** Asks for the size first, and the provider too when there are several. */
 function NewVm({ overview }: { overview: Overview }) {
   const create = useAction();
   const [picking, setPicking] = useState(false);
@@ -611,30 +611,32 @@ function NewVm({ overview }: { overview: Overview }) {
         className="bg-card"
         disabled={create.busy || Boolean(blocked)}
         title={blocked}
-        onClick={() => (overview.providers.length > 1 ? setPicking(!picking) : make({}))}
+        onClick={() => setPicking(!picking)}
       >
         <HugeiconsIcon icon={Add01Icon} data-icon="inline-start" strokeWidth={2} />
         New VM
       </Button>
       {picking && chosen && (
         <div className="flex w-64 flex-col gap-4 rounded-xl border bg-card p-3.5 shadow-sm">
-          <Field>
-            <FieldLabel htmlFor="new-vm-provider">Provider</FieldLabel>
-            <Select value={chosen.id} onValueChange={(value) => setProvider(value as ProviderId)}>
-              <SelectTrigger id="new-vm-provider" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {overview.providers.map((entry) => (
-                  <SelectItem key={entry.id} value={entry.id} disabled={entry.setup.state === "building"}>
-                    <ProviderLogo id={entry.id} className="size-4 rounded" />
-                    {entry.label}
-                    {entry.setup.state === "building" && <span className="text-muted-foreground">Setting up</span>}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
+          {overview.providers.length > 1 && (
+            <Field>
+              <FieldLabel htmlFor="new-vm-provider">Provider</FieldLabel>
+              <Select value={chosen.id} onValueChange={(value) => setProvider(value as ProviderId)}>
+                <SelectTrigger id="new-vm-provider" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {overview.providers.map((entry) => (
+                    <SelectItem key={entry.id} value={entry.id} disabled={entry.setup.state === "building"}>
+                      <ProviderLogo id={entry.id} className="size-4 rounded" />
+                      {entry.label}
+                      {entry.setup.state === "building" && <span className="text-muted-foreground">Setting up</span>}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          )}
           <Field>
             <FieldLabel htmlFor="new-vm-size">Size</FieldLabel>
             <Select value={size} onValueChange={(value) => setSize(value as VmSize)}>
