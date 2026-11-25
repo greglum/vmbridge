@@ -847,8 +847,7 @@ export class Rpc {
       throw new Error("Webhook automations need a directly reachable T3 server.");
     }
     if (tag === "orchestration.dispatchCommand" && heldCommandTypes.has(String(payload.type))) {
-      const sequence = this.hub.holdCommand(payload);
-      if (sequence !== null) return this.reply(call, { sequence });
+      return this.reply(call, { sequence: this.hub.holdCommand(payload) });
     }
     const mutating = scheduled || tag === "orchestration.launchThread" || tag === "orchestration.dispatchCommand" || mutation.test(tag);
     const launching = tag === "orchestration.launchThread" ? str(payload.threadId) : undefined;
