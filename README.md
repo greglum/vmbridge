@@ -53,7 +53,9 @@ To update, run `vmbridge update`. It downloads the latest release for this machi
 the release's `SHA256SUMS` (and its build attestation too, when the GitHub CLI is installed and signed
 in), replaces the installed file and restarts the background service, and devices reconnect on their
 own. `vmbridge update --check` only says whether there is a newer release. The dashboard shows when
-one is out. Running the install command again also updates.
+one is out. When VM Bridge runs as the background service, its **Update** button does the same as
+`vmbridge update` and reloads the page on the new version. Running the install command again also
+updates.
 
 Or run it on Cloudflare, with no machine of your own: see [Cloudflare Workers](#cloudflare-workers).
 
@@ -245,6 +247,10 @@ you add to it) is the only one. To change the password, change the secret under 
 
 There is no machine to read skills or `AGENTS.md` from, so upload skills and paste instructions under
 **Skills**. How it works, limits and costs: [docs/cloudflare.md](docs/cloudflare.md).
+
+The Worker deploys from your copy on GitHub, so it updates when that copy gets a new release. The
+dashboard shows when one is out, with the commands under **How to update**. See
+[Updating](docs/cloudflare.md#updating).
 
 ## Commands
 

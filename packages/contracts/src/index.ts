@@ -410,9 +410,22 @@ export interface BridgeSettings {
   agentFeedback: AgentFeedbackMode;
 }
 
+/** A newer VM Bridge release. Only the release binary and a Worker check, so it is null when run from source. */
+export interface BridgeUpdate {
+  version: string;
+  /**
+   * How to move to it. "dashboard": the dashboard installs it and restarts the background service. "command":
+   * `vmbridge update` in a terminal. "cloudflare": bring the release into the Worker's GitHub repository, which deploys it.
+   */
+  how: "dashboard" | "command" | "cloudflare";
+  /** The dashboard started installing it, and VM Bridge has not restarted yet. */
+  installing: boolean;
+  /** Why the last install from the dashboard failed. */
+  error: string | null;
+}
+
 export interface Overview {
-  /** `update` is a newer release `vmbridge update` installs. Only the release binary checks, so it is null from source. */
-  bridge: { id: string; version: string; startedAt: number; update: string | null };
+  bridge: { id: string; version: string; startedAt: number; update: BridgeUpdate | null };
   setup: Setup;
   /** Added providers, in the order they were added. */
   providers: ProviderInfo[];

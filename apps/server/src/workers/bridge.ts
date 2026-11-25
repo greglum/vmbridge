@@ -8,6 +8,7 @@ import { keyFromText, keyVariable } from "../encryption.ts";
 import { message } from "../fleet.ts";
 import type { Upgrade } from "../gateway/http.ts";
 import { bridgeJobs } from "../jobs.ts";
+import { releaseCheck } from "../release.ts";
 import { isWatchPath, type WatchUpgrade } from "../watch/watch.ts";
 import { workersFetchCompat } from "../providers/workers-fetch.ts";
 import { withSecurityHeaders } from "../security-headers.ts";
@@ -95,8 +96,11 @@ export class BridgeObject extends DurableObject<Env> {
       secrets.set(passwordSourceSecret, source);
     }
 
-    const admin = new Admin({ ...bridge, version: packageJson.version, startedAt: Date.now(), network: workerNetwork, passwordSource: `the Worker's ${passwordVariable} secret`, availableUpdate: () => null });
-    const jobs = new AlarmJobs(this.ctx.storage, bridgeJobs({ hub, fleet, stats, usage, budget, traffic, watch }));
+    // A Worker updates when its GitHub repository gets the new release, so the dashboard shows how instead of a button.
+    const release = releaseCheck(bridge.settings, packageJson.version);
+    const update = { available: release.available, how: "cloudflare" as const, install: null };
+    const admin = new Admin({ ...bridge, version: packageJson.version, startedAt: Date.now(), network: workerNetwork, passwordSource: `the Worker's ${passwordVariable} secret`, update });
+    const jobs = new AlarmJobs(this.ctx.storage, [...bridgeJobs({ hub, fleet, stats, usage, budget, traffic, watch }), release.job]);
     // A recreated Durable Object already knows its address; without this, links would read as off until the next alarm.
     await watch.refresh();
     void fleet.resume();

@@ -1,5 +1,8 @@
 // VM Bridge's own releases on GitHub: the dashboard's update notice and `vmbridge update` both read them.
 
+import type { Job } from "./jobs.ts";
+import type { Settings } from "./settings.ts";
+
 export const releaseRepo = "vkpdeveloper/vmbridge";
 
 /** Checked at most this often for the dashboard, since GitHub limits requests without a token to 60 an hour. */
@@ -42,4 +45,27 @@ export function checksumFor(sums: string, file: string): string | null {
     if (match?.[2] === file) return match[1]!.toLowerCase();
   }
   return null;
+}
+
+/**
+ * The dashboard's update notice: a job that asks GitHub for the latest release at most every releaseCheckMs and saves
+ * the answer, and the newer release it found, if any.
+ */
+export function releaseCheck(settings: Settings, current: string, fetcher: Fetcher = fetch) {
+  const job: Job = {
+    name: "release check",
+    everyMs: 60 * 60_000,
+    run: async () => {
+      const saved = settings.get("latestRelease");
+      if (saved && Date.now() - saved.checkedAt < releaseCheckMs) return;
+      // Offline or limited by GitHub: the next hourly run tries again.
+      const latest = await latestVersion(fetcher).catch(() => null);
+      if (latest) settings.set("latestRelease", { version: latest, checkedAt: Date.now() });
+    },
+  };
+  const available = () => {
+    const latest = settings.get("latestRelease")?.version;
+    return latest && isNewer(latest, current) ? latest : null;
+  };
+  return { job, available };
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { LiveMessage, Overview, TrafficEvent } from "@vmbridge/contracts";
 
 export class ApiError extends Error {
@@ -52,6 +52,14 @@ export function useLive() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [traffic, setTraffic] = useState<TrafficEvent[]>([]);
   const [online, setOnline] = useState(true);
+
+  // A new version of VM Bridge has a new dashboard, so the page reloads once one is running, as after an update.
+  const version = overview?.bridge.version;
+  const firstVersion = useRef(version);
+  useEffect(() => {
+    firstVersion.current ??= version;
+    if (version && version !== firstVersion.current) location.reload();
+  }, [version]);
 
   useEffect(() => {
     let cancelled = false;

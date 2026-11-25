@@ -27,7 +27,7 @@ import { networkInfo, wantedHosts } from "./bun/network.ts";
 import { Secrets, type Plaintext } from "./settings.ts";
 import type { Sql } from "./sql.ts";
 import { CloudflareTunnel, requestOrigin } from "./bun/tunnel.ts";
-import { isNewer, latestVersion, releaseCheckMs } from "./release.ts";
+import { releaseCheck } from "./release.ts";
 import { isWatchPath, type Viewer } from "./watch/watch.ts";
 
 /** A T3 client's RPC socket, or a relayed stream's: a watch page's or a preview tab's. */
@@ -80,6 +80,11 @@ export interface StartOptions {
   /** Listen on this one address instead of loopback, Tailscale and the local network switch. 0.0.0.0 is every network. */
   host?: string;
   port?: number;
+  /**
+   * Installs the latest release and restarts VM Bridge on it, for the dashboard's Update button. It rejects when the
+   * install fails; when it works, this process is stopped before it settles. Without it the dashboard shows the command.
+   */
+  installUpdate?: () => Promise<void>;
 }
 
 export async function start(options: StartOptions = {}) {
@@ -111,11 +116,14 @@ export async function start(options: StartOptions = {}) {
   let listeners: Listeners<Socket>;
   const served = () => ({ hosts: listeners.hosts(), port: listeners.port, fixed: host !== undefined, localNetwork: settings.get("localNetwork") });
   network = new BunNetwork({ served, applyAddresses: () => listeners.apply(), settings, secrets, tunnel: () => tunnel });
-  const availableUpdate = () => {
-    const latest = settings.get("latestRelease")?.version;
-    return latest && isNewer(latest, version) ? latest : null;
+  // Only the release binary checks (below): from source, `git pull` updates.
+  const release = releaseCheck(settings, version);
+  const update = {
+    available: release.available,
+    how: options.installUpdate ? ("dashboard" as const) : ("command" as const),
+    install: options.installUpdate ?? null,
   };
-  const admin = new Admin({ ...bridge, version, startedAt: Date.now(), network, passwordSource: null, availableUpdate });
+  const admin = new Admin({ ...bridge, version, startedAt: Date.now(), network, passwordSource: null, update });
   // A relayed stream's socket carries its viewer; any other is a T3 client's RPC socket, so the casts only drop the viewer case.
   const websocket: WebSocketHandler<Socket> = {
     maxPayloadLength: 16 * 1024 * 1024,
@@ -209,24 +217,12 @@ export async function start(options: StartOptions = {}) {
   };
   // Follows Tailscale coming up or changing address, and the local network appearing or changing.
   const addresses = { name: "addresses", everyMs: 5_000, run: () => listeners.apply() };
-  // The dashboard's update notice. Only the release binary checks: from source, `git pull` updates.
-  const releaseCheck = {
-    name: "release check",
-    everyMs: 60 * 60_000,
-    run: async () => {
-      const saved = settings.get("latestRelease");
-      if (saved && Date.now() - saved.checkedAt < releaseCheckMs) return;
-      // Offline or limited by GitHub: the next hourly run tries again.
-      const latest = await latestVersion().catch(() => null);
-      if (latest) settings.set("latestRelease", { version: latest, checkedAt: Date.now() });
-    },
-  };
-  if (compiled) void releaseCheck.run();
+  if (compiled) void release.job.run();
   const stopJobs = runJobs([
     ...bridgeJobs({ hub, fleet, stats, usage, budget, traffic, watch }),
     localSkills,
     ...(host ? [] : [addresses]),
-    ...(compiled ? [releaseCheck] : []),
+    ...(compiled ? [release.job] : []),
   ]);
   void fleet.resume();
   // Accounts saved by older versions lack the details the dashboard shows.

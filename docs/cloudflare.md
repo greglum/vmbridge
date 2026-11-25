@@ -20,6 +20,29 @@ within five minutes, and T3 reconnects on its own.
 If a secret is missing or too weak, every page shows "VM Bridge needs setup" and the API does
 nothing until you set it under the Worker's **Settings**, **Variables and Secrets**.
 
+## Updating
+
+Your Worker runs whatever is in your copy of the repository, so a new VM Bridge release reaches it
+only when you put the release there. The dashboard checks for releases every few hours and shows
+**VM Bridge X is available** with a **How to update** button, which gives these commands for that
+version (1.2.0 here):
+
+```sh
+git clone https://github.com/YOUR-NAME/YOUR-REPOSITORY.git vmbridge-worker
+cd vmbridge-worker
+git fetch --no-tags https://github.com/vkpdeveloper/vmbridge.git refs/tags/v1.2.0
+git read-tree -u --reset FETCH_HEAD
+git checkout HEAD -- wrangler.jsonc
+git commit -m "VM Bridge 1.2.0"
+git push
+```
+
+`read-tree` makes your copy's files match the release, including files the release removed, whether
+or not your copy shares this repository's history. `checkout` then keeps
+your own `wrangler.jsonc`, which holds the Worker name you chose when deploying. The push deploys the
+release, and the dashboard reloads on it within a few minutes. Your saved data stays in the Durable
+Object, so nothing has to be set up again.
+
 ## The secrets
 
 - `VMBRIDGE_PASSWORD`: the dashboard password, at least 12 characters. Changing the secret changes

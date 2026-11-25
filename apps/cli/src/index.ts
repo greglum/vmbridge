@@ -2,10 +2,10 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { dashboardKey, dataDir, defaultPort, start, version } from "@vmbridge/server";
+import { compiled, dashboardKey, dataDir, defaultPort, start, version } from "@vmbridge/server";
 import { pidFile, restartSignal, runningPid, stopProcess } from "./process.ts";
 import { logPath, protectLog, service, serviceAddresses } from "./service.ts";
-import { update } from "./update.ts";
+import { update, updateFromDashboard } from "./update.ts";
 
 const help = `VM Bridge ${version}
 
@@ -116,7 +116,10 @@ async function run(options: { host?: string; port: number }) {
     await stopProcess(existing, restartSignal, restartDeadlineMs + 5_000);
   }
   await ensureKey({ ask: false });
-  const server = await start(options);
+  // The dashboard installs updates only for the background service, which the update starts again. A terminal's VM
+  // Bridge would end with nothing to start it, so its dashboard shows `vmbridge update` instead.
+  const asService = compiled && (await service.pid()) === process.pid;
+  const server = await start({ ...options, ...(asService ? { installUpdate: updateFromDashboard } : {}) });
   mkdirSync(dataDir(), { recursive: true, mode: 0o700 });
   writeFileSync(pidFile(), String(process.pid));
   // A service installed by an older version left its log readable by everyone.
