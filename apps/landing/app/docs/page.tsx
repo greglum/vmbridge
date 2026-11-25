@@ -5,11 +5,12 @@ import Link from "next/link";
 import { Fragment } from "react";
 import { Footer, Nav } from "@/components/Chrome";
 import { ProviderLogo } from "@/components/brand";
-import { Command, CopyButton } from "@/components/CopyButton";
+import { Command, CopyButton, CopyPrompt } from "@/components/CopyButton";
 import { type DocsGroup, DocsNav } from "@/components/DocsNav";
 import { Topology } from "@/components/Topology";
 import { copy } from "@/lib/copy";
 import { commands, deployToCloudflare, github, install, providers } from "@/lib/data";
+import { agentPrompt } from "@/lib/prompt";
 import { openGraph, site } from "@/lib/site";
 import { cloudflareButton, innerPad, primaryButton, railShell, secondaryButton } from "@/lib/styles";
 
@@ -186,6 +187,7 @@ export default function Docs() {
                 {copy.docs.faq}
                 <HugeiconsIcon icon={ArrowRight01Icon} size={15} className="transition-transform duration-150 group-hover:translate-x-0.5" />
               </Link>
+              <CopyPrompt prompt={agentPrompt} />
               <a href={github} className={secondaryButton}>
                 <HugeiconsIcon icon={GithubIcon} size={15} />
                 {copy.nav.github}

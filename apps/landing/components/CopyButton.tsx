@@ -1,8 +1,10 @@
 "use client";
 
-import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { AiChat02Icon, Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Fragment, useState } from "react";
+import { copy } from "@/lib/copy";
+import { secondaryButton } from "@/lib/styles";
 import { UrlText } from "./TerminalWindow";
 
 /** A small icon button that copies text; the copy and tick icons cross-fade on swap. */
@@ -76,5 +78,28 @@ export function Command({ text, className = "" }: { text: string; className?: st
       </code>
       <CopyButton text={text} className="shrink-0" />
     </div>
+  );
+}
+
+/** A button that copies the setup prompt for a coding agent (lib/prompt.ts, passed in from a server component). */
+export function CopyPrompt({ prompt }: { prompt: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className={secondaryButton}
+      onClick={async () => {
+        await navigator.clipboard.writeText(prompt);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }}
+    >
+      <HugeiconsIcon icon={copied ? Tick02Icon : AiChat02Icon} size={15} className={copied ? "text-primary" : ""} />
+      {/* Both labels share one cell, so the button keeps its width when the label swaps. */}
+      <span className="grid text-left" aria-live="polite">
+        <span className={`col-start-1 row-start-1 ${copied ? "invisible" : ""}`}>{copy.agentPrompt.copy}</span>
+        <span className={`col-start-1 row-start-1 ${copied ? "" : "invisible"}`}>{copy.agentPrompt.copied}</span>
+      </span>
+    </button>
   );
 }
