@@ -26,6 +26,16 @@ const initialVms: Vm[] = [
 /** The ids cover every provider, so the fallback is never taken. */
 const providerOf = (id: ProviderId): Provider => providers.find((p) => p.id === id) ?? providers[0];
 
+/** The VMs on three different providers picked at random, so each visit shows others. */
+function withRandomProviders(vms: Vm[]): Vm[] {
+  const ids = providers.map((p) => p.id);
+  for (let i = ids.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+  }
+  return vms.map((vm, i) => ({ ...vm, providerId: ids[i] }));
+}
+
 type Point = readonly [number, number];
 
 /**
@@ -145,8 +155,12 @@ export const stateDot: Record<VmState, string> = {
   waking: "size-1.5 animate-pulse rounded-full bg-primary",
 };
 
-/** One project VM. Clicking sleeps an online VM and wakes an asleep one. */
-function VmNode({ vm, provider, narrow, onToggle }: { vm: Vm; provider: Provider; narrow: boolean; onToggle: () => void }) {
+/**
+ * One project VM. Clicking sleeps an online VM and wakes an asleep one. With JavaScript the provider stays hidden
+ * until `picked`, so the server's defaults never visibly swap for the random ones.
+ */
+function VmNode({ vm, provider, narrow, picked, onToggle }: { vm: Vm; provider: Provider; narrow: boolean; picked: boolean; onToggle: () => void }) {
+  const pick = `provider-pick ${picked ? "provider-picked" : ""}`;
   const asleep = vm.state === "asleep";
   return (
     <button
@@ -156,10 +170,10 @@ function VmNode({ vm, provider, narrow, onToggle }: { vm: Vm; provider: Provider
       className={`${narrow ? "w-full max-w-60" : "w-52"} rounded-md bg-muted p-3 text-left transition-colors duration-150 hover:bg-white/10`}
     >
       <div className="flex items-center gap-2.5">
-        <ProviderLogo provider={provider} className={`size-7 rounded-md ring-white/10 transition-opacity duration-200 ${asleep ? "opacity-50" : ""}`} />
+        <ProviderLogo provider={provider} className={`size-7 rounded-md ring-white/10 transition-opacity duration-200 ${pick} ${asleep ? "opacity-50" : ""}`} />
         <div className="min-w-0 flex-1 leading-tight">
           <div className={`truncate text-sm font-medium ${asleep ? "text-muted-foreground" : ""}`}>{vm.project}</div>
-          <div className="truncate font-mono text-[13px] text-faint">{provider.name}</div>
+          <div className={`truncate font-mono text-[13px] text-faint ${pick}`}>{provider.name}</div>
         </div>
         <div className="flex items-center gap-1.5 text-[13px] whitespace-nowrap text-muted-foreground">
           <span className={stateDot[vm.state]} />
@@ -178,11 +192,14 @@ interface LogRow {
   animate: boolean;
 }
 
-const seedRows: LogRow[] = [
-  { id: 0, project: "api-server", state: "online", detail: "boxd", animate: false },
-  { id: 1, project: "web-app", state: "asleep", detail: "Instabox: pause, memory kept", animate: false },
-  { id: 2, project: "docs", state: "online", detail: "Daytona", animate: false },
-];
+const sleepDetail = (provider: Provider) => `${provider.name}: ${provider.sleep.toLowerCase()}`;
+
+/** The log the diagram opens with: each VM's current state. */
+const seedRows = (vms: Vm[]): LogRow[] =>
+  vms.map((vm, id) => {
+    const provider = providerOf(vm.providerId);
+    return { id, project: vm.project, state: vm.state, detail: vm.state === "asleep" ? sleepDetail(provider) : provider.name, animate: false };
+  });
 
 /**
  * The wiring diagram row: devices to VM Bridge to the project VMs, with the event log beside it.
@@ -193,8 +210,16 @@ const seedRows: LogRow[] = [
  */
 export function Topology({ stacked = false, log = true, hero = false }: { stacked?: boolean; log?: boolean; hero?: boolean }) {
   const [vms, setVms] = useState(initialVms);
-  const [rows, setRows] = useState(seedRows);
-  const nextRow = useRef(seedRows.length);
+  const [rows, setRows] = useState(() => seedRows(initialVms));
+  const nextRow = useRef(initialVms.length);
+  // Picked after hydration, since the server render and the first client render must match.
+  const [picked, setPicked] = useState(false);
+  useEffect(() => {
+    const random = withRandomProviders(initialVms);
+    setVms(random);
+    setRows(seedRows(random));
+    setPicked(true);
+  }, []);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
 
@@ -232,7 +257,7 @@ export function Topology({ stacked = false, log = true, hero = false }: { stacke
     const setState = (state: VmState) => setVms((list) => list.map((v) => (v.id === id ? { ...v, state } : v)));
     if (vm.state === "online") {
       setState("asleep");
-      pushRow(vm.project, "asleep", `${provider.name}: ${provider.sleep.toLowerCase()}`);
+      pushRow(vm.project, "asleep", sleepDetail(provider));
       return;
     }
     setState("waking");
@@ -291,7 +316,7 @@ export function Topology({ stacked = false, log = true, hero = false }: { stacke
               className="absolute right-0 -translate-y-1/2"
               style={{ left: `${(layouts.narrow.cardX / layouts.narrow.w) * 100}%`, top: `${(layouts.narrow.vmY[vm.id] / layouts.narrow.h) * 100}%` }}
             >
-              <VmNode vm={vm} provider={providerOf(vm.providerId)} narrow onToggle={() => toggle(vm.id)} />
+              <VmNode vm={vm} provider={providerOf(vm.providerId)} narrow picked={picked} onToggle={() => toggle(vm.id)} />
             </div>
           ))}
         </div>
@@ -346,7 +371,7 @@ export function Topology({ stacked = false, log = true, hero = false }: { stacke
           </At>
           {vms.map((vm) => (
             <At key={vm.id} point={layouts.wide.vms[vm.id]} layout={layouts.wide}>
-              <VmNode vm={vm} provider={providerOf(vm.providerId)} narrow={false} onToggle={() => toggle(vm.id)} />
+              <VmNode vm={vm} provider={providerOf(vm.providerId)} narrow={false} picked={picked} onToggle={() => toggle(vm.id)} />
             </At>
           ))}
         </div>

@@ -272,6 +272,14 @@ html.lenis body {
   transition: stroke-opacity 500ms ease-out;
 }
 
+/* The diagram's VM cards pick random providers once JavaScript runs; see VmNode. */
+.js .provider-pick:not(.provider-picked) {
+  opacity: 0;
+}
+.js .provider-pick.provider-picked {
+  transition: opacity 300ms ease-out;
+}
+
 /* Fade to the element's natural opacity; paired with `backwards` fill so entrance
    delays hold the hidden state without pinning the final value after it ends. */
 @keyframes fade-in {
