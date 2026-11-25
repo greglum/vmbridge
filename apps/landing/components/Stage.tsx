@@ -22,7 +22,7 @@ export const steps: Step[] = [
     links: [false, false],
     paired: false,
     vm: "none",
-    log: () => ["$ vmbridge", "VM Bridge 1.1.5 is running.", "  This machine        http://127.0.0.1:3774/dashboard"],
+    log: () => ["$ vmbridge", "VM Bridge 1.1.6 is running.", "  This machine        http://127.0.0.1:3774/dashboard"],
   },
   {
     title: "Choose a provider",

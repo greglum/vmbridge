@@ -25,7 +25,12 @@ Website and docs: [vmbridge.ordinity.com](https://vmbridge.ordinity.com)
 - Attach images and files to a message in T3 Code, as on a local T3 server. VM Bridge hands them
   to the thread's VM.
 - Thread search and the pull requests list work across your VMs, without waking sleeping ones. The
-  @ file menu lists a sleeping VM's files from GitHub while the VM wakes.
+  @ file menu lists a sleeping VM's files while the VM wakes, untracked and unpushed ones included.
+- Threads on a sleeping VM open, scroll back and copy from their saved history without waking it.
+  A thread that does wake its VM says so, with how long a wake usually takes.
+- Set a monthly spending budget: VM Bridge warns at 80% and can pause new VMs and wakes at 100%.
+- The dashboard warns when a device keeps failing to connect, logs why, and can test each address
+  the way T3 Code connects.
 - Opening, renaming, settling, snoozing, pinning, archiving and deleting a thread show at once, and
   so do the model and access pickers. None of them waits for a sleeping VM: it gets them when it next
   wakes.
