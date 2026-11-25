@@ -147,6 +147,15 @@ function BridgeCard({ data }: NodeProps<BridgeNode>) {
           <div className="font-mono text-xs text-muted-foreground">v{overview.bridge.version}</div>
         </div>
       </div>
+      {overview.bridge.update && (
+        <div className="flex items-center gap-2 border-t py-1.5 pr-1.5 pl-3.5 text-[13px]">
+          <div className="min-w-0 flex-1">
+            <div>VM Bridge {overview.bridge.update} is available</div>
+            <code className="font-mono text-xs text-muted-foreground">vmbridge update</code>
+          </div>
+          <CopyButton value="vmbridge update" label="Copy command" />
+        </div>
+      )}
       {overview.providers.length === 0 && <div className="border-t px-3.5 py-2.5 text-[13px] text-muted-foreground">No provider yet</div>}
       <Handle type="source" position={stacked ? Position.Bottom : Position.Right} style={stacked ? stackedHandle : undefined} isConnectable={false} className={hidden} />
     </div>

@@ -411,7 +411,8 @@ export interface BridgeSettings {
 }
 
 export interface Overview {
-  bridge: { id: string; version: string; startedAt: number };
+  /** `update` is a newer release `vmbridge update` installs. Only the release binary checks, so it is null from source. */
+  bridge: { id: string; version: string; startedAt: number; update: string | null };
   setup: Setup;
   /** Added providers, in the order they were added. */
   providers: ProviderInfo[];
