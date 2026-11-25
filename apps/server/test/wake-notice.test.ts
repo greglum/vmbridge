@@ -21,7 +21,7 @@ function setup() {
   store.saveSnapshot("vm1", "shell", { threads: [row("t1"), row("t2")], archivedThreads: [], projects: [] } satisfies Shell);
   for (const id of ["t1", "t2"]) {
     store.setThreadVm(id, "vm1");
-    store.saveProjection(id, "vm1", null, { thread: { id }, turnItems: [], visibleTurnItems: [] });
+    store.saveProjection(id, "vm1", null, null, { thread: { id }, turnItems: [], visibleTurnItems: [] });
   }
   const fleet = Object.assign(new EventEmitter(), {
     backend: () => undefined as Backend | undefined,
