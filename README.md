@@ -43,7 +43,12 @@ curl -fsSL https://raw.githubusercontent.com/vkpdeveloper/vmbridge/main/install.
 ```
 
 This installs one `vmbridge` file in `~/.local/bin` (set `VMBRIDGE_INSTALL_DIR` to change it).
-Run the same command again to update.
+
+To update, run `vmbridge update`. It downloads the latest release for this machine, checks it against
+the release's `SHA256SUMS` (and its build attestation too, when the GitHub CLI is installed and signed
+in), replaces the installed file and restarts the background service, and devices reconnect on their
+own. `vmbridge update --check` only says whether there is a newer release. The dashboard shows when
+one is out. Running the install command again also updates.
 
 Or run it on Cloudflare, with no machine of your own: see [Cloudflare Workers](#cloudflare-workers).
 
@@ -241,10 +246,14 @@ There is no machine to read skills or `AGENTS.md` from, so upload skills and pas
 ```
 vmbridge [run] [--host <address>] [--port 3774]   Start in this terminal
 vmbridge stop                                     Stop, including the background service
+vmbridge update [--check]                         Install the latest release and restart
 vmbridge service install [--host] [--port]        Run in the background at login
 vmbridge service uninstall                        Remove the background service
 vmbridge password                                 Set a new dashboard password
 ```
+
+Starting VM Bridge while another one is running stops the old one first, so a restart never leaves
+old code serving.
 
 Your data lives in `~/.vmbridge`. Set `VMBRIDGE_HOME` to keep it somewhere else. On a machine with
 no terminal, set `VMBRIDGE_PASSWORD` for the first start, or run `vmbridge password`.

@@ -62,6 +62,8 @@ export interface AdminDeps {
   network: BridgeNetwork;
   /** Where the dashboard password is set instead of the dashboard, such as a Worker's secret. Null when it can be changed here. */
   passwordSource: string | null;
+  /** A newer VM Bridge release that `vmbridge update` installs, or null. */
+  availableUpdate: () => string | null;
   settings: Settings;
   secrets: Secrets;
   store: Store;
@@ -677,7 +679,7 @@ export class Admin {
         };
       });
     return {
-      bridge: { id: settings.get("bridgeId"), version: this.deps.version, startedAt: this.deps.startedAt },
+      bridge: { id: settings.get("bridgeId"), version: this.deps.version, startedAt: this.deps.startedAt, update: this.deps.availableUpdate() },
       setup: {
         provider: Boolean(defaultProvider),
         github: secrets.has("github.token"),

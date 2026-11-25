@@ -57,6 +57,8 @@ interface SettingValues {
   budget: { monthlyUsd: number | null; stopAtLimit: boolean };
   /** The start of the month T3 last got a budget notice in, so it gets one a month. */
   budgetNoticeMonth: number | null;
+  /** The latest VM Bridge release seen on GitHub, for the dashboard's update notice. Checked every few hours. */
+  latestRelease: { version: string; checkedAt: number } | null;
 }
 
 /** The dashboard password's hash. Older versions kept it unencrypted, as the `dashboardKeyHash` setting. */
@@ -95,6 +97,7 @@ const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
   workerOrigin: () => null,
   budget: () => ({ monthlyUsd: null, stopAtLimit: false }),
   budgetNoticeMonth: () => null,
+  latestRelease: () => null,
 };
 
 export class Settings {

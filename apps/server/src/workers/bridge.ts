@@ -95,7 +95,7 @@ export class BridgeObject extends DurableObject<Env> {
       secrets.set(passwordSourceSecret, source);
     }
 
-    const admin = new Admin({ ...bridge, version: packageJson.version, startedAt: Date.now(), network: workerNetwork, passwordSource: `the Worker's ${passwordVariable} secret` });
+    const admin = new Admin({ ...bridge, version: packageJson.version, startedAt: Date.now(), network: workerNetwork, passwordSource: `the Worker's ${passwordVariable} secret`, availableUpdate: () => null });
     const jobs = new AlarmJobs(this.ctx.storage, bridgeJobs({ hub, fleet, stats, usage, budget, traffic, watch }));
     // A recreated Durable Object already knows its address; without this, links would read as off until the next alarm.
     await watch.refresh();

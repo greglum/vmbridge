@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { childEnv, dataDir } from "@vmbridge/server";
+import { childEnv, compiled, dataDir } from "@vmbridge/server";
 
 const label = "dev.vmbridge";
 
@@ -20,7 +20,6 @@ interface ServiceOptions {
 
 /** The command that runs VM Bridge: the compiled binary itself, or Bun with this script in development. */
 function command(options: ServiceOptions) {
-  const compiled = Bun.main.startsWith("/$bunfs/") || Bun.main.startsWith("B:/~BUN/");
   return [process.execPath, ...(compiled ? [] : [Bun.main]), "run", ...(options.host ? ["--host", options.host] : []), "--port", String(options.port)];
 }
 
@@ -34,8 +33,8 @@ function environment() {
 
 async function exec(args: string[]) {
   const child = Bun.spawn(args, { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: childEnv() });
-  const [stderr, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
-  return { ok: code === 0, stderr: stderr.trim() };
+  const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  return { ok: code === 0, stdout, stderr: stderr.trim() };
 }
 
 async function must(args: string[]) {
@@ -104,6 +103,19 @@ ${env}
     return (await exec(["launchctl", "bootout", `${this.domain()}/${label}`])).ok;
   },
 
+  /** The running service's process, or null when it is not loaded or not running. */
+  async pid() {
+    if (!existsSync(this.plist())) return null;
+    const result = await exec(["launchctl", "print", `${this.domain()}/${label}`]);
+    const pid = Number(/^\s*pid = (\d+)$/m.exec(result.stdout)?.[1]);
+    return result.ok && pid > 0 ? pid : null;
+  },
+
+  /** Starts the loaded service again after it exited on its own, as it does for an update. */
+  async start() {
+    await must(["launchctl", "kickstart", `${this.domain()}/${label}`]);
+  },
+
   async uninstall() {
     await this.stop();
     rmSync(this.plist(), { force: true });
@@ -150,6 +162,17 @@ WantedBy=default.target
     return true;
   },
 
+  async pid() {
+    if (!existsSync(this.unit())) return null;
+    const result = await exec(["systemctl", "--user", "show", "--property", "MainPID", "--value", "vmbridge.service"]);
+    const pid = Number(result.stdout.trim());
+    return result.ok && pid > 0 ? pid : null;
+  },
+
+  async start() {
+    await must(["systemctl", "--user", "start", "vmbridge.service"]);
+  },
+
   async uninstall() {
     if (!existsSync(this.unit())) return;
     await exec(["systemctl", "--user", "disable", "--now", "vmbridge.service"]);
@@ -163,6 +186,8 @@ const unsupported = {
     throw new Error("Background services work on macOS and Linux.");
   },
   stop: async () => false,
+  pid: async (): Promise<number | null> => null,
+  start: async () => {},
   uninstall: async () => {},
 };
 

@@ -1,15 +1,18 @@
 #!/usr/bin/env bun
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { dashboardKey, dataDir, defaultPort, start, version } from "@vmbridge/server";
+import { pidFile, restartSignal, runningPid, stopProcess } from "./process.ts";
 import { logPath, protectLog, service } from "./service.ts";
+import { update } from "./update.ts";
 
 const help = `VM Bridge ${version}
 
 Usage:
   vmbridge [run] [--host <address>] [--port ${defaultPort}]   Start VM Bridge in this terminal
   vmbridge stop                                        Stop VM Bridge, including the background service
+  vmbridge update [--check]                            Install the latest release and restart VM Bridge
   vmbridge service install [--host] [--port]           Run VM Bridge in the background at login
   vmbridge service uninstall                           Remove the background service
   vmbridge password                                    Set a new dashboard password
@@ -19,23 +22,9 @@ or pass --host (or set VMBRIDGE_HOST) to listen on one address only: --host 0.0.
 The password can also come from VMBRIDGE_PASSWORD. Data lives in ${dataDir()}.
 Saved secrets are encrypted with the key in ${join(dataDir(), "encryption.key")}, or VMBRIDGE_ENCRYPTION_KEY (base64) when set.`;
 
-const pidFile = () => join(dataDir(), "vmbridge.pid");
-
-/**
- * Another live VM Bridge process from the pid file. A file naming this process
- * does not count: `bun --watch` restarts in place and keeps the pid, so `run` sees its own.
- */
-function runningPid(): number | null {
-  if (!existsSync(pidFile())) return null;
-  const pid = Number(readFileSync(pidFile(), "utf8"));
-  if (pid === process.pid) return null;
-  try {
-    process.kill(pid, 0);
-    return pid;
-  } catch {
-    return null;
-  }
-}
+/** How long a stop may take before VM Bridge exits anyway: a full stop puts idle VMs to sleep first, for up to 15 seconds. */
+const stopDeadlineMs = 30_000;
+const restartDeadlineMs = 10_000;
 
 /** Reads a line without echoing it. */
 async function readSecret(question: string): Promise<string> {
@@ -117,8 +106,12 @@ function serverOptions(values: { host?: string; port?: string }) {
 }
 
 async function run(options: { host?: string; port: number }) {
+  // The newest start wins, so an old VM Bridge that is slow to exit, or stuck, never keeps serving old code.
   const existing = runningPid();
-  if (existing) throw new Error(`VM Bridge is already running (process ${existing}). Stop it with \`vmbridge stop\`.`);
+  if (existing) {
+    console.log(`Stopping the VM Bridge already running (process ${existing}).`);
+    await stopProcess(existing, restartSignal, restartDeadlineMs + 5_000);
+  }
   await ensureKey({ ask: false });
   const server = await start(options);
   mkdirSync(dataDir(), { recursive: true, mode: 0o700 });
@@ -150,27 +143,29 @@ async function run(options: { host?: string; port: number }) {
   if (server.encryptionKey.created) keyNotice(server.encryptionKey.location);
 
   let stopping = false;
-  const stop = async () => {
-    if (stopping) return;
+  const stop = async (restarting: boolean) => {
+    // A second Ctrl+C, or a stop that runs past its deadline, ends the process without finishing.
+    if (stopping) process.exit(1);
     stopping = true;
-    await server.stop().catch(() => {});
+    setTimeout(() => {
+      console.error("VM Bridge took too long to stop, so it exited without finishing.");
+      process.exit(1);
+    }, restarting ? restartDeadlineMs : stopDeadlineMs).unref();
+    await server.stop({ restarting }).catch(() => {});
     if (!runningPid()) rmSync(pidFile(), { force: true });
     process.exit(0);
   };
-  process.on("SIGINT", stop);
-  process.on("SIGTERM", stop);
+  process.on("SIGINT", () => stop(false));
+  process.on("SIGTERM", () => stop(false));
   // Closing the terminal window. Without this, VM Bridge would end without stopping cloudflared.
-  process.on("SIGHUP", stop);
+  process.on("SIGHUP", () => stop(false));
+  process.on(restartSignal, () => stop(true));
 }
 
 async function stop() {
   const stoppedService = await service.stop();
   const pid = runningPid();
-  if (pid) {
-    process.kill(pid, "SIGTERM");
-    // Stopping puts idle VMs to sleep first, which takes up to 15 seconds.
-    for (let i = 0; i < 200 && runningPid(); i++) await Bun.sleep(100);
-  }
+  if (pid && !(await stopProcess(pid, "SIGTERM", stopDeadlineMs + 5_000))) console.log(`VM Bridge (process ${pid}) did not stop in time and was killed.`);
   if (!pid && !stoppedService) return console.log("VM Bridge is not running.");
   console.log("VM Bridge stopped.");
   if (stoppedService) console.log("The background service starts again at next login, or now with `vmbridge service install`.");
@@ -182,6 +177,7 @@ async function main() {
     options: {
       host: { type: "string" },
       port: { type: "string" },
+      check: { type: "boolean" },
       help: { type: "boolean", short: "h" },
       version: { type: "boolean", short: "v" },
     },
@@ -195,6 +191,8 @@ async function main() {
       return run(serverOptions(values));
     case "stop":
       return stop();
+    case "update":
+      return update({ check: values.check === true });
     case "password":
       return ensureKey({ force: true });
     case "service":

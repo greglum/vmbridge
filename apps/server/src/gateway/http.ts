@@ -419,14 +419,16 @@ export class T3Gateway {
     this.hub.fleet.emit("changed");
   }
 
-  close() {
+  /** Ends every connection as VM Bridge stops: 1012 (service restart) when another VM Bridge starts right after, 1001 (going away) otherwise. */
+  close(restarting = false) {
     clearInterval(this.expiry);
     clearTimeout(this.troubleCheck);
+    const [code, reason] = restarting ? [1012, "VM Bridge is restarting"] : [1001, "VM Bridge stopped"];
     // Written now: the sockets' close events may not run before the process ends.
     for (const socket of this.sockets) {
       this.clients.markConnected(socket.data.clientId, true);
-      socket.close(1001, "VM Bridge stopped");
+      socket.close(code, reason);
     }
-    for (const stream of this.streams) stream.end(1001, "VM Bridge stopped");
+    for (const stream of this.streams) stream.end(code, reason);
   }
 }

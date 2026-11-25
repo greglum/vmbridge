@@ -27,6 +27,7 @@ import { networkInfo, wantedHosts } from "./bun/network.ts";
 import { Secrets, type Plaintext } from "./settings.ts";
 import type { Sql } from "./sql.ts";
 import { CloudflareTunnel, requestOrigin } from "./bun/tunnel.ts";
+import { isNewer, latestVersion, releaseCheckMs } from "./release.ts";
 import { isWatchPath, type Viewer } from "./watch/watch.ts";
 
 /** A T3 client's RPC socket, or a relayed stream's: a watch page's or a preview tab's. */
@@ -37,6 +38,9 @@ export { childEnv } from "./bun/env.ts";
 export const defaultPort = 3774;
 export const dataDir = () => process.env.VMBRIDGE_HOME || join(homedir(), ".vmbridge");
 export const databasePath = (dir = dataDir()) => join(dir, "main.db");
+/** Running as the compiled release binary, not with Bun from source. Only the binary can update itself. */
+export const compiled = Bun.main.startsWith("/$bunfs/") || Bun.main.startsWith("B:/~BUN/");
+export { checksumFor, isNewer, latestVersion, releaseRepo } from "./release.ts";
 
 /**
  * Data saved before encryption existed is sealed, until `openEncryption` says that ran. Each table moves in one
@@ -107,7 +111,11 @@ export async function start(options: StartOptions = {}) {
   let listeners: Listeners<Socket>;
   const served = () => ({ hosts: listeners.hosts(), port: listeners.port, fixed: host !== undefined, localNetwork: settings.get("localNetwork") });
   network = new BunNetwork({ served, applyAddresses: () => listeners.apply(), settings, secrets, tunnel: () => tunnel });
-  const admin = new Admin({ ...bridge, version, startedAt: Date.now(), network, passwordSource: null });
+  const availableUpdate = () => {
+    const latest = settings.get("latestRelease")?.version;
+    return latest && isNewer(latest, version) ? latest : null;
+  };
+  const admin = new Admin({ ...bridge, version, startedAt: Date.now(), network, passwordSource: null, availableUpdate });
   // A relayed stream's socket carries its viewer; any other is a T3 client's RPC socket, so the casts only drop the viewer case.
   const websocket: WebSocketHandler<Socket> = {
     maxPayloadLength: 16 * 1024 * 1024,
@@ -125,6 +133,8 @@ export async function start(options: StartOptions = {}) {
     },
   };
 
+  /** Set once stopping starts. Requests then get a 503, so a client reconnecting at once does not land on this process. */
+  let stopping = false;
   /** `viaTunnel` marks the loopback listener only cloudflared forwards to, whose proxy headers can be trusted. */
   const serve = (hostname: string, port: number, viaTunnel: boolean) =>
     Bun.serve<Socket>({
@@ -140,6 +150,7 @@ export async function start(options: StartOptions = {}) {
         "/": new Response(null, { status: 302, headers: { location: "/dashboard" } }),
       },
       fetch(request, server) {
+        if (stopping) return new Response("VM Bridge is stopping", { status: 503, headers: { "retry-after": "1" } });
         const { pathname: path, search } = new URL(request.url);
         // A body without a length (chunked) could otherwise grow to the upload limit.
         const length = request.headers.get("content-length");
@@ -198,7 +209,25 @@ export async function start(options: StartOptions = {}) {
   };
   // Follows Tailscale coming up or changing address, and the local network appearing or changing.
   const addresses = { name: "addresses", everyMs: 5_000, run: () => listeners.apply() };
-  const stopJobs = runJobs([...bridgeJobs({ hub, fleet, stats, usage, budget, traffic, watch }), localSkills, ...(host ? [] : [addresses])]);
+  // The dashboard's update notice. Only the release binary checks: from source, `git pull` updates.
+  const releaseCheck = {
+    name: "release check",
+    everyMs: 60 * 60_000,
+    run: async () => {
+      const saved = settings.get("latestRelease");
+      if (saved && Date.now() - saved.checkedAt < releaseCheckMs) return;
+      // Offline or limited by GitHub: the next hourly run tries again.
+      const latest = await latestVersion().catch(() => null);
+      if (latest) settings.set("latestRelease", { version: latest, checkedAt: Date.now() });
+    },
+  };
+  if (compiled) void releaseCheck.run();
+  const stopJobs = runJobs([
+    ...bridgeJobs({ hub, fleet, stats, usage, budget, traffic, watch }),
+    localSkills,
+    ...(host ? [] : [addresses]),
+    ...(compiled ? [releaseCheck] : []),
+  ]);
   void fleet.resume();
   // Accounts saved by older versions lack the details the dashboard shows.
   const githubToken = secrets.get("github.token");
@@ -216,14 +245,18 @@ export async function start(options: StartOptions = {}) {
     network: () => networkInfo(served(), tunnel.info()),
     /** Waits a little for the Cloudflare Tunnel's address, so it can be printed with the others. */
     tunnelReady: () => tunnel.ready(20_000),
-    async stop() {
+    /**
+     * `restarting` means another VM Bridge starts as soon as this one exits (an update, or a new start taking over), so
+     * stopping is kept short: clients reconnect on their own within a second or two of that one listening.
+     */
+    async stop({ restarting = false } = {}) {
+      stopping = true;
       stopJobs();
-      gateway.close();
-      await tunnel.stop();
-      await listeners.stop();
-      await dashboard.stop();
+      gateway.close(restarting);
+      await Promise.all([tunnel.stop(), listeners.stop(), dashboard.stop()]);
       // Some providers have no idle timeout of their own: a VM left awake here would run until VM Bridge starts again.
-      await hub.sleepIdle(15_000);
+      // On a restart that is moments away, and the next one's idle sweep puts them to sleep as usual.
+      if (!restarting) await hub.sleepIdle(15_000);
       hub.close();
       fleet.close();
       usage.close();
