@@ -253,7 +253,8 @@ export function Logs({ overview, traffic }: { overview: Overview; traffic: Traff
                   )}
                 </span>
                 <span className={cn("flex min-w-0 items-center gap-2", failed ? "text-destructive" : "text-foreground")}>
-                  <span className="truncate">
+                  {/* Phones wrap instead of cutting off, so a failure's reason stays readable. */}
+                  <span className="min-w-0 break-words sm:truncate">
                     {last.operation}
                     {last.reason && `: ${last.reason}`}
                   </span>

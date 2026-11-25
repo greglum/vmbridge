@@ -289,6 +289,8 @@ export const migrations = [
     PRIMARY KEY (project_id, ref, seq)
   );
   `,
+  // When each device's RPC WebSocket was last open, so the dashboard can say how long one has been away.
+  `ALTER TABLE clients ADD COLUMN last_connected_at INTEGER;`,
 ];
 
 /**

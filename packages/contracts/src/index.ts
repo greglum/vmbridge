@@ -160,6 +160,8 @@ export interface ClientInfo {
   createdAt: number;
   expiresAt: number;
   lastSeenAt: number | null;
+  /** The last time its RPC WebSocket was open, to the minute. Null when it never connected. */
+  lastConnectedAt: number | null;
   connected: boolean;
 }
 
@@ -626,7 +628,7 @@ export interface TrafficEvent {
   vmId?: string;
   provider?: ProviderId;
   status?: "ok" | "error";
-  /** Why it failed. */
+  /** Why it failed, or why a device's connection ended. */
   reason?: string;
   durationMs?: number;
 }

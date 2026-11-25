@@ -384,11 +384,20 @@ export class Hub extends EventEmitter<HubEvents> {
       const backend = this.fleet.backend(vmId);
       const held = this.store.heldCommands(vmId).find((row) => !this.answered.has(row.id));
       if (!backend || !held) return;
+      let reason = "";
       const outcome = await backend.call<{ sequence?: number }>("orchestration.dispatchCommand", held.payload).then(
         (result) => result?.sequence ?? 0,
-        (error) => (error instanceof T3Rejected ? ("rejected" as const) : ("unanswered" as const)),
+        (error) => {
+          reason = message(error);
+          return error instanceof T3Rejected ? ("rejected" as const) : ("unanswered" as const);
+        },
       );
-      this.traffic.record({ kind: "system", operation: `replay ${String(held.payload.type)}`, vmId, status: typeof outcome === "number" ? "ok" : "error" });
+      const replayed = `replay ${String(held.payload.type)}`;
+      if (typeof outcome === "number") this.traffic.record({ kind: "system", operation: replayed, vmId, status: "ok" });
+      else {
+        const what = outcome === "rejected" ? "the VM refused it, so it was dropped" : "no answer from the VM, tried again later";
+        this.traffic.record({ kind: "system", operation: replayed, vmId, status: "error", reason: `${what}: ${reason}` });
+      }
       if (outcome === "unanswered") return;
       this.noteSetting(held.payload, outcome === "rejected");
       if (outcome === "rejected") this.store.dropHeldCommand(held.id);

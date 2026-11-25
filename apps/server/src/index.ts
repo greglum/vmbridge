@@ -119,9 +119,9 @@ export async function start(options: StartOptions = {}) {
       if ("viewer" in socket.data) socket.data.viewer.received(raw);
       else gateway.received(socket as ServerWebSocket<SocketData>, String(raw));
     },
-    close(socket) {
+    close(socket, code, reason) {
       if ("viewer" in socket.data) socket.data.viewer.closed();
-      else gateway.closed(socket as ServerWebSocket<SocketData>);
+      else gateway.closed(socket as ServerWebSocket<SocketData>, code, reason);
     },
   };
 

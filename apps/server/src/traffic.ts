@@ -7,8 +7,10 @@ type Listener = (event: TrafficEvent) => void;
 export const keptErrors = 200;
 /** How long a failure nothing has put right flags its VM or provider in the dashboard. */
 export const problemMs = 24 * 60 * 60_000;
-/** How often requests without a device session show up in the log, as one entry with their count. */
+/** How often requests without a device session show up in the log, as one entry per path and reason with their count. */
 export const refusedWindowMs = 10_000;
+/** Distinct paths and reasons per window. Anyone can send these, so the rest share one entry instead of flooding the log. */
+export const refusedGroups = 20;
 const keptRequests = 500;
 const keptEvents = 300;
 const operationLength = 200;
@@ -37,7 +39,7 @@ export class Traffic {
   private readonly listeners = new Set<Listener>();
   private readonly requests: TrafficEvent[] = [];
   private readonly events: TrafficEvent[] = [];
-  private refusedCount = 0;
+  private readonly refusedBatch = new Map<string, { path: string; reason: string; clientId?: string; count: number }>();
   private refusedTimer?: ReturnType<typeof setTimeout>;
 
   constructor(private readonly db?: Sql) {
@@ -75,17 +77,34 @@ export class Traffic {
   }
 
   /**
-   * A request without a device session. Anyone who can reach VM Bridge can send these, so they are only counted and
-   * logged, and pushed to the dashboard, as one entry per `refusedWindowMs`.
+   * A request refused before it had a device session. Anyone who can reach VM Bridge can send these, so they are only
+   * counted, and logged and pushed to the dashboard as one entry per path, reason and device each `refusedWindowMs`.
+   * `path` must hold no credential, and `clientId` is the device the refused credential belongs to, when known.
    */
-  refused(): void {
-    this.refusedCount++;
+  refused(refusal: { path: string; reason: string; clientId?: string }): void {
+    let key = `${refusal.clientId ?? ""} ${refusal.path} ${refusal.reason}`;
+    let group = this.refusedBatch.get(key);
+    if (!group && this.refusedBatch.size >= refusedGroups) {
+      key = "";
+      group = this.refusedBatch.get(key) ?? { path: "other paths", reason: "other reasons", count: 0 };
+    }
+    group ??= { ...refusal, count: 0 };
+    group.count++;
+    this.refusedBatch.set(key, group);
     if (this.refusedTimer) return;
     this.refusedTimer = setTimeout(() => {
-      const count = this.refusedCount;
-      this.refusedCount = 0;
       this.refusedTimer = undefined;
-      this.record({ kind: "http", operation: `Refused ${count} ${count === 1 ? "request" : "requests"} without a device session`, status: "error" });
+      const groups = [...this.refusedBatch.values()];
+      this.refusedBatch.clear();
+      for (const { path, reason, clientId, count } of groups) {
+        this.record({
+          kind: "http",
+          operation: `Refused ${count} ${count === 1 ? "request" : "requests"} to ${path}`,
+          reason,
+          ...(clientId ? { clientId } : {}),
+          status: "error",
+        });
+      }
     }, refusedWindowMs);
     this.refusedTimer.unref?.();
   }

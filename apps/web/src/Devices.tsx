@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { LaptopIcon, Link01Icon } from "@hugeicons/core-free-icons";
-import type { ClientInfo, CreatedPairing, Overview, PairingLink } from "@vmbridge/contracts";
+import type { ClientInfo, CreatedPairing, Overview, PairingLink, TrafficEvent } from "@vmbridge/contracts";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,11 +20,12 @@ import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui
 import { Input } from "@/components/ui/input";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item";
 import { useAction } from "@/hooks/use-action";
+import { failingReason, sinceText } from "@/lib/devices";
 import { ago, api, useTick } from "./api.ts";
 import { CopyButton } from "./CopyButton.tsx";
 import { Page, Section } from "./Page.tsx";
 
-export function Devices({ overview }: { overview: Overview }) {
+export function Devices({ overview, traffic }: { overview: Overview; traffic: TrafficEvent[] }) {
   const now = useTick(15_000);
   const [links, setLinks] = useState<PairingLink[]>([]);
   const manage = useAction();
@@ -52,7 +53,7 @@ export function Devices({ overview }: { overview: Overview }) {
         ) : (
           <ItemGroup className="gap-2">
             {overview.clients.map((client) => (
-              <Device key={client.id} client={client} now={now} busy={manage.busy} onRemove={() => void manage.run(() => api(`/clients/${client.id}`, { method: "DELETE" }))} />
+              <Device key={client.id} client={client} failing={failingReason(client.id, traffic, now)} now={now} busy={manage.busy} onRemove={() => void manage.run(() => api(`/clients/${client.id}`, { method: "DELETE" }))} />
             ))}
           </ItemGroup>
         )}
@@ -140,7 +141,7 @@ function Pair({ onCreated }: { onCreated: () => Promise<void> }) {
   );
 }
 
-function Device({ client, now, busy, onRemove }: { client: ClientInfo; now: number; busy: boolean; onRemove: () => void }) {
+function Device({ client, failing, now, busy, onRemove }: { client: ClientInfo; failing: string | null; now: number; busy: boolean; onRemove: () => void }) {
   return (
     <Item variant="outline">
       <ItemMedia variant="icon">
@@ -157,8 +158,11 @@ function Device({ client, now, busy, onRemove }: { client: ClientInfo; now: numb
           )}
         </ItemTitle>
         <ItemDescription>
-          Paired {ago(client.createdAt, now)}, last seen {ago(client.lastSeenAt, now)}
+          {client.connected
+            ? `Paired ${ago(client.createdAt, now)}`
+            : `${client.lastConnectedAt ? `Not connected since ${sinceText(client.lastConnectedAt, now)}` : "Never connected"}, paired ${ago(client.createdAt, now)}`}
         </ItemDescription>
+        {failing && <ItemDescription className="text-destructive">Its requests are failing: {failing}</ItemDescription>}
       </ItemContent>
       <ItemActions>
         <AlertDialog>
