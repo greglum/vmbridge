@@ -118,7 +118,7 @@ describe("waking a thread's VM before its message", () => {
   test("a wake past 80% of the budget tells the thread once a month", () => {
     const notices = ["VM Bridge: 85% of this month's $50.00 budget is used.", null];
     const { hub } = setup(undefined, { allowsEarlyWake: () => true, notice: () => notices.shift() ?? null, refusal: () => null });
-    hub.store.saveProjection("t1", "vm1", null, { thread: { id: "t1" }, turnItems: [], visibleTurnItems: [] });
+    hub.store.saveProjection("t1", "vm1", null, null, { thread: { id: "t1" }, turnItems: [], visibleTurnItems: [] });
     const message = () => {
       hub.fleet.emit("waking", "vm1", true);
       const item = hub.sleepingProjection("t1", "vm1")?.turnItems?.at(-1);

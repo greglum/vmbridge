@@ -137,7 +137,7 @@ describe("a sleeping VM's threads", () => {
 
   test("copy as the whole transcript, without the waking notice the thread shows", async () => {
     const { get, hub, close } = setup();
-    hub.beginWake("t1", "vm1");
+    hub.fleet.emit("waking", "vm1", true);
     const transcript = await get("/api/orchestration/threads/t1/transcript");
     expect(transcript.body).toMatchObject({ threadId: "t1", title: "Long thread", updatedAt: "2026-11-25T00:00:00.000Z" });
     expect(ids(transcript.body.items)).toHaveLength(1_200);
