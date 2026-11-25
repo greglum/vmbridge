@@ -17,6 +17,7 @@ import { Attachments, maxUploadBytes } from "./attachments.ts";
 import { applyHeldCommand, nextTurnCommandTypes } from "./held.ts";
 import { isPathKey, projectForPath, projectRoot, translate, vmForPath, within, type Environments } from "./paths.ts";
 import { repositoryIdentity } from "./repos.ts";
+import { threadStamp } from "./saved.ts";
 import {
   hasLiveWork,
   isWorking,
@@ -77,6 +78,9 @@ const unseenThreadWaitMs = 5_000;
 /** A VM with an automation sleeps like any other, and wakes this long before the automation runs. */
 const scheduleLeadMs = 2 * 60_000;
 
+/** Saving the threads a VM changed while VM Bridge was not looking, once it connects, runs in the background. */
+const connectSaveMs = 5 * 60_000;
+
 /** A stored attachment's ID (T3's `ATTACHMENT_ID_PATTERN`): its thread's segment, a UUID, and maybe an extension. */
 const attachmentSegment = /^([a-z0-9_]+(?:-[a-z0-9_]+)*)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:-[a-z0-9]{1,10})?$/i;
 
@@ -125,6 +129,8 @@ export class Hub extends EventEmitter<HubEvents> {
   /** Next-turn settings a VM refused, by thread and command type, until the thread's next message or a newer one accepted. */
   private readonly refusedSettings = new Map<string, Set<string>>();
   private readonly projectionRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
+  /** The most saving a VM's changed threads may add to putting it to sleep. What is not saved by then keeps its last copy. */
+  sleepSaveMs = 15_000;
   /** Fleet-wide agent updates T3 started, by agent instance. */
   private readonly agentUpdates = new Map<string, Wire>();
   /** VMs an agent update woke, so they go back to sleep after it, even when updates overlap. */
@@ -278,7 +284,8 @@ export class Hub extends EventEmitter<HubEvents> {
     if (updated) this.recordTurn(vmId, updated);
     else if (item.kind === "snapshot" && !enrichment) for (const thread of threadsOf(shell)) this.recordTurn(vmId, thread);
     if (updated) this.refreshProjectionSoon(vmId, updated.id);
-    if (item.kind === "snapshot" && !enrichment) void this.cacheMissingProjections(vmId);
+    const backend = this.fleet.backend(vmId);
+    if (item.kind === "snapshot" && !enrichment && backend) void this.saveThreads(vmId, backend, reported, connectSaveMs);
     const working = hasLiveWork(shell);
     if (working) this.fleet.touch(vmId);
     // Shown as soon as the VM reports it, rather than on the next idle sweep.
@@ -1185,39 +1192,79 @@ export class Hub extends EventEmitter<HubEvents> {
     return this.shells.get(vmId)?.snapshotSequence ?? 0;
   }
 
-  /** Saves a thread's projection, only from the VM holding the thread. */
-  cacheProjection(threadId: string, vmId: string, projection: unknown) {
+  /**
+   * Saves a thread's projection, only from the VM holding the thread. `stamp` is its shell row when the projection was
+   * read: by default the row VM Bridge has now, which a later change to the thread moves on and saves again.
+   */
+  cacheProjection(threadId: string, vmId: string, projection: unknown, stamp = this.stampOf(vmId, threadId)) {
     const value = projection as Projection | null;
     if (value?.thread?.id !== threadId || this.store.threadVm(threadId) !== vmId) return;
-    this.store.saveProjection(threadId, vmId, value.updatedAt ?? null, value);
+    this.store.saveProjection(threadId, vmId, value.updatedAt ?? null, stamp, value);
   }
 
+  private rowOf(vmId: string, threadId: string): Row | undefined {
+    return threadsOf(this.reported.get(vmId)).find((row) => row.id === threadId);
+  }
+
+  private stampOf(vmId: string, threadId: string) {
+    const row = this.rowOf(vmId, threadId);
+    return row ? threadStamp(row) : null;
+  }
+
+  /**
+   * Saves a thread's whole history. T3's `getThreadProjection` answers with only its newest turns, which would leave a
+   * long thread without the rest while its VM sleeps.
+   */
+  private async saveThread(backend: Backend, vmId: string, row: Row, signal?: AbortSignal) {
+    const stamp = threadStamp(row);
+    const { projection } = await backend.json<{ projection?: unknown }>(`/api/orchestration/threads/${encodeURIComponent(row.id)}`, { signal });
+    this.cacheProjection(row.id, vmId, projection, stamp);
+  }
+
+  /**
+   * Saves a thread again shortly after it changed, once no turn runs in it: a running turn changes it many times a
+   * second, and its VM only sleeps after the turn ends. A change during the save saves it again.
+   */
   refreshProjectionSoon(vmId: string, threadId: string) {
     if (this.projectionRefreshes.has(threadId)) return;
     const timer = setTimeout(() => {
       const backend = this.fleet.backend(vmId);
-      if (!backend) return void this.projectionRefreshes.delete(threadId);
-      void backend
-        .call("orchestration.getThreadProjection", { threadId })
-        .then((projection) => this.cacheProjection(threadId, vmId, projection))
+      const row = this.rowOf(vmId, threadId);
+      if (!backend || !row || isWorking(row)) return void this.projectionRefreshes.delete(threadId);
+      void this.saveThread(backend, vmId, row)
         .catch(() => {})
-        .finally(() => this.projectionRefreshes.delete(threadId));
+        .finally(() => {
+          this.projectionRefreshes.delete(threadId);
+          if (this.stampOf(vmId, threadId) !== threadStamp(row)) this.refreshProjectionSoon(vmId, threadId);
+        });
     }, 350);
     this.projectionRefreshes.set(threadId, timer);
   }
 
-  private async cacheMissingProjections(vmId: string) {
+  /**
+   * Saves each of a VM's threads with no copy yet, then each whose row changed since its copy, a few at a time. Returns
+   * within `budgetMs`, starting no save after it: a thread not saved by then, or whose save fails, keeps its last copy.
+   */
+  private async saveThreads(vmId: string, backend: Backend, shell: Shell, budgetMs: number) {
+    const stamps = this.store.projectionStamps(vmId);
+    const queue = threadsOf(shell)
+      .filter((row) => this.store.threadVm(row.id) === vmId && stamps.get(row.id) !== threadStamp(row))
+      .sort((a, b) => Number(stamps.has(a.id)) - Number(stamps.has(b.id)));
+    const deadline = Date.now() + budgetMs;
+    const next = async (): Promise<void> => {
+      const row = queue.shift();
+      if (!row || Date.now() >= deadline || this.fleet.backend(vmId) !== backend) return;
+      await this.saveThread(backend, vmId, row, AbortSignal.timeout(Math.max(deadline - Date.now(), 1))).catch(() => {});
+      return next();
+    };
+    await Promise.race([Promise.all([next(), next(), next()]), sleep(budgetMs)]);
+  }
+
+  /** Before a sleep the idle sweep did not decide on, such as one asked for on the dashboard: saves what changed. */
+  async saveBeforeSleep(vmId: string) {
     const backend = this.fleet.backend(vmId);
-    if (!backend) return;
-    for (const thread of threadsOf(this.shells.get(vmId))) {
-      if (this.fleet.backend(vmId) !== backend) return;
-      if (this.store.hasProjection(thread.id, vmId)) continue;
-      try {
-        this.cacheProjection(thread.id, vmId, await backend.call("orchestration.getThreadProjection", { threadId: thread.id }));
-      } catch {
-        // A later shell change retries it.
-      }
-    }
+    const shell = this.reported.get(vmId);
+    if (backend && shell) await this.saveThreads(vmId, backend, shell, this.sleepSaveMs);
   }
 
   // Idle sleep
@@ -1301,15 +1348,13 @@ export class Hub extends EventEmitter<HubEvents> {
     return true;
   }
 
-  /** Puts an idle VM to sleep, caching every transcript first so threads stay readable. */
+  /** Puts an idle VM to sleep, saving its changed threads first so they stay readable. */
   private async sleepVm(vmId: string, known?: Shell) {
     const shell = known ?? (await this.fleet.backend(vmId)?.json<Shell>("/api/orchestration/shell").catch(() => null));
     if (!shell || hasLiveWork(shell) || this.fleet.leased(vmId)) return;
     await this.fleet
       .sleep(vmId, async (live) => {
-        for (const thread of threadsOf(this.owned(vmId, shell))) {
-          this.cacheProjection(thread.id, vmId, await live.call("orchestration.getThreadProjection", { threadId: thread.id }));
-        }
+        await this.saveThreads(vmId, live, this.owned(vmId, shell), this.sleepSaveMs);
         // Its branches too, so the project's branch list and placement still know them while it sleeps.
         for (const project of this.store.projects()) {
           if (project.vms.some((entry) => entry.vmId === vmId)) await this.readBranches(live, project.id, vmId);

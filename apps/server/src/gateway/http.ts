@@ -7,6 +7,7 @@ import { assetPrefix, bridgeAssetUrl, heldOwner, relayedAsset, uploadPrefix } fr
 import { bridgeAuth, bridgeScopes, type Hub } from "./hub.ts";
 import { previewQuery, previewRelay, previewStreamPath } from "./preview.ts";
 import type { Rpc, RpcClient } from "./rpc.ts";
+import { historyPage, latestOrdinal } from "./saved.ts";
 import type { Projection, Wire } from "./types.ts";
 
 export interface SocketData {
@@ -354,21 +355,27 @@ export class T3Gateway {
     });
   }
 
-  /** Thread reads: from the VM when it is awake, from the cached transcript while it sleeps. */
+  /**
+   * Thread reads: from the VM when it is awake, from the saved copy of the thread while it sleeps. The copy is the
+   * whole history, so the bounded snapshot is all of it, and a history page is for a cursor the VM gave while awake.
+   */
   private async thread(threadId: string, view: string | undefined, url: URL) {
     const vmId = await this.hub.routeSoon({ threadId });
     const backend = this.hub.fleet.backend(vmId);
     if (!backend) {
-      const cached = this.hub.sleepingProjection(threadId, vmId);
+      // The copied transcript leaves out the waking notice, which is not part of the thread.
+      const cached = view === "transcript" ? this.hub.store.projection<Projection>(threadId, vmId) : this.hub.sleepingProjection(threadId, vmId);
       if (!cached) return json({ error: "vm_sleeping_no_snapshot" }, 503);
       const projection = this.hub.out(cached, vmId) as Projection;
       const snapshotSequence = this.hub.shellSequence(vmId);
       if (view === "transcript") {
         return json({ threadId, title: projection.thread?.title, updatedAt: projection.updatedAt, items: projection.visibleTurnItems ?? [] });
       }
-      if (view === "history") return json({ snapshotSequence, items: [], nextCursor: null, hasMoreHistory: false });
-      const ordinals = ((projection.runs ?? []) as Wire[]).map((run) => Number(run.ordinal) || 0);
-      return json({ projection, snapshotSequence, historyCursor: null, hasMoreHistory: false, latestLocalTurnOrdinal: Math.max(0, ...ordinals) });
+      if (view === "history") {
+        const page = historyPage(projection, url.searchParams, snapshotSequence);
+        return page ? json(page) : json({ error: "invalid_history_cursor" }, 400);
+      }
+      return json({ projection, snapshotSequence, historyCursor: null, hasMoreHistory: false, latestLocalTurnOrdinal: latestOrdinal(projection) });
     }
     // VM Bridge caches plain projections, so ask the VM for the uncompacted form.
     const query = new URLSearchParams(url.search);

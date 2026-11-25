@@ -111,6 +111,23 @@ export interface Turn {
 /** JSON caches of what each VM's T3 server last reported, kept so sleeping VMs still render. */
 type SnapshotKind = "shell" | "config" | "scheduled_tasks";
 
+/** Under Durable Object SQL's 2 MB value limit: a UTF-16 unit takes at most 3 bytes of UTF-8. */
+const projectionPartChars = 600_000;
+
+/** `text` in parts of at most `size` units, never cut between the halves of a surrogate pair, which would not survive storing. */
+function textParts(text: string, size: number): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(start + size, text.length);
+    const last = text.charCodeAt(end - 1);
+    if (end < text.length && last >= 0xd800 && last <= 0xdbff) end--;
+    parts.push(text.slice(start, end));
+    start = end;
+  }
+  return parts;
+}
+
 function assignments<T extends object>(fields: Record<string, string>, update: T) {
   const entries = Object.entries(update).filter(([key]) => key in fields);
   return {
@@ -337,22 +354,32 @@ export class Store {
   /** The cached projection of a thread, as the VM holding it reported it. */
   projection<T>(threadId: string, vmId: string): T | null {
     const row = this.db.one<{ data: string }>("SELECT data FROM projections WHERE thread_id = ? AND vm_id = ?", threadId, vmId);
-    return row ? (JSON.parse(row.data) as T) : null;
+    if (!row) return null;
+    const rest = this.db.all<{ data: string }>("SELECT data FROM projection_parts WHERE thread_id = ? ORDER BY seq", threadId);
+    return JSON.parse(row.data + rest.map((part) => part.data).join("")) as T;
   }
 
-  hasProjection(threadId: string, vmId: string) {
-    return this.db.one("SELECT 1 FROM projections WHERE thread_id = ? AND vm_id = ?", threadId, vmId) !== undefined;
+  /** The stamp each of a VM's saved threads was saved with, by thread. Null for a copy saved without one. */
+  projectionStamps(vmId: string): Map<string, string | null> {
+    const rows = this.db.all<{ threadId: string; stamp: string | null }>("SELECT thread_id AS threadId, stamp FROM projections WHERE vm_id = ?", vmId);
+    return new Map(rows.map((row) => [row.threadId, row.stamp]));
   }
 
   /** Keeps the newest projection: a late, older response never replaces a newer one from the same VM. */
-  saveProjection(threadId: string, vmId: string, updatedAt: string | null, data: unknown) {
-    this.db.run(
-      `INSERT INTO projections (thread_id, vm_id, updated_at, data) VALUES (?, ?, ?, ?)
-         ON CONFLICT (thread_id) DO UPDATE SET vm_id = excluded.vm_id, updated_at = excluded.updated_at, data = excluded.data
-         WHERE projections.vm_id != excluded.vm_id OR projections.updated_at IS NULL OR excluded.updated_at IS NULL
-           OR excluded.updated_at >= projections.updated_at`,
-      threadId, vmId, updatedAt, JSON.stringify(data),
-    );
+  saveProjection(threadId: string, vmId: string, updatedAt: string | null, stamp: string | null, data: unknown) {
+    const [first = "", ...rest] = textParts(JSON.stringify(data), projectionPartChars);
+    this.db.transaction(() => {
+      const saved = this.db.run(
+        `INSERT INTO projections (thread_id, vm_id, updated_at, stamp, data) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (thread_id) DO UPDATE SET vm_id = excluded.vm_id, updated_at = excluded.updated_at, stamp = excluded.stamp, data = excluded.data
+           WHERE projections.vm_id != excluded.vm_id OR projections.updated_at IS NULL OR excluded.updated_at IS NULL
+             OR excluded.updated_at >= projections.updated_at`,
+        threadId, vmId, updatedAt, stamp, first,
+      );
+      if (!saved) return;
+      this.db.run("DELETE FROM projection_parts WHERE thread_id = ?", threadId);
+      rest.forEach((part, index) => this.db.run("INSERT INTO projection_parts (thread_id, seq, data) VALUES (?, ?, ?)", threadId, index + 1, part));
+    });
   }
 
   clones<T>(): T[] {

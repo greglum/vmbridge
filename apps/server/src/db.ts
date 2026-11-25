@@ -291,6 +291,18 @@ export const migrations = [
   `,
   // When each device's RPC WebSocket was last open, so the dashboard can say how long one has been away.
   `ALTER TABLE clients ADD COLUMN last_connected_at INTEGER;`,
+  // A saved thread is now its whole history, which can pass Durable Object SQL's 2 MB value limit: `projections.data`
+  // holds its first part and `projection_parts` the rest, in order. `stamp` is the thread's shell row as it was when
+  // the copy was taken (see `threadStamp`), so a sleeping VM's changed threads can be told from unchanged ones.
+  `
+  ALTER TABLE projections ADD COLUMN stamp TEXT;
+  CREATE TABLE projection_parts (
+    thread_id TEXT NOT NULL REFERENCES projections(thread_id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    data TEXT NOT NULL,
+    PRIMARY KEY (thread_id, seq)
+  );
+  `,
 ];
 
 /**
