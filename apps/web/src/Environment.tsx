@@ -41,7 +41,7 @@ export function Environment({ overview }: { overview: Overview }) {
     const paste = parseEnvPaste(event.clipboardData.getData("text/plain"));
     if (!paste) return;
     // A single `X=y` pasted as a value is more likely the value itself, so the value field only takes clear lists.
-    if (field === "value" && (value !== "" || paste.badLines.length > 0 || paste.vars.size + paste.invalidNames.length < 2)) return;
+    if (field === "value" && (value !== "" || paste.badLines.length > 0 || paste.assignments < 2)) return;
     event.preventDefault();
     if (paste.invalidNames.length > 0) toast.warning(`Skipped ${paste.invalidNames.join(", ")}. Names use letters, digits and underscores, not starting with a digit.`);
     if (paste.badLines.length > 0) toast.warning(`Skipped ${paste.badLines.length === 1 ? "line" : "lines"} ${paste.badLines.join(", ")}: not NAME=value.`);

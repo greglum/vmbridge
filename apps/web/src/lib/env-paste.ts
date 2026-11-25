@@ -5,11 +5,14 @@ export interface EnvPaste {
   invalidNames: string[];
   /** 1-based numbers of lines that are not `NAME=value`. Only numbers: such a line may be a secret. */
   badLines: number[];
+  /** Lines read as `NAME=value`, counting repeated and invalid names. */
+  assignments: number;
 }
 
 const assignment = /^(?:export\s+)?([^\s=:]+)\s*(?:=|:(?=\s|$))(.*)$/;
 const validName = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const escapes: Record<string, string> = { n: "\n", r: "\r", t: "\t" };
+// As in dotenv. Any other escape, like `\d` in a regex, keeps its backslash.
+const escapes: Record<string, string> = { n: "\n", r: "\r", t: "\t", '"': '"', "\\": "\\" };
 
 /**
  * Reads pasted dotenv text: `NAME=value`, `export NAME=value`, `NAME: value`, quoted values and `#` comments.
@@ -17,8 +20,7 @@ const escapes: Record<string, string> = { n: "\n", r: "\r", t: "\t" };
  */
 export function parseEnvPaste(text: string): EnvPaste | null {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const paste: EnvPaste = { vars: new Map(), invalidNames: [], badLines: [] };
-  let assignments = 0;
+  const paste: EnvPaste = { vars: new Map(), invalidNames: [], badLines: [], assignments: 0 };
   for (let index = 0; index < lines.length; index++) {
     // Only the start is trimmed: a quoted value that runs on to the next line keeps its trailing spaces.
     const line = lines[index]!.trimStart();
@@ -28,9 +30,9 @@ export function parseEnvPaste(text: string): EnvPaste | null {
       paste.badLines.push(index + 1);
       continue;
     }
-    assignments++;
+    paste.assignments++;
     const [, name = "", rest = ""] = match;
-    const read = readValue(rest.trimStart(), lines, index);
+    const read = readValue(rest, lines, index);
     if (!read) {
       paste.badLines.push(index + 1);
       continue;
@@ -42,15 +44,17 @@ export function parseEnvPaste(text: string): EnvPaste | null {
     }
     paste.vars.set(name, read.value);
   }
-  return assignments > 0 ? paste : null;
+  return paste.assignments > 0 ? paste : null;
 }
 
-/** The value starting at `raw` on line `start`. A quoted one may run over later lines. Null when a quote never closes. */
-function readValue(raw: string, lines: string[], start: number) {
+/** The value after the `=` on line `start`. A quoted one may run over later lines. Null when a quote never closes. */
+function readValue(rest: string, lines: string[], start: number) {
+  const raw = rest.trimStart();
   const quote = raw[0];
   if (quote !== '"' && quote !== "'") {
     // A `#` after a space starts a comment, as in a shell. `URL=http://host/#top` keeps its `#`.
-    const value = raw.replace(/\s#.*$/, "").trim().replace(/;$/, "").trimEnd();
+    // Checked before trimming, so `A= # note` is empty rather than `# note`.
+    const value = rest.replace(/\s#.*$/, "").trim().replace(/;$/, "").trimEnd();
     return { value, lastLine: start };
   }
   let value = "";
@@ -66,7 +70,7 @@ function readValue(raw: string, lines: string[], start: number) {
       if (char === quote) return { value, lastLine: line };
       if (quote === '"' && char === "\\" && i + 1 < text.length) {
         const next = text[++i]!;
-        value += escapes[next] ?? next;
+        value += escapes[next] ?? `\\${next}`;
       } else value += char;
     }
   }
