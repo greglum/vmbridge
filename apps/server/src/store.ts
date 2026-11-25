@@ -374,6 +374,13 @@ export class Store {
     );
   }
 
+  /** How long the provider's latest wakes from sleep took, newest first. */
+  recentWakeMs(provider: ProviderId, limit = 5): number[] {
+    return this.db
+      .all<{ ms: number }>("SELECT duration_ms AS ms FROM vm_events WHERE provider = ? AND kind = 'wake' AND duration_ms IS NOT NULL ORDER BY at DESC, id DESC LIMIT ?", provider, limit)
+      .map((row) => row.ms);
+  }
+
   vmEvents(from: number, to: number): VmEvent[] {
     return this.db.all<VmEvent>(
       "SELECT at, vm_id AS vmId, provider, size, kind, duration_ms AS durationMs FROM vm_events WHERE at >= ? AND at < ? ORDER BY at, id",

@@ -293,6 +293,45 @@ describe("opening, renaming, pickers and deleting", () => {
     expect(shown(context.hub)?.interactionMode).toBe("default");
   });
 
+  test("a picker change the VM refused in the background fails the thread's next message, and only that one", async () => {
+    const context = setup();
+    const { dispatched, forwarded } = await connect(context);
+    await context.dispatch({ type: "thread.runtime-mode.set", threadId: "t1", runtimeMode: "full-access" });
+    dispatched[0]!.reject(new T3Rejected("orchestration.dispatchCommand", "vm1"));
+    await Bun.sleep(0);
+
+    await context.dispatch({ type: "message.dispatch", threadId: "t1", text: "Go" });
+    expect(context.sent.at(-1)?.exit?._tag).toBe("Failure");
+    expect(forwarded).toEqual([]);
+
+    await context.dispatch({ type: "message.dispatch", threadId: "t1", text: "Go" });
+    expect(context.sent.at(-1)?.exit?._tag).toBe("Success");
+    expect(forwarded.map((command) => command.type)).toEqual(["message.dispatch"]);
+  });
+
+  test("a newer change to the same picker that the VM accepts lifts an earlier refusal, but not one to another picker", async () => {
+    const context = setup();
+    const { dispatched, forwarded } = await connect(context);
+    await context.dispatch({ type: "thread.interaction-mode.set", threadId: "t1", interactionMode: "plan" });
+    dispatched[0]!.reject(new T3Rejected("orchestration.dispatchCommand", "vm1"));
+    await Bun.sleep(0);
+    await context.dispatch({ type: "thread.interaction-mode.set", threadId: "t1", interactionMode: "plan" });
+    dispatched[1]!.answer(11);
+    await Bun.sleep(0);
+    await context.dispatch({ type: "message.dispatch", threadId: "t1", text: "Go" });
+    expect(context.sent.at(-1)?.exit?._tag).toBe("Success");
+
+    await context.dispatch({ type: "thread.model-selection.set", threadId: "t1", modelSelection: { instanceId: "codex", model: "gpt-5.5" } });
+    dispatched[2]!.reject(new T3Rejected("orchestration.dispatchCommand", "vm1"));
+    await Bun.sleep(0);
+    await context.dispatch({ type: "thread.interaction-mode.set", threadId: "t1", interactionMode: "default" });
+    dispatched[3]!.answer(12);
+    await Bun.sleep(0);
+    await context.dispatch({ type: "message.dispatch", threadId: "t1", text: "Again" });
+    expect(context.sent.at(-1)?.exit?._tag).toBe("Failure");
+    expect(forwarded.map((command) => command.text)).toEqual(["Go"]);
+  });
+
   test("a delete the VM refuses brings the thread back", async () => {
     const context = setup();
     const { dispatched } = await connect(context);

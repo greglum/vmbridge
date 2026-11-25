@@ -57,7 +57,7 @@ export function dayStarts(from: number, to: number, timeZone: string): number[] 
   return starts;
 }
 
-function median(values: number[]): number | null {
+export function median(values: number[]): number | null {
   if (!values.length) return null;
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);

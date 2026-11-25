@@ -22,6 +22,10 @@ type FleetEvents = {
   awake: [vmId: string];
   /** A VM went to sleep, disconnected, or was removed. */
   offline: [vmId: string];
+  /** VM Bridge started waking a VM (`fromSleep`), or connecting again to one that kept running. `awake` or `wakeFailed` follows. */
+  waking: [vmId: string, fromSleep: boolean];
+  /** A wake or reconnect started with `waking` failed. */
+  wakeFailed: [vmId: string, reason: string];
   /** Anything the dashboard shows about the fleet changed. */
   changed: [];
 };
@@ -355,6 +359,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
     // Asleep (or never started) until now, so nothing runs there that restarting T3, or putting it back to sleep, could interrupt.
     const wasAsleep = (vm.lastSleptAt ?? 0) >= (vm.lastConnectedAt ?? 0);
     this.setState(vmId, "starting");
+    this.emit("waking", vmId, wasAsleep);
     const started = performance.now();
     const watch = stopwatch("wake", vmId);
     let box: Box | undefined;
@@ -410,6 +415,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
         if (box && wasAsleep) await this.sleepBox(vmId, this.driver(vm.provider), box).catch((sleepError) => this.failed("sleep VM", sleepError, { vmId, provider: vm.provider }));
         this.setState(vmId, "error", message(error));
       }
+      this.emit("wakeFailed", vmId, message(error));
       throw error;
     }
   }
