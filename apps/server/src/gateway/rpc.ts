@@ -69,6 +69,21 @@ const asleepEpoch = "vmbridge-asleep";
 const mutation = /\.(create|write|mutate|switch|remove|stop|forceStop|pull$|runStackedAction$|preparePullRequestThread$|publishRepository$)/i;
 const scheduleMutations = new Set(["scheduledTasks.upsert", "scheduledTasks.setEnabled", "scheduledTasks.delete", "scheduledTasks.runNow"]);
 
+interface Card {
+  /** T3's tagged error for the answer. VM Bridge sends it with `not_found`, and with `agent_stopped` when not `wakes`. */
+  error: string;
+  /** The card stays open after its run ends, so answering it wakes a sleeping VM. */
+  wakes: boolean;
+}
+
+/** Answers to cards an agent shows in its thread. See `Rpc.answerCard`. */
+const cards: Record<string, Card> = {
+  // T3 refuses an answer once the run that asked has ended.
+  "secrets.answerRequest": { error: "SecretRequestError", wakes: false },
+  // T3 keeps a feedback card answerable after its run ends and after a restart, from what the card recorded.
+  "agentFeedback.answerRequest": { error: "AgentFeedbackRequestError", wakes: true },
+};
+
 /**
  * T3's Effect RPC protocol, answered for a whole fleet. Requests VM Bridge can answer itself (the
  * merged shell, config, clone flow, sleeping transcripts) are handled here; the rest are routed to
@@ -181,8 +196,8 @@ export class Rpc {
         this.reply(call, null);
       },
       "assets.createUrl": (call) => this.assetUrl(call),
-      "secrets.answerRequest": (call) => this.answerSecret(call),
     };
+    for (const [tag, card] of Object.entries(cards)) this.local[tag] = (call) => this.answerCard(call, card);
   }
 
   async handle(client: RpcClient, frame: Frame) {
@@ -660,36 +675,58 @@ export class Rpc {
   }
 
   /**
-   * An answer to an agent's secret request, which goes only to the VM that holds the request's thread: only that VM's
-   * agent can have asked. The payload is sent as it came, without `forward`'s routing and path translation, which look
-   * at every key: secret field names are the agent's own, and one named like a path or an ID must not steer the answer
-   * to another VM or have its value rewritten. Nothing here records or repeats the values.
+   * The user's answer to a card an agent showed in its thread, which goes only to the VM that holds the thread: only
+   * that VM's agent can have asked. The payload is sent as it came, without `forward`'s routing and path translation,
+   * which look at every key: a secret's field names are the agent's own, and one named like a path or an ID must not
+   * steer the answer to another VM or have its value rewritten. Nothing here records or repeats the answer.
    *
-   * A sleeping VM is not woken. A VM only sleeps once its runs have ended, and T3 refuses an answer for an ended run
-   * with `agent_stopped`, so VM Bridge answers that itself.
+   * A sleeping VM is woken only for a card that outlives its run (see `cards`). Otherwise VM Bridge refuses the answer
+   * as T3 refuses one for an ended run: a VM only sleeps once its runs have ended.
    */
-  private answerSecret(call: Call) {
-    const vmId = this.hub.store.threadVm(String(call.payload.threadId));
-    if (!vmId) return call.client.send(tagged(call.id, { _tag: "SecretRequestError", reason: "not_found" }));
-    const backend = this.hub.fleet.backend(vmId);
-    if (!backend) {
-      const state = this.hub.store.vm(vmId)?.state;
-      if (state === "ready" || state === "busy") throw new Error("This thread's VM is reconnecting. Try again in a moment.");
-      return call.client.send(tagged(call.id, { _tag: "SecretRequestError", reason: "agent_stopped" }));
-    }
+  private async answerCard(call: Call, card: Card) {
     const { client } = call;
+    const vmId = this.hub.store.threadVm(String(call.payload.threadId));
+    const state = vmId ? this.hub.store.vm(vmId)?.state : undefined;
+    if (!vmId || !state || state === "gone") return client.send(tagged(call.id, { _tag: card.error, reason: "not_found" }));
+    let backend = this.hub.fleet.backend(vmId);
+    if (!backend && !card.wakes) {
+      if (state === "ready" || state === "busy") throw new Error("This thread's VM is reconnecting. Try again in a moment.");
+      return client.send(tagged(call.id, { _tag: card.error, reason: "agent_stopped" }));
+    }
+    // Held until T3 answers, so the VM does not go back to sleep in between.
+    const release = this.hub.fleet.lease(vmId);
+    try {
+      backend ??= await this.hub.fleet.ensure(vmId);
+    } catch (error) {
+      release();
+      throw error;
+    }
+    // Waking can take a minute. A device that left or was removed meanwhile gets nothing sent for it.
+    if (!client.open()) return release();
     const started = performance.now();
     let done = false;
-    const stop = backend.request(call.tag, call.payload, (frame) => {
-      client.send({ ...(this.hub.out(frame, vmId) as Wire), requestId: call.id });
-      if (frame._tag !== "Exit") return;
-      done = true;
-      client.cancels.delete(String(call.id));
-      const ok = (frame.exit as Wire | undefined)?._tag === "Success";
-      this.traffic.record({ kind: "rpc", operation: call.tag, clientId: client.clientId, vmId, status: ok ? "ok" : "error", durationMs: Math.round(performance.now() - started) });
-    });
+    let stop: () => void;
+    try {
+      stop = backend.request(call.tag, call.payload, (frame) => {
+        client.send({ ...(this.hub.out(frame, vmId) as Wire), requestId: call.id });
+        if (frame._tag !== "Exit") return;
+        done = true;
+        release();
+        client.cancels.delete(String(call.id));
+        const ok = (frame.exit as Wire | undefined)?._tag === "Success";
+        this.traffic.record({ kind: "rpc", operation: call.tag, clientId: client.clientId, vmId, status: ok ? "ok" : "error", durationMs: Math.round(performance.now() - started) });
+      });
+    } catch (error) {
+      release();
+      throw error;
+    }
     call.forwarded = true;
-    if (!done) client.cancels.set(String(call.id), stop);
+    if (!done) {
+      client.cancels.set(String(call.id), () => {
+        release();
+        stop();
+      });
+    }
   }
 
   /**
