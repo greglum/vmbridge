@@ -181,6 +181,7 @@ export class Rpc {
         this.reply(call, null);
       },
       "assets.createUrl": (call) => this.assetUrl(call),
+      "secrets.answerRequest": (call) => this.answerSecret(call),
     };
   }
 
@@ -656,6 +657,39 @@ export class Rpc {
     if (result?._tag !== "Success") return call.client.send({ ...(this.hub.out(exit, vmId) as Wire), requestId: call.id });
     const value = this.hub.out(result.value, vmId) as Wire;
     this.reply(call, { ...value, relativeUrl: relayedAssetUrl(vmId, value.relativeUrl) });
+  }
+
+  /**
+   * An answer to an agent's secret request, which goes only to the VM that holds the request's thread: only that VM's
+   * agent can have asked. The payload is sent as it came, without `forward`'s routing and path translation, which look
+   * at every key: secret field names are the agent's own, and one named like a path or an ID must not steer the answer
+   * to another VM or have its value rewritten. Nothing here records or repeats the values.
+   *
+   * A sleeping VM is not woken. A VM only sleeps once its runs have ended, and T3 refuses an answer for an ended run
+   * with `agent_stopped`, so VM Bridge answers that itself.
+   */
+  private answerSecret(call: Call) {
+    const vmId = this.hub.store.threadVm(String(call.payload.threadId));
+    if (!vmId) return call.client.send(tagged(call.id, { _tag: "SecretRequestError", reason: "not_found" }));
+    const backend = this.hub.fleet.backend(vmId);
+    if (!backend) {
+      const state = this.hub.store.vm(vmId)?.state;
+      if (state === "ready" || state === "busy") throw new Error("This thread's VM is reconnecting. Try again in a moment.");
+      return call.client.send(tagged(call.id, { _tag: "SecretRequestError", reason: "agent_stopped" }));
+    }
+    const { client } = call;
+    const started = performance.now();
+    let done = false;
+    const stop = backend.request(call.tag, call.payload, (frame) => {
+      client.send({ ...(this.hub.out(frame, vmId) as Wire), requestId: call.id });
+      if (frame._tag !== "Exit") return;
+      done = true;
+      client.cancels.delete(String(call.id));
+      const ok = (frame.exit as Wire | undefined)?._tag === "Success";
+      this.traffic.record({ kind: "rpc", operation: call.tag, clientId: client.clientId, vmId, status: ok ? "ok" : "error", durationMs: Math.round(performance.now() - started) });
+    });
+    call.forwarded = true;
+    if (!done) client.cancels.set(String(call.id), stop);
   }
 
   /**
