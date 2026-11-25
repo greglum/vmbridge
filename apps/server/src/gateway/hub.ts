@@ -101,7 +101,14 @@ function launchBranch(strategy: unknown): string | undefined {
  * VM that owns it. Caches what every VM last reported so sleeping VMs keep their threads visible.
  */
 export class Hub extends EventEmitter<HubEvents> {
-  private readonly shells: Map<string, Shell>;
+  /** Each VM's shell as it last reported it. */
+  private readonly reported: Map<string, Shell>;
+  /** `reported` with the thread commands each VM has not shown yet laid over it: what clients see. */
+  private readonly shells = new Map<string, Shell>();
+  /** Held commands a VM accepted, by command ID, with the sequence its shell shows them at. */
+  private readonly answered = new Map<string, number>();
+  /** VMs being sent their held commands, so each gets them one at a time and in order. */
+  private readonly replaying = new Set<string>();
   private readonly configs: Map<string, ServerConfig>;
   private readonly schedules: Map<string, ScheduledTasks>;
   private readonly setupProgress = new Map<string, Wire>();
@@ -133,7 +140,8 @@ export class Hub extends EventEmitter<HubEvents> {
     super();
     this.setMaxListeners(0);
     this.attachments = new Attachments(store.db);
-    this.shells = new Map([...store.snapshots<Shell>("shell")].map(([vmId, shell]) => [vmId, this.owned(vmId, shell)]));
+    this.reported = new Map([...store.snapshots<Shell>("shell")].map(([vmId, shell]) => [vmId, this.owned(vmId, shell)]));
+    for (const vmId of this.reported.keys()) this.overlay(vmId);
     this.configs = store.snapshots<ServerConfig>("config");
     const fallback = settings.get("fallbackConfig");
     if (fallback && !this.configs.size) this.configs.set(fallback.vmId, fallback.config);
@@ -228,9 +236,9 @@ export class Hub extends EventEmitter<HubEvents> {
   private applyShell(vmId: string, item: ShellItem) {
     // T3 follows its snapshot with one that only fills in repositories: its threads are always empty.
     const enrichment = item.kind === "snapshot" && Array.isArray(item.resolvedRepositoryIdentityRoots);
-    if (item.kind === "snapshot" && item.snapshot && !enrichment) this.shells.set(vmId, item.snapshot);
+    if (item.kind === "snapshot" && item.snapshot && !enrichment) this.reported.set(vmId, item.snapshot);
     else {
-      const shell = this.shells.get(vmId);
+      const shell = this.reported.get(vmId);
       if (!shell) return;
       const without = (rows: Row[] | undefined, id: string | undefined) => (rows ?? []).filter((row) => row.id !== id);
       if (enrichment) {
@@ -252,11 +260,11 @@ export class Hub extends EventEmitter<HubEvents> {
       } else return;
       if (typeof item.sequence === "number") shell.snapshotSequence = item.sequence;
     }
-    const shell = this.owned(vmId, this.shells.get(vmId)!);
-    this.shells.set(vmId, shell);
-    // Commands VM Bridge applied while the VM was away stay visible until the VM has replayed them.
-    for (const held of this.store.heldCommands(vmId)) applyHeldCommand(shell, held.payload, new Date(held.createdAt).toISOString());
-    this.store.saveSnapshot(vmId, "shell", shell);
+    const reported = this.owned(vmId, this.reported.get(vmId)!);
+    this.reported.set(vmId, reported);
+    this.store.saveSnapshot(vmId, "shell", reported);
+    this.dropShown(vmId);
+    const shell = this.overlay(vmId)!;
     const updated = item.kind === "thread.updated" && item.thread && this.store.threadVm(item.thread.id) === vmId ? item.thread : undefined;
     if (updated) this.recordTurn(vmId, updated);
     else if (item.kind === "snapshot" && !enrichment) for (const thread of threadsOf(shell)) this.recordTurn(vmId, thread);
@@ -315,6 +323,7 @@ export class Hub extends EventEmitter<HubEvents> {
    * stays until another VM connects: T3 clients need one, and without it VM Bridge would start a VM to read one.
    */
   private forget(vmId: string) {
+    this.reported.delete(vmId);
     this.shells.delete(vmId);
     const config = this.configs.get(vmId);
     if (config && this.configs.size === 1) this.settings.set("fallbackConfig", { vmId, config });
@@ -327,46 +336,81 @@ export class Hub extends EventEmitter<HubEvents> {
   }
 
   /**
-   * Applies a sidebar-only thread command (see `heldCommandTypes`) without its VM, when the VM is
-   * not connected. It is saved and replayed on the VM when it next connects. Returns the shell
-   * sequence to answer with, or null when the VM is connected and should apply it itself.
+   * Applies a sidebar-only thread command (see `heldCommandTypes`) to the merged shell at once and saves it for the
+   * thread's VM, which gets it in the background: now when it is connected, when it next connects otherwise.
+   * Returns the shell sequence to answer with.
    */
-  holdCommand(payload: Wire): number | null {
+  holdCommand(payload: Wire): number {
     const threadId = str(payload.threadId);
     const vmId = threadId ? this.store.threadVm(threadId) : null;
     const vm = vmId ? this.store.vm(vmId) : null;
     // No VM holds this thread any more (removed, or lost by the provider), so there is nothing left to change.
     if (!vm || vm.state === "gone") return this.sequence;
-    if (this.fleet.backend(vm.id)) return null;
-    const shell = this.shells.get(vm.id);
     const commandId = str(payload.commandId) ?? crypto.randomUUID();
-    const now = Date.now();
-    this.store.holdCommand(commandId, vm.id, this.into({ ...payload }, vm.id), now);
-    if (shell) {
-      applyHeldCommand(shell, payload, new Date(now).toISOString());
-      this.store.saveSnapshot(vm.id, "shell", shell);
-    }
+    this.store.holdCommand(commandId, vm.id, this.into({ ...payload }, vm.id), Date.now());
+    this.overlay(vm.id);
     this.bump();
     this.emit("shell");
+    void this.replayHeld(vm.id);
     return this.sequence;
   }
 
   /**
-   * Sends held commands to a VM that just connected. A command the VM rejects is dropped: its state wins.
-   * One that did not get an answer (the socket dropped, a timeout) stays, with those after it, for the next connect.
+   * Sends held commands to a connected VM, one at a time and in the order they were given. A command the VM rejects
+   * is dropped, so the thread shows the VM's own state again. One the VM accepted stays laid over its shell until
+   * the shell shows it, so the thread does not flicker back in between. One that did not get an answer (the socket
+   * dropped, a timeout) stays, with those after it, for the next try.
    */
   private async replayHeld(vmId: string) {
-    for (const held of this.store.heldCommands(vmId)) {
-      const backend = this.fleet.backend(vmId);
-      if (!backend) return;
-      const outcome = await backend.call("orchestration.dispatchCommand", held.payload).then(
-        () => "ok" as const,
-        (error) => (error instanceof T3Rejected ? ("rejected" as const) : ("unanswered" as const)),
-      );
-      this.traffic.record({ kind: "system", operation: `replay ${String(held.payload.type)}`, vmId, status: outcome === "ok" ? "ok" : "error" });
-      if (outcome === "unanswered") return;
-      this.store.dropHeldCommand(held.id);
+    if (this.replaying.has(vmId)) return;
+    this.replaying.add(vmId);
+    try {
+      while (true) {
+        const backend = this.fleet.backend(vmId);
+        const held = this.store.heldCommands(vmId).find((row) => !this.answered.has(row.id));
+        if (!backend || !held) return;
+        const outcome = await backend.call<{ sequence?: number }>("orchestration.dispatchCommand", held.payload).then(
+          (result) => result?.sequence ?? 0,
+          (error) => (error instanceof T3Rejected ? ("rejected" as const) : ("unanswered" as const)),
+        );
+        this.traffic.record({ kind: "system", operation: `replay ${String(held.payload.type)}`, vmId, status: typeof outcome === "number" ? "ok" : "error" });
+        if (outcome === "unanswered") return;
+        if (outcome === "rejected") this.store.dropHeldCommand(held.id);
+        else this.answered.set(held.id, outcome);
+        if (outcome === "rejected" || this.dropShown(vmId)) {
+          this.overlay(vmId);
+          this.bump();
+          this.emit("shell");
+        }
+      }
+    } finally {
+      this.replaying.delete(vmId);
     }
+  }
+
+  /** Drops the held commands a VM accepted once its shell has reached them. Returns whether it dropped any. */
+  private dropShown(vmId: string) {
+    const reached = this.reported.get(vmId)?.snapshotSequence ?? 0;
+    let dropped = false;
+    for (const held of this.store.heldCommands(vmId)) {
+      const sequence = this.answered.get(held.id);
+      if (sequence === undefined || sequence > reached) continue;
+      this.store.dropHeldCommand(held.id);
+      this.answered.delete(held.id);
+      dropped = true;
+    }
+    return dropped;
+  }
+
+  /** Lays a VM's held commands over what it last reported, into the shell clients see. */
+  private overlay(vmId: string) {
+    const reported = this.reported.get(vmId);
+    if (!reported) return undefined;
+    // A copy: applying a command replaces the thread lists and rows, and leaves the reported ones as they are.
+    const shell = { ...reported };
+    for (const held of this.store.heldCommands(vmId)) applyHeldCommand(shell, held.payload, new Date(held.createdAt).toISOString());
+    this.shells.set(vmId, shell);
+    return shell;
   }
 
   /** The merged shell: every registered project, then each VM's threads. */
@@ -1173,8 +1217,10 @@ export class Hub extends EventEmitter<HubEvents> {
         const latest = await live.json<Shell>("/api/orchestration/shell");
         if (hasLiveWork(latest)) return false;
         const own = this.owned(vmId, latest);
-        this.shells.set(vmId, own);
+        this.reported.set(vmId, own);
         this.store.saveSnapshot(vmId, "shell", own);
+        this.dropShown(vmId);
+        this.overlay(vmId);
         return true;
       })
       .catch(() => {});

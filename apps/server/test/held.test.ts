@@ -2,9 +2,10 @@ import { EventEmitter } from "node:events";
 import { describe, expect, test } from "bun:test";
 import { openDatabase } from "../src/bun/sqlite.ts";
 import type { Fleet } from "../src/fleet.ts";
+import { applyHeldCommand } from "../src/gateway/held.ts";
 import { Hub } from "../src/gateway/hub.ts";
 import { Rpc, type RpcClient } from "../src/gateway/rpc.ts";
-import type { ProviderEntry, ServerConfig, Shell } from "../src/gateway/types.ts";
+import type { ProviderEntry, ServerConfig, Shell, Wire } from "../src/gateway/types.ts";
 import { Settings } from "../src/settings.ts";
 import { Store } from "../src/store.ts";
 import type { Traffic } from "../src/traffic.ts";
@@ -30,21 +31,52 @@ function setup() {
   const client: RpcClient = { clientId: "c1", cancels: new Map(), send: (frame) => sent.push(frame as (typeof sent)[number]), open: () => true };
   const dispatch = (payload: object) =>
     rpc.handle(client, { _tag: "Request", id: sent.length, tag: "orchestration.dispatchCommand", payload: { commandId: crypto.randomUUID(), ...payload } });
-  return { store, fleet, hub, backends, sent, dispatch };
+  return { store, fleet, hub, backends, traffic, sent, dispatch, thread };
 }
+
+/**
+ * Connects vm1 with a T3 server whose dispatch answers wait for the test, and whose shell stream the test drives.
+ * Its first shell is `thread` at sequence 10.
+ */
+async function connect({ fleet, backends, thread }: ReturnType<typeof setup>) {
+  const dispatched: { payload: Wire; answer: (sequence: number) => void; reject: (error: Error) => void }[] = [];
+  let shellStream: (frame: unknown) => void = () => {};
+  const backend = {
+    call: (tag: string, payload: Wire) => {
+      if (tag === "server.getConfig") return Promise.resolve({ environment: { orchestrationProtocolVersion: 2 } });
+      if (tag !== "orchestration.dispatchCommand") return Promise.resolve(null);
+      return new Promise((resolve, reject) => dispatched.push({ payload, answer: (sequence) => resolve({ sequence }), reject }));
+    },
+    request: (tag: string, _payload: unknown, handler: (frame: unknown) => void) => {
+      if (tag === "orchestration.subscribeShell") shellStream = handler;
+      return () => {};
+    },
+  } as unknown as Backend;
+  backends.set("vm1", backend);
+  await fleet.onConnect("vm1", backend);
+  const push = (item: object) => shellStream({ _tag: "Chunk", values: [item] });
+  push({ kind: "snapshot", snapshot: { snapshotSequence: 10, projects: [], threads: [thread], archivedThreads: [] } });
+  fleet.emit("awake", "vm1");
+  /** The VM's shell showing its thread changed, at a sequence. */
+  const report = (sequence: number, change: Wire) => push({ kind: "thread.updated", sequence, location: "active", thread: { ...thread, ...change } });
+  return { dispatched, report };
+}
+
+const settledOverride = (hub: Hub) => hub.shell().threads?.find((row) => row.id === "t1")?.settledOverride;
 
 describe("thread commands while the VM is away", () => {
   test("settle succeeds without waking the VM, persists, and replays when the VM connects", async () => {
-    const { store, fleet, hub, backends, sent, dispatch } = setup();
+    const { store, fleet, hub, backends, traffic, sent, dispatch } = setup();
 
     await dispatch({ type: "thread.settle", threadId: "t1" });
     expect(sent.at(-1)?.exit?._tag).toBe("Success");
-    expect(hub.shell().threads?.[0]?.settledOverride).toBe("settled");
+    expect(settledOverride(hub)).toBe("settled");
     // Saved, so a restart still shows it settled.
-    expect(store.snapshot<Shell>("vm1", "shell")?.threads?.[0]?.settledOverride).toBe("settled");
+    const restarted = Object.assign(new EventEmitter(), { backend: () => undefined, touch: () => {} }) as unknown as Fleet;
+    expect(settledOverride(new Hub(store, new Settings(store.db), restarted, traffic, unmeasured))).toBe("settled");
 
     const replayed: unknown[] = [];
-    backends.set("vm1", { call: async (tag: string, payload: unknown) => replayed.push([tag, payload]) } as unknown as Backend);
+    backends.set("vm1", { call: async (tag: string, payload: unknown) => (replayed.push([tag, payload]), { sequence: 0 }) } as unknown as Backend);
     fleet.emit("awake", "vm1");
     await Bun.sleep(0);
     expect(replayed).toEqual([["orchestration.dispatchCommand", expect.objectContaining({ type: "thread.settle", threadId: "t1" })]]);
@@ -66,6 +98,19 @@ describe("thread commands while the VM is away", () => {
     expect(store.heldCommands("vm1")).toEqual([]);
   });
 
+  test("snooze shows at once without waking the VM, and reaches it when it connects", async () => {
+    const context = setup();
+    const snoozedUntil = new Date(Date.now() + 60 * 60_000).toISOString();
+    await context.dispatch({ type: "thread.snooze", threadId: "t1", snoozedUntil });
+    expect(context.sent.at(-1)?.exit?._tag).toBe("Success");
+    expect(context.hub.shell().threads?.[0]?.snoozedUntil).toBe(snoozedUntil);
+
+    const { dispatched } = await connect(context);
+    expect(dispatched.map((entry) => entry.payload)).toEqual([expect.objectContaining({ type: "thread.snooze", threadId: "t1", snoozedUntil })]);
+    // Shown until the VM's own shell shows it.
+    expect(context.hub.shell().threads?.[0]?.snoozedUntil).toBe(snoozedUntil);
+  });
+
   test("settle and archive succeed for a thread whose VM was removed", async () => {
     const { store, fleet, hub, sent, dispatch } = setup();
     store.deleteVm("vm1");
@@ -75,6 +120,75 @@ describe("thread commands while the VM is away", () => {
     await dispatch({ type: "thread.settle", threadId: "t1" });
     await dispatch({ type: "thread.archive", threadId: "unknown" });
     expect(sent.map((frame) => frame.exit?._tag)).toEqual(["Success", "Success"]);
+  });
+});
+
+describe("thread commands while the VM is awake", () => {
+  test("settle and snooze are answered and shown before the VM answers", async () => {
+    const context = setup();
+    const { dispatched } = await connect(context);
+
+    await context.dispatch({ type: "thread.settle", threadId: "t1" });
+    expect(context.sent.at(-1)?.exit?._tag).toBe("Success");
+    expect(settledOverride(context.hub)).toBe("settled");
+    expect(dispatched.map((entry) => entry.payload.type)).toEqual(["thread.settle"]);
+
+    await context.dispatch({ type: "thread.unsettle", threadId: "t1", reason: "user" });
+    const snoozedUntil = new Date(Date.now() + 60 * 60_000).toISOString();
+    await context.dispatch({ type: "thread.snooze", threadId: "t1", snoozedUntil });
+    expect(context.sent.map((frame) => frame.exit?._tag)).toEqual(["Success", "Success", "Success"]);
+    expect(context.hub.shell().threads?.[0]).toMatchObject({ settledOverride: "active", snoozedUntil });
+  });
+
+  test("the VM gets commands in order, and its echoes do not flip the thread back", async () => {
+    const context = setup();
+    const { dispatched, report } = await connect(context);
+    const seen: unknown[] = [];
+    context.hub.on("shell", () => seen.push(settledOverride(context.hub)));
+
+    await context.dispatch({ type: "thread.settle", threadId: "t1" });
+    await context.dispatch({ type: "thread.unsettle", threadId: "t1", reason: "user" });
+    // The unsettle waits for the VM to answer the settle.
+    expect(dispatched.map((entry) => entry.payload.type)).toEqual(["thread.settle"]);
+
+    dispatched[0]!.answer(11);
+    await Bun.sleep(0);
+    expect(dispatched.map((entry) => entry.payload.type)).toEqual(["thread.settle", "thread.unsettle"]);
+    report(11, { settledOverride: "settled", settledAt: "2026-11-25T00:00:00.000Z" });
+    dispatched[1]!.answer(12);
+    await Bun.sleep(0);
+    // Answered, but the VM's shell has not shown it yet.
+    expect(context.store.heldCommands("vm1")).toHaveLength(1);
+    report(12, { settledOverride: "active", unsettledAt: "2026-11-25T00:00:01.000Z" });
+
+    expect(seen).toEqual(["settled", "active", "active", "active"]);
+    expect(context.store.heldCommands("vm1")).toEqual([]);
+  });
+
+  test("a command the VM rejects leaves the thread as the VM has it", async () => {
+    const context = setup();
+    const { dispatched, report } = await connect(context);
+    report(11, { settledOverride: "active", unsettledAt: "2026-11-25T00:00:00.000Z" });
+
+    await context.dispatch({ type: "thread.settle", threadId: "t1" });
+    expect(settledOverride(context.hub)).toBe("settled");
+    dispatched[0]!.reject(new T3Rejected("orchestration.dispatchCommand", "vm1"));
+    await Bun.sleep(0);
+
+    expect(context.hub.shell().threads?.[0]).toMatchObject({ settledOverride: "active", unsettledAt: "2026-11-25T00:00:00.000Z" });
+    expect(context.store.heldCommands("vm1")).toEqual([]);
+  });
+});
+
+describe("applyHeldCommand", () => {
+  test("leaves a thread as it is where T3 would refuse the command", () => {
+    const thread = { id: "t1", archivedAt: null, snoozedUntil: null, updatedAt: "2026-11-21T00:00:00.000Z" };
+    const at = "2026-11-25T00:00:00.000Z";
+    const shell: Shell = { threads: [thread], archivedThreads: [{ ...thread, id: "t2", archivedAt: at }] };
+    applyHeldCommand(shell, { type: "thread.snooze", threadId: "t1", snoozedUntil: "2026-11-24T00:00:00.000Z" }, at);
+    applyHeldCommand(shell, { type: "thread.settle", threadId: "t2" }, at);
+    expect(shell.threads).toEqual([thread]);
+    expect(shell.archivedThreads?.[0]).toEqual({ ...thread, id: "t2", archivedAt: at });
   });
 });
 
