@@ -11,7 +11,7 @@ import { useAction } from "@/hooks/use-action";
 import { cn } from "@/lib/utils";
 import { api, useLive } from "./api.ts";
 import { AgentLogo, Logo, ProviderLogo } from "./brand.tsx";
-import { agentNames, AgentSection, githubTokenHint, githubTokenUrl, Providers, ProviderStatus } from "./Setup.tsx";
+import { agentNames, AgentSection, githubTokenHint, githubTokenUrl, Providers, ProviderStatus } from "./Accounts.tsx";
 
 const steps = [
   { id: "password", label: "Password", icon: SquareLock02Icon },
@@ -378,7 +378,7 @@ function AgentsStep({ overview, back, onNext }: { overview: Overview; back: Reac
   );
 }
 
-/** Saved through the same route as Setup's GitHub tab, which checks the token with GitHub before keeping it. */
+/** Saved through the same route as the GitHub tab in Accounts, which checks the token with GitHub before keeping it. */
 function GitHubStep({ account, back, onNext }: { account: GitHubAccount | null; back: ReactNode; onNext: () => void }) {
   const [token, setToken] = useState("");
   // The saved account shows at once, before the live overview catches up.
@@ -453,7 +453,7 @@ function GitHubStep({ account, back, onNext }: { account: GitHubAccount | null; 
               <HugeiconsIcon icon={LinkSquare02Icon} data-icon="inline-end" strokeWidth={1.75} />
             </a>
           </Button>
-          <p className="text-muted-foreground">VMs use it to clone, push and open pull requests. You can add it later in Setup.</p>
+          <p className="text-muted-foreground">VMs use it to clone, push and open pull requests. You can add it later in Accounts.</p>
         </>
       )}
     </StepFrame>

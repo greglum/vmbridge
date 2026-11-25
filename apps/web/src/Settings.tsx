@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { parseAsStringLiteral, useQueryState } from "nuqs";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "sonner";
-import { Add01Icon, Cancel01Icon, CommandLineIcon, ComputerIcon, Delete02Icon, GitBranchIcon, GithubIcon, GlobalIcon, Key01Icon, Tick02Icon, UnfoldMoreIcon } from "@hugeicons/core-free-icons";
-import { agentFeedbackModes, machineNameMaxLength, vmSizes, type AddressTest, type AgentFeedbackMode, type BridgeNetworkInfo, type BridgeSettings, type CloudflareInfo, type Overview, type ProviderId, type RepoRule, type VmSize } from "@vmbridge/contracts";
+import { Add01Icon, Cancel01Icon, CommandLineIcon, ComputerIcon, Delete02Icon, GitBranchIcon, GithubIcon, GlobalIcon, Key01Icon, LaptopIcon, Tick02Icon, UnfoldMoreIcon } from "@hugeicons/core-free-icons";
+import { agentFeedbackModes, machineNameMaxLength, vmSizes, type AddressTest, type AgentFeedbackMode, type BridgeNetworkInfo, type BridgeSettings, type CloudflareInfo, type Overview, type ProviderId, type RepoRule, type TrafficEvent, type VmSize } from "@vmbridge/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -19,26 +19,29 @@ import { cn } from "@/lib/utils";
 import { api } from "./api.ts";
 import { ProviderLogo } from "./brand.tsx";
 import { CopyButton } from "./CopyButton.tsx";
+import { Devices } from "./Devices.tsx";
 import { Environment } from "./Environment.tsx";
 import { Page, Section, type Tab } from "./Page.tsx";
 
-type SettingsTab = "vms" | "repos" | "env" | "addresses" | "password";
+export type SettingsTab = "vms" | "repos" | "env" | "devices" | "addresses" | "password";
 
 const tabs: Tab<SettingsTab>[] = [
   { id: "vms", label: "VMs", icon: ComputerIcon },
   { id: "repos", label: "Repositories", icon: GitBranchIcon },
   { id: "env", label: "Environment", icon: CommandLineIcon },
+  { id: "devices", label: "Devices", icon: LaptopIcon },
   { id: "addresses", label: "Addresses", icon: GlobalIcon },
   { id: "password", label: "Password", icon: Key01Icon },
 ];
 
-export function Settings({ overview, onLoggedOut }: { overview: Overview; onLoggedOut: () => void }) {
+export function Settings({ overview, traffic, onLoggedOut }: { overview: Overview; traffic: TrafficEvent[]; onLoggedOut: () => void }) {
   const [tab, setTab] = useQueryState("tab", parseAsStringLiteral(tabs.map((entry) => entry.id)).withDefault("vms"));
   return (
     <Page title="Settings" tabs={tabs} tab={tab} onTab={setTab}>
       {tab === "vms" && <VmSettings overview={overview} />}
       {tab === "repos" && <RepoRules overview={overview} />}
       {tab === "env" && <Environment overview={overview} />}
+      {tab === "devices" && <Devices overview={overview} traffic={traffic} />}
       {tab === "addresses" && <Addresses />}
       {tab === "password" && <Password source={overview.passwordSource} onLoggedOut={onLoggedOut} />}
     </Page>
