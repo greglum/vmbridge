@@ -1,11 +1,11 @@
 import { str, threadsOf, type Row, type Shell, type Wire } from "./types.ts";
 
 /**
- * Commands that only change how T3 files a thread. VM Bridge answers these itself and shows the result at once,
- * then sends them to the thread's VM in the background: now when it is awake, at its next connect when it is not.
- * A sleeping VM is not woken for them.
+ * Commands that only change how T3 shows or files a thread, or settings it reads at the thread's next turn. VM Bridge
+ * answers these itself and shows the result at once, then sends them to the thread's VM in the background: now when
+ * it is awake, at its next connect when it is not. A sleeping VM is not woken for them.
  */
-export const heldCommandTypes = new Set([
+const heldCommandTypes = new Set([
   "thread.settle",
   "thread.auto-settle",
   "thread.unsettle",
@@ -15,7 +15,28 @@ export const heldCommandTypes = new Set([
   "thread.unpin",
   "thread.archive",
   "thread.unarchive",
+  "thread.visit",
+  "thread.mark-unread",
+  "thread.runtime-mode.set",
+  "thread.interaction-mode.set",
+  "thread.model-selection.set",
 ]);
+
+/** Held settings a thread's next turn uses: a message sent after one is refused fails too, as it would have in T3. */
+export const nextTurnCommandTypes = new Set(["thread.runtime-mode.set", "thread.interaction-mode.set", "thread.model-selection.set"]);
+
+const renameFields = new Set(["type", "commandId", "threadId", "title"]);
+
+/**
+ * Whether VM Bridge holds a command (see `heldCommandTypes`). A metadata update is held only when it just renames the
+ * thread: the others can move its worktree or start work. A delete is held unless it is the conditional one T3 checks
+ * against the thread's messages, which VM Bridge cannot see.
+ */
+export function isHeldCommand(command: Wire) {
+  if (command.type === "thread.metadata.update") return typeof command.title === "string" && Object.keys(command).every((key) => renameFields.has(key));
+  if (command.type === "thread.delete") return command.onlyIfUnused !== true;
+  return heldCommandTypes.has(String(command.type));
+}
 
 /**
  * Mirrors T3's own reducer for these commands on a cached shell (`dispatchThreadMutation` in T3's
@@ -26,12 +47,24 @@ export function applyHeldCommand(shell: Shell, command: Wire, at: string) {
   const id = str(command.threadId);
   const thread = threadsOf(shell).find((row) => row.id === id);
   if (!thread) return;
+  if (command.type === "thread.delete") {
+    // T3 deletes the thread's side chats with it.
+    const deleted = (row: Row) => row.id === thread.id || isSideChatOf(row, thread.id);
+    shell.threads = (shell.threads ?? []).filter((row) => !deleted(row));
+    shell.archivedThreads = (shell.archivedThreads ?? []).filter((row) => !deleted(row));
+    return;
+  }
   const next = changed(thread, command, at);
   if (next === thread) return;
   shell.threads = (shell.threads ?? []).filter((row) => row.id !== id);
   shell.archivedThreads = (shell.archivedThreads ?? []).filter((row) => row.id !== id);
   const field = next.archivedAt ? "archivedThreads" : "threads";
   shell[field] = [...shell[field]!, next];
+}
+
+function isSideChatOf(row: Row, parentId: string) {
+  const lineage = row.lineage as Wire | undefined;
+  return lineage?.sideChat === true && lineage.parentThreadId === parentId;
 }
 
 /** Commands T3 refuses for an archived thread. */
@@ -129,6 +162,40 @@ function changed(thread: Row, command: Wire, at: string): Row {
       return thread.archivedAt ? thread : { ...thread, archivedAt: at, titleRegeneration: null, ...withoutWatches(thread), updatedAt: at };
     case "thread.unarchive":
       return thread.archivedAt ? { ...thread, archivedAt: null, updatedAt: at } : thread;
+    case "thread.visit": {
+      // T3 refuses a visit time it cannot read, and records a visit only when it moves the read mark forward. It also
+      // counts opens for search ranking, by its own clock; that shows once the VM reports it.
+      const visitedAt = Date.parse(String(command.visitedAt));
+      if (Number.isNaN(visitedAt)) return thread;
+      const last = thread.lastVisitedAt == null ? null : Date.parse(String(thread.lastVisitedAt));
+      if (last !== null && visitedAt <= last) return thread;
+      return { ...thread, lastVisitedAt: new Date(visitedAt).toISOString() };
+    }
+    case "thread.mark-unread": {
+      // T3 refuses a thread with no finished run, and marks it read up to just before that run finished.
+      if (thread.latestRunCompletedAt == null) return thread;
+      const lastVisitedAt = new Date(Date.parse(String(thread.latestRunCompletedAt)) - 1).toISOString();
+      // A snooze whose time passed ends here, before the read mark moves back.
+      const snoozeExpired = thread.snoozedUntil != null && Date.parse(String(thread.snoozedUntil)) <= Date.parse(at);
+      return { ...thread, lastVisitedAt, ...(snoozeExpired && { snoozedUntil: null, snoozedAt: null }) };
+    }
+    case "thread.metadata.update": {
+      // Held only as a rename. T3 trims the title and refuses an empty one.
+      const title = String(command.title).trim();
+      return title ? { ...thread, title, titleRegeneration: null, updatedAt: at } : thread;
+    }
+    case "thread.runtime-mode.set":
+      return { ...thread, runtimeMode: command.runtimeMode, updatedAt: at };
+    case "thread.interaction-mode.set":
+      return { ...thread, interactionMode: command.interactionMode, updatedAt: at };
+    case "thread.model-selection.set": {
+      const modelSelection = command.modelSelection as Wire | undefined;
+      const instanceId = str(modelSelection?.instanceId);
+      if (!modelSelection || !instanceId) return thread;
+      // T3 refuses to switch a running thread to another agent.
+      if (instanceId !== thread.providerInstanceId && thread.activeRunId != null) return thread;
+      return { ...thread, providerInstanceId: instanceId, modelSelection, updatedAt: at };
+    }
     default:
       return thread;
   }

@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, test } from "bun:test";
 import { openDatabase } from "../src/bun/sqlite.ts";
 import type { Fleet } from "../src/fleet.ts";
-import { applyHeldCommand } from "../src/gateway/held.ts";
+import { applyHeldCommand, isHeldCommand } from "../src/gateway/held.ts";
 import { Hub } from "../src/gateway/hub.ts";
 import { Rpc, type RpcClient } from "../src/gateway/rpc.ts";
 import type { ProviderEntry, ServerConfig, Shell, Wire } from "../src/gateway/types.ts";
@@ -18,12 +18,35 @@ const unmeasured = { get: () => null, lastDisk: () => null };
 function setup() {
   const store = new Store(openDatabase(":memory:"), testEncryption);
   store.insertVm({ id: "vm1", provider: "boxd", name: "vm1", size: "medium", state: "sleeping", createdAt: 0 });
-  const thread = { id: "t1", title: "Fix login", settledOverride: null, settledAt: null, unsettledAt: null, archivedAt: null, pinnedAt: null, updatedAt: "2026-11-21T00:00:00.000Z" };
+  const thread = {
+    id: "t1",
+    title: "Fix login",
+    settledOverride: null,
+    settledAt: null,
+    unsettledAt: null,
+    archivedAt: null,
+    pinnedAt: null,
+    lastVisitedAt: "2026-11-21T00:00:00.000Z",
+    latestRunCompletedAt: "2026-11-22T00:00:00.000Z",
+    activeRunId: null,
+    providerInstanceId: "claudeAgent",
+    modelSelection: { instanceId: "claudeAgent", model: "claude-sonnet-5-5" },
+    runtimeMode: "approval-required",
+    interactionMode: "default",
+    updatedAt: "2026-11-21T00:00:00.000Z",
+  };
   store.saveSnapshot("vm1", "shell", { threads: [thread], archivedThreads: [], projects: [] } satisfies Shell);
   store.setThreadVm("t1", "vm1");
 
   const backends = new Map<string, Backend>();
-  const fleet = Object.assign(new EventEmitter(), { backend: (id: string) => backends.get(id), touch: () => {} }) as unknown as Fleet;
+  /** VMs something asked to wake. */
+  const woken: string[] = [];
+  const fleet = Object.assign(new EventEmitter(), {
+    backend: (id: string) => backends.get(id),
+    touch: () => {},
+    lease: () => () => {},
+    ensure: async (id: string) => (woken.push(id), backends.get(id)),
+  }) as unknown as Fleet;
   const traffic = { record: () => {} } as unknown as Traffic;
   const hub = new Hub(store, new Settings(store.db), fleet, traffic, unmeasured);
   const rpc = new Rpc(hub, {} as never, {} as never, traffic, () => false);
@@ -31,7 +54,7 @@ function setup() {
   const client: RpcClient = { clientId: "c1", cancels: new Map(), send: (frame) => sent.push(frame as (typeof sent)[number]), open: () => true };
   const dispatch = (payload: object) =>
     rpc.handle(client, { _tag: "Request", id: sent.length, tag: "orchestration.dispatchCommand", payload: { commandId: crypto.randomUUID(), ...payload } });
-  return { store, fleet, hub, backends, traffic, sent, dispatch, thread };
+  return { store, fleet, hub, backends, traffic, sent, dispatch, thread, woken };
 }
 
 /**
@@ -40,6 +63,8 @@ function setup() {
  */
 async function connect({ fleet, backends, thread }: ReturnType<typeof setup>) {
   const dispatched: { payload: Wire; answer: (sequence: number) => void; reject: (error: Error) => void }[] = [];
+  /** Commands forwarded to the VM as they are, such as messages, answered at once. */
+  const forwarded: Wire[] = [];
   let shellStream: (frame: unknown) => void = () => {};
   const backend = {
     call: (tag: string, payload: Wire) => {
@@ -47,8 +72,12 @@ async function connect({ fleet, backends, thread }: ReturnType<typeof setup>) {
       if (tag !== "orchestration.dispatchCommand") return Promise.resolve(null);
       return new Promise((resolve, reject) => dispatched.push({ payload, answer: (sequence) => resolve({ sequence }), reject }));
     },
-    request: (tag: string, _payload: unknown, handler: (frame: unknown) => void) => {
+    request: (tag: string, payload: Wire, handler: (frame: unknown) => void) => {
       if (tag === "orchestration.subscribeShell") shellStream = handler;
+      if (tag === "orchestration.dispatchCommand") {
+        forwarded.push(payload);
+        handler({ _tag: "Exit", requestId: "1", exit: { _tag: "Success", value: { sequence: 20 } } });
+      }
       return () => {};
     },
   } as unknown as Backend;
@@ -59,7 +88,7 @@ async function connect({ fleet, backends, thread }: ReturnType<typeof setup>) {
   fleet.emit("awake", "vm1");
   /** The VM's shell showing its thread changed, at a sequence. */
   const report = (sequence: number, change: Wire) => push({ kind: "thread.updated", sequence, location: "active", thread: { ...thread, ...change } });
-  return { dispatched, report };
+  return { dispatched, forwarded, report, push };
 }
 
 const settledOverride = (hub: Hub) => hub.shell().threads?.find((row) => row.id === "t1")?.settledOverride;
@@ -180,6 +209,134 @@ describe("thread commands while the VM is awake", () => {
   });
 });
 
+/** Opening, renaming, the next-turn pickers and deleting, with what each shows on the thread (null: it is gone). */
+const instantCommands: [string, Wire, Wire | null][] = [
+  ["open", { type: "thread.visit", threadId: "t1", visitedAt: "2026-11-23T00:00:00.000Z", opened: true }, { lastVisitedAt: "2026-11-23T00:00:00.000Z" }],
+  ["mark unread", { type: "thread.mark-unread", threadId: "t1" }, { lastVisitedAt: "2026-11-21T23:59:59.999Z" }],
+  ["rename", { type: "thread.metadata.update", threadId: "t1", title: " Fix the login page " }, { title: "Fix the login page" }],
+  ["access", { type: "thread.runtime-mode.set", threadId: "t1", runtimeMode: "full-access" }, { runtimeMode: "full-access" }],
+  ["interaction mode", { type: "thread.interaction-mode.set", threadId: "t1", interactionMode: "plan" }, { interactionMode: "plan" }],
+  [
+    "model",
+    { type: "thread.model-selection.set", threadId: "t1", modelSelection: { instanceId: "codex", model: "gpt-5.5" } },
+    { providerInstanceId: "codex", modelSelection: { instanceId: "codex", model: "gpt-5.5" } },
+  ],
+  ["delete", { type: "thread.delete", threadId: "t1" }, null],
+];
+
+const shown = (hub: Hub) => hub.shell().threads?.find((row) => row.id === "t1") ?? null;
+
+describe("opening, renaming, pickers and deleting", () => {
+  test.each(instantCommands)("%s shows at once on a sleeping VM without waking it, and reaches it when it connects", async (_name, command, expected) => {
+    const context = setup();
+    await context.dispatch(command);
+    expect(context.sent.at(-1)?.exit?._tag).toBe("Success");
+    expect(context.woken).toEqual([]);
+    if (expected) expect(shown(context.hub)).toMatchObject(expected);
+    else expect(shown(context.hub)).toBeNull();
+
+    const { dispatched } = await connect(context);
+    expect(dispatched.map((entry) => entry.payload)).toEqual([expect.objectContaining(command)]);
+  });
+
+  test.each(instantCommands)("%s shows at once on an awake VM, before the VM answers", async (_name, command, expected) => {
+    const context = setup();
+    const { dispatched } = await connect(context);
+    await context.dispatch(command);
+    expect(context.sent.at(-1)?.exit?._tag).toBe("Success");
+    if (expected) expect(shown(context.hub)).toMatchObject(expected);
+    else expect(shown(context.hub)).toBeNull();
+    expect(dispatched.map((entry) => entry.payload)).toEqual([expect.objectContaining(command)]);
+  });
+
+  test("a message sent right after a picker change reaches the VM after it", async () => {
+    const context = setup();
+    const { dispatched, forwarded } = await connect(context);
+    await context.dispatch({ type: "thread.runtime-mode.set", threadId: "t1", runtimeMode: "full-access" });
+    const sending = context.dispatch({ type: "message.dispatch", threadId: "t1", text: "Go" });
+    await Bun.sleep(0);
+    // Held back until the VM has answered the change.
+    expect(forwarded).toEqual([]);
+
+    dispatched[0]!.answer(11);
+    await sending;
+    expect(forwarded.map((command) => command.type)).toEqual(["message.dispatch"]);
+  });
+
+  test("a message that wakes a sleeping VM reaches it after the picker change made while it slept", async () => {
+    const context = setup();
+    await context.dispatch({ type: "thread.model-selection.set", threadId: "t1", modelSelection: { instanceId: "codex", model: "gpt-5.5" } });
+    let vm: Awaited<ReturnType<typeof connect>> | undefined;
+    Object.assign(context.fleet, { ensure: async () => ((vm = await connect(context)), context.backends.get("vm1")) });
+    const sending = context.dispatch({ type: "message.dispatch", threadId: "t1", text: "Go" });
+    while (!vm?.dispatched.length) await Bun.sleep(0);
+    expect(vm.dispatched.map((entry) => entry.payload.type)).toEqual(["thread.model-selection.set"]);
+    expect(vm.forwarded).toEqual([]);
+
+    vm.dispatched[0]!.answer(11);
+    await sending;
+    expect(vm.forwarded.map((command) => command.type)).toEqual(["message.dispatch"]);
+  });
+
+  test("a message right after a picker change the VM refuses is not sent", async () => {
+    const context = setup();
+    const { dispatched, forwarded } = await connect(context);
+    await context.dispatch({ type: "thread.interaction-mode.set", threadId: "t1", interactionMode: "plan" });
+    const sending = context.dispatch({ type: "message.dispatch", threadId: "t1", text: "Go" });
+    await Bun.sleep(0);
+    dispatched[0]!.reject(new T3Rejected("orchestration.dispatchCommand", "vm1"));
+    await sending;
+
+    expect(forwarded).toEqual([]);
+    expect(context.sent.at(-1)?.exit?._tag).toBe("Failure");
+    expect(shown(context.hub)?.interactionMode).toBe("default");
+  });
+
+  test("a delete the VM refuses brings the thread back", async () => {
+    const context = setup();
+    const { dispatched } = await connect(context);
+    await context.dispatch({ type: "thread.delete", threadId: "t1" });
+    expect(shown(context.hub)).toBeNull();
+
+    dispatched[0]!.reject(new T3Rejected("orchestration.dispatchCommand", "vm1"));
+    await Bun.sleep(0);
+    expect(shown(context.hub)).toMatchObject({ id: "t1", title: "Fix login" });
+    expect(context.store.heldCommands("vm1")).toEqual([]);
+  });
+
+  test("deleting on a sleeping VM, with the session detach T3 clients send first, does not wake it", async () => {
+    const context = setup();
+    const detach = { type: "provider-session.detach", threadId: "t1", providerSessionId: "s1", reason: "client-requested" };
+    await context.dispatch(detach);
+    await context.dispatch({ type: "thread.delete", threadId: "t1" });
+    expect(context.sent.map((frame) => frame.exit?._tag)).toEqual(["Success", "Success"]);
+    expect(context.woken).toEqual([]);
+
+    const { dispatched, forwarded } = await connect(context);
+    dispatched[0]!.answer(11);
+    await Bun.sleep(0);
+    expect(dispatched.map((entry) => entry.payload.type)).toEqual(["provider-session.detach", "thread.delete"]);
+    dispatched[1]!.answer(12);
+
+    // A connected VM gets a detach as it is.
+    await context.dispatch(detach);
+    expect(forwarded.map((command) => command.type)).toEqual(["provider-session.detach"]);
+  });
+
+  test("a delete the VM accepts stays hidden through its echo, and keeps VM Bridge's records as a delete does today", async () => {
+    const context = setup();
+    const { dispatched, push } = await connect(context);
+    await context.dispatch({ type: "thread.delete", threadId: "t1" });
+    dispatched[0]!.answer(11);
+    await Bun.sleep(0);
+    expect(shown(context.hub)).toBeNull();
+    push({ kind: "thread.removed", sequence: 11, location: "active", threadId: "t1" });
+    expect(shown(context.hub)).toBeNull();
+    expect(context.store.heldCommands("vm1")).toEqual([]);
+    expect(context.store.threadVm("t1")).toBe("vm1");
+  });
+});
+
 describe("applyHeldCommand", () => {
   test("leaves a thread as it is where T3 would refuse the command", () => {
     const thread = { id: "t1", archivedAt: null, snoozedUntil: null, updatedAt: "2026-11-21T00:00:00.000Z" };
@@ -189,6 +346,44 @@ describe("applyHeldCommand", () => {
     applyHeldCommand(shell, { type: "thread.settle", threadId: "t2" }, at);
     expect(shell.threads).toEqual([thread]);
     expect(shell.archivedThreads?.[0]).toEqual({ ...thread, id: "t2", archivedAt: at });
+  });
+
+  test("leaves a thread as it is for the new commands T3 refuses or ignores", () => {
+    const thread = {
+      id: "t1",
+      title: "Fix login",
+      lastVisitedAt: "2026-11-24T00:00:00.000Z",
+      latestRunCompletedAt: null,
+      activeRunId: "run1",
+      providerInstanceId: "claudeAgent",
+      updatedAt: "2026-11-21T00:00:00.000Z",
+    };
+    const shell: Shell = { threads: [thread], archivedThreads: [] };
+    const at = "2026-11-25T00:00:00.000Z";
+    // An older visit, a mark unread with no finished run, an empty title, and a running thread moved to another agent.
+    applyHeldCommand(shell, { type: "thread.visit", threadId: "t1", visitedAt: "2026-11-23T00:00:00.000Z" }, at);
+    applyHeldCommand(shell, { type: "thread.mark-unread", threadId: "t1" }, at);
+    applyHeldCommand(shell, { type: "thread.metadata.update", threadId: "t1", title: "  " }, at);
+    applyHeldCommand(shell, { type: "thread.model-selection.set", threadId: "t1", modelSelection: { instanceId: "codex", model: "gpt-5.5" } }, at);
+    expect(shell.threads).toEqual([thread]);
+  });
+
+  test("a delete takes the thread's side chats with it", () => {
+    const lineage = { parentThreadId: "t1", relationshipToParent: "fork", rootThreadId: "t1", sideChat: true };
+    const shell: Shell = { threads: [{ id: "t1" }, { id: "side", lineage }, { id: "fork", lineage: { ...lineage, sideChat: false } }], archivedThreads: [] };
+    applyHeldCommand(shell, { type: "thread.delete", threadId: "t1" }, "2026-11-25T00:00:00.000Z");
+    expect(shell.threads?.map((row) => row.id)).toEqual(["fork"]);
+  });
+});
+
+describe("isHeldCommand", () => {
+  test("holds a rename and a plain delete, not metadata updates that do more or a delete T3 checks for use", () => {
+    expect(isHeldCommand({ type: "thread.metadata.update", commandId: "c", threadId: "t1", title: "New" })).toBe(true);
+    expect(isHeldCommand({ type: "thread.metadata.update", commandId: "c", threadId: "t1", title: "New", branch: "main" })).toBe(false);
+    expect(isHeldCommand({ type: "thread.metadata.update", commandId: "c", threadId: "t1", regenerateTitle: true })).toBe(false);
+    expect(isHeldCommand({ type: "thread.delete", commandId: "c", threadId: "t1" })).toBe(true);
+    expect(isHeldCommand({ type: "thread.delete", commandId: "c", threadId: "t1", onlyIfUnused: true })).toBe(false);
+    expect(isHeldCommand({ type: "message.dispatch", commandId: "c", threadId: "t1" })).toBe(false);
   });
 });
 
