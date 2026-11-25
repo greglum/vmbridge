@@ -236,6 +236,55 @@ describe("rpc", () => {
     expect(client.cancels.size).toBe(0);
   });
 
+  test("on a first start, the config stream waits for the first VM instead of failing", async () => {
+    const traffic = { record: () => {} } as unknown as Traffic;
+    const store = new Store(openDatabase(":memory:"), testEncryption);
+    const settings = new Settings(store.db);
+    settings.set("defaultProvider", "boxd");
+    let started: (vmId: string) => void = () => {};
+    let refused: (error: Error) => void = () => {};
+    const fleet = Object.assign(new EventEmitter(), {
+      backend: () => undefined,
+      any: () =>
+        new Promise<string>((resolve, reject) => {
+          started = resolve;
+          refused = reject;
+        }),
+    }) as unknown as Fleet;
+    const hub = new Hub(store, settings, fleet, traffic, unmeasured);
+    const rpc = new Rpc(hub, {} as never, {} as never, traffic, () => false);
+    const sent: { _tag?: string; exit?: { _tag: string } }[] = [];
+    const client: RpcClient = { clientId: "c1", cancels: new Map(), send: (frame) => sent.push(frame), open: () => true };
+
+    // T3 shows the environment as connecting meanwhile. A failure here would make it reconnect again and again.
+    await rpc.handle(client, { _tag: "Request", id: 1, tag: "subscribeServerConfig", payload: {} });
+    expect(sent).toEqual([]);
+
+    store.insertVm({ id: "vm1", provider: "boxd", name: "vm1", size: "medium", state: "starting", createdAt: 0 });
+    const backend = {
+      call: async () => ({ environment: { orchestrationProtocolVersion: 2 }, providers: [] }),
+      request: () => () => {},
+    } as unknown as Backend;
+    await fleet.onConnect("vm1", backend);
+    started("vm1");
+    await Promise.resolve();
+    expect(sent.map((frame) => frame._tag)).toEqual(["Chunk"]);
+    expect(hub.listenerCount("config")).toBe(1);
+
+    // A first VM that cannot start ends the stream with why, and a closed socket leaves no listener behind.
+    const fresh = new Hub(new Store(openDatabase(":memory:"), testEncryption), settings, fleet, traffic, unmeasured);
+    const freshRpc = new Rpc(fresh, {} as never, {} as never, traffic, () => false);
+    await freshRpc.handle(client, { _tag: "Request", id: 2, tag: "subscribeServerConfig", payload: {} });
+    refused(new Error("The budget is reached."));
+    await Promise.resolve();
+    expect(sent.at(-1)?.exit?._tag).toBe("Failure");
+    expect(fresh.listenerCount("config")).toBe(0);
+    const closing: RpcClient = { clientId: "c2", cancels: new Map(), send: () => {}, open: () => true };
+    await freshRpc.handle(closing, { _tag: "Request", id: 3, tag: "subscribeServerConfig", payload: {} });
+    for (const cancel of closing.cancels.values()) cancel();
+    expect(fresh.listenerCount("config")).toBe(0);
+  });
+
   test("removing the last VM while a client watches the config, as with a queued turn on it, starts no VM", async () => {
     const traffic = { record: () => {} } as unknown as Traffic;
     const store = new Store(openDatabase(":memory:"), testEncryption);
