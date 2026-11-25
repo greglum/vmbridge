@@ -131,7 +131,7 @@ export class Rpc {
       },
       "server.refreshProviders": async (call) => this.reply(call, { providers: await hub.refreshAgents(call.payload) }),
       "server.updateProvider": async (call) => this.reply(call, { providers: await hub.updateAgent(call.payload) }),
-      subscribeServerConfig: (call) => this.stream(call, "config", () => ({ version: 1, type: "snapshot", config: this.config() })),
+      subscribeServerConfig: (call) => this.serverConfig(call),
       "orchestration.subscribeShell": (call) => this.stream(call, "shell", () => ({ kind: "snapshot", snapshot: hub.shell() })),
       "scheduledTasks.subscribe": (call) => this.stream(call, "scheduledTasks", () => hub.scheduledTasks()),
       subscribeProjectClones: (call) => this.stream(call, "clones", () => clones.list()),
@@ -279,6 +279,39 @@ export class Rpc {
     call.client.cancels.set(id, () => this.hub.off(event, push));
     this.chunk(call, first);
     if (call.payload.requestCompletionMarker) this.chunk(call, { kind: "synchronized" });
+  }
+
+  /**
+   * T3 shows the environment as connecting until this stream's first snapshot, for over a minute. On a first start,
+   * with no VM config yet, the stream waits for the first VM instead of failing: a failure makes T3 close the socket
+   * and reconnect, again and again, until that VM is up.
+   */
+  private serverConfig(call: Call) {
+    const snapshot = () => ({ version: 1, type: "snapshot", config: this.config() });
+    if (this.hub.hasConfig() || !this.hub.settings.get("defaultProvider")) return this.stream(call, "config", snapshot);
+    const id = String(call.id);
+    let waiting = true;
+    const stop = () => {
+      waiting = false;
+      this.hub.off("config", ready);
+      call.client.cancels.delete(id);
+    };
+    const ready = () => {
+      if (!waiting || !this.hub.hasConfig()) return;
+      stop();
+      try {
+        this.stream(call, "config", snapshot);
+      } catch (error) {
+        this.fail(call, error);
+      }
+    };
+    this.hub.on("config", ready);
+    call.client.cancels.set(id, stop);
+    this.hub.fleet.any().then(ready, (error) => {
+      if (!waiting) return;
+      stop();
+      this.fail(call, error);
+    });
   }
 
   private config() {
