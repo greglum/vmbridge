@@ -241,7 +241,8 @@ describe("attachments through VM Bridge", () => {
     expect(served.headers.get("content-type")).toBe("application/octet-stream");
     expect(served.headers.get("content-security-policy")).toContain("sandbox");
 
-    await call("attachments.delete", { attachmentId: minted.attachmentId });
+    // A void answer still carries `value`, which the client requires.
+    expect(await call("attachments.delete", { attachmentId: minted.attachmentId })).toEqual({ _tag: "Success", value: null });
     expect((await call("assets.createUrl", { resource })).cause).toEqual([{ _tag: "Fail", error: expect.objectContaining({ _tag: "AssetAttachmentNotFoundError" }) }]);
     expect((await fetch(String(asset.relativeUrl))).status).toBe(404);
     close();
