@@ -69,6 +69,14 @@ export function closeText(code: number, reason: string) {
   return [`code ${code}`, reason || words[code]].filter(Boolean).join(", ");
 }
 
+/** A header the dashboard's connection test sends, so its reads do not count as T3 clients trying to connect. */
+export const connectionTestHeader = "x-vmbridge-connection-test";
+/** How long after reading the environment a T3 client that can connect has opened its WebSocket. */
+const connectFollowMs = 30_000;
+/** Reads with no WebSocket after them, within `connectTroubleWindowMs`, that mean clients reach VM Bridge but cannot connect. */
+const connectTroubleReads = 5;
+const connectTroubleWindowMs = 10 * 60_000;
+
 /** Paths a T3 client uses. Everything else belongs to the dashboard. */
 export const isT3Path = (path: string) => path === "/ws" || path === "/oauth/token" || path.startsWith("/api/") || path.startsWith("/.well-known/t3/");
 
@@ -82,6 +90,13 @@ export class T3Gateway {
   /** Open preview streams, which end with their device's access like its RPC sockets. */
   private readonly streams = new Set<{ clientId: string; end: (code: number, reason: string) => void }>();
   private readonly expiry: ReturnType<typeof setInterval>;
+  /**
+   * When T3 clients read the environment since a WebSocket last opened. A client reads it before every connect, so
+   * reads that no WebSocket follows are clients that reach VM Bridge but fail to connect, as when a browser refuses
+   * the answers. Such a client sends no credential before failing, so this cannot say which device it is.
+   */
+  private unfollowedReads: number[] = [];
+  private troubleCheck?: ReturnType<typeof setTimeout>;
 
   constructor(
     private readonly hub: Hub,
@@ -92,6 +107,24 @@ export class T3Gateway {
       for (const socket of this.sockets) if (!clients.valid(socket.data.clientId)) socket.close(1008, "Session expired");
       for (const stream of this.streams) if (!clients.valid(stream.clientId)) stream.end(1008, "Session expired");
     }, 30_000);
+  }
+
+  /** T3 clients that keep reaching VM Bridge without connecting: how many tries, since when. Null when none. */
+  connectTrouble(now = Date.now()): { since: number; reads: number } | null {
+    const failed = this.unfollowedReads.filter((at) => now - at >= connectFollowMs && now - at <= connectTroubleWindowMs);
+    return failed.length >= connectTroubleReads ? { since: failed[0]!, reads: failed.length } : null;
+  }
+
+  private noteEnvironmentRead() {
+    const now = Date.now();
+    this.unfollowedReads = [...this.unfollowedReads.filter((at) => now - at <= connectTroubleWindowMs), now];
+    // The dashboard follows fleet changes; it hears once the read has had its time to be followed.
+    if (this.troubleCheck) return;
+    this.troubleCheck = setTimeout(() => {
+      this.troubleCheck = undefined;
+      this.hub.fleet.emit("changed");
+    }, connectFollowMs + 1_000);
+    this.troubleCheck.unref?.();
   }
 
   connected(): Set<string> {
@@ -153,7 +186,10 @@ export class T3Gateway {
         },
       });
     }
-    if (path === "/.well-known/t3/environment" && request.method === "GET") return json(this.hub.descriptor());
+    if (path === "/.well-known/t3/environment" && request.method === "GET") {
+      if (!request.headers.has(connectionTestHeader)) this.noteEnvironmentRead();
+      return json(this.hub.descriptor());
+    }
     if (path === "/oauth/token" && request.method === "POST") return this.exchange(request, seen);
     if (path === "/ws") {
       if (url.searchParams.get("orchestrationProtocol") !== "2") {
@@ -345,6 +381,7 @@ export class T3Gateway {
 
   opened(socket: ClientSocket) {
     this.sockets.add(socket);
+    this.unfollowedReads = [];
     this.clients.markConnected(socket.data.clientId, true);
     this.hub.traffic.record({ kind: "system", operation: "Device connected", clientId: socket.data.clientId });
     this.hub.fleet.emit("changed");
@@ -384,6 +421,7 @@ export class T3Gateway {
 
   close() {
     clearInterval(this.expiry);
+    clearTimeout(this.troubleCheck);
     // Written now: the sockets' close events may not run before the process ends.
     for (const socket of this.sockets) {
       this.clients.markConnected(socket.data.clientId, true);

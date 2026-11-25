@@ -697,6 +697,7 @@ export class Admin {
         agentFeedback: settings.get("agentFeedback"),
       },
       clients: clients.list(gateway.connected()),
+      connectTrouble: gateway.connectTrouble(),
       vms,
       projects: projects.map((project) => ({
         id: project.id,

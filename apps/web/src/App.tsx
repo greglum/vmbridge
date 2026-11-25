@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAction } from "@/hooks/use-action";
-import { missingDevices, sinceText } from "@/lib/devices";
+import { failingDevices, sinceText } from "@/lib/devices";
 import { cn } from "@/lib/utils";
 import { api, onLoggedOut, useLive, useTick } from "./api.ts";
 import { Logo } from "./brand.tsx";
@@ -120,7 +120,9 @@ function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
   const setupDone = overview && overview.setup.provider && overview.setup.github && overview.setup.agents;
   const current = views.find((entry) => entry.id === view)!;
   const now = useTick(30_000);
-  const missing = overview ? missingDevices(overview.clients, overview.bridge.startedAt, now) : [];
+  // Only failures: a device that is just away, such as a closed laptop, shows on the Devices page.
+  const failing = overview ? failingDevices(overview.clients, traffic, now) : [];
+  const trouble = overview?.connectTrouble ?? null;
 
   return (
     <div className="flex h-full flex-col">
@@ -146,12 +148,22 @@ function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
         />
 
         <div className="mx-2 flex min-h-0 min-w-0 flex-1 flex-col gap-2 sm:mr-3 sm:mb-3 sm:ml-0">
-          {missing.length > 0 && view !== "devices" && (
+          {trouble && (
             <div role="status" className="flex items-center gap-3 rounded-xl border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
               <span className="min-w-0 flex-1">
-                {missing.map((client) => (
-                  <span key={client.id} className="block">
-                    {client.name} has not connected since {sinceText(client.since, now)}.
+                T3 Code reached VM Bridge {trouble.reads} times since {sinceText(trouble.since, now)} but could not connect.
+              </span>
+              <Button variant="outline" size="sm" onClick={() => go("settings")}>
+                Test connection
+              </Button>
+            </div>
+          )}
+          {failing.length > 0 && view !== "devices" && (
+            <div role="status" className="flex items-center gap-3 rounded-xl border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
+              <span className="min-w-0 flex-1">
+                {failing.map((client) => (
+                  <span key={client.id} className="block break-words">
+                    {client.name}'s requests are failing: {client.reason}.
                   </span>
                 ))}
               </span>

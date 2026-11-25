@@ -20,7 +20,7 @@ afterEach(() => {
 function bridge() {
   const traffic = new Traffic();
   const clients = new Clients(openDatabase(":memory:"));
-  const hub = { traffic, store: { vm: () => undefined }, fleet: { emit: () => {} }, attachments: { receive: async () => ({ status: 404 }) } } as unknown as Hub;
+  const hub = { traffic, descriptor: () => ({ environmentId: "env" }), store: { vm: () => undefined }, fleet: { emit: () => {} }, attachments: { receive: async () => ({ status: 404 }) } } as unknown as Hub;
   const gateway = new T3Gateway(hub, {} as Rpc, clients);
   const pair = (name: string) => {
     const access = clients.exchange(clients.createLink(name).token)!;
@@ -120,5 +120,38 @@ describe("refused requests", () => {
     jest.advanceTimersByTime(refusedWindowMs);
     expect(traffic.recent).toHaveLength(refusedGroups + 1);
     expect(traffic.recent.at(-1)).toMatchObject({ operation: "Refused 10 requests to other paths", reason: "other reasons" });
+  });
+});
+
+describe("clients that reach VM Bridge but cannot connect", () => {
+  test("environment reads that no WebSocket follows show as trouble, and a connection clears it", async () => {
+    const { gateway, pair, get } = bridge();
+    const start = Date.now();
+    for (let read = 0; read < 5; read++) {
+      jest.setSystemTime(start + read * 20_000);
+      await get("/.well-known/t3/environment");
+    }
+    // The latest read still has time to be followed, so it does not count yet.
+    jest.setSystemTime(start + 4 * 20_000 + 29_000);
+    expect(gateway.connectTrouble()).toBeNull();
+    jest.setSystemTime(start + 4 * 20_000 + 30_000);
+    expect(gateway.connectTrouble()).toEqual({ since: start, reads: 5 });
+
+    gateway.opened(socket(pair("Desk").id));
+    expect(gateway.connectTrouble()).toBeNull();
+  });
+
+  test("a read followed by a connection, or the dashboard's own test, is not trouble", async () => {
+    const { gateway, pair, get } = bridge();
+    const desk = pair("Desk").id;
+    const start = Date.now();
+    for (let read = 0; read < 6; read++) {
+      jest.setSystemTime(start + read * 60_000);
+      await get("/.well-known/t3/environment");
+      gateway.opened(socket(desk));
+      await get("/.well-known/t3/environment", { "x-vmbridge-connection-test": "1" });
+    }
+    jest.setSystemTime(start + 6 * 60_000);
+    expect(gateway.connectTrouble()).toBeNull();
   });
 });
