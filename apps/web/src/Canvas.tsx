@@ -50,6 +50,7 @@ import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import { useAction } from "@/hooks/use-action";
+import { sinceText } from "@/lib/devices";
 import { cn } from "@/lib/utils";
 import { ago, api, useTick } from "./api.ts";
 import { Logo, ProviderLogo } from "./brand.tsx";
@@ -123,7 +124,9 @@ function DeviceCard({ data }: NodeProps<DeviceNode>) {
         {client.connected ? (
           <Status dot="bg-success" text="text-success" label="Connected" />
         ) : (
-          <span className="text-[13px] text-muted-foreground">Seen {ago(client.lastSeenAt)}</span>
+          <span className="text-[13px] text-muted-foreground">
+            {client.lastConnectedAt ? `Not connected since ${sinceText(client.lastConnectedAt, Date.now())}` : "Never connected"}
+          </span>
         )}
       </div>
       <Handle type="source" position={useContext(Stacked) ? Position.Left : Position.Right} isConnectable={false} className={hidden} />
