@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { parseAsStringLiteral, useQueryState } from "nuqs";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "sonner";
-import { Add01Icon, CommandLineIcon, ComputerIcon, Delete02Icon, GitBranchIcon, GithubIcon, GlobalIcon, Key01Icon, UnfoldMoreIcon } from "@hugeicons/core-free-icons";
-import { agentFeedbackModes, machineNameMaxLength, vmSizes, type AgentFeedbackMode, type BridgeNetworkInfo, type BridgeSettings, type CloudflareInfo, type Overview, type ProviderId, type RepoRule, type VmSize } from "@vmbridge/contracts";
+import { Add01Icon, Cancel01Icon, CommandLineIcon, ComputerIcon, Delete02Icon, GitBranchIcon, GithubIcon, GlobalIcon, Key01Icon, Tick02Icon, UnfoldMoreIcon } from "@hugeicons/core-free-icons";
+import { agentFeedbackModes, machineNameMaxLength, vmSizes, type AddressTest, type AgentFeedbackMode, type BridgeNetworkInfo, type BridgeSettings, type CloudflareInfo, type Overview, type ProviderId, type RepoRule, type VmSize } from "@vmbridge/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -331,9 +331,21 @@ function Addresses() {
     return () => clearTimeout(timer);
   }, [network]);
   const tailscale = local?.tailscale;
+  const [tests, setTests] = useState<AddressTest[] | null>(null);
+  const testing = useAction();
+  const testAll = () => void testing.run(async () => setTests(await api<AddressTest[]>("/network/test", { body: {} })));
   return (
     <>
-      <Section title="Addresses">
+      <Section
+        title="Addresses"
+        actions={
+          network?.addresses.length ? (
+            <Button variant="outline" size="sm" disabled={testing.busy} onClick={testAll}>
+              {testing.busy ? "Testing..." : "Test connection"}
+            </Button>
+          ) : null
+        }
+      >
         <ItemGroup className="gap-2">
           {network?.addresses.map((address) => (
             <Item key={address.url} variant="outline" size="sm">
@@ -349,6 +361,7 @@ function Addresses() {
               <ItemActions>
                 <CopyButton value={address.url} />
               </ItemActions>
+              {tests && <ConnectionSteps test={tests.find((test) => test.url === address.url)} />}
             </Item>
           ))}
           {cloudflare?.enabled && !cloudflare.url && cloudflare.state !== "off" && (
@@ -363,6 +376,7 @@ function Addresses() {
             </Item>
           )}
         </ItemGroup>
+        {testing.error && <FieldError>{testing.error}</FieldError>}
       </Section>
       {local && (
         <Section title="Local network" actions={<Badge variant="secondary">{local.localNetwork.enabled ? "On" : "Off"}</Badge>}>
@@ -419,6 +433,34 @@ function Addresses() {
       {action.error && <FieldError>{action.error}</FieldError>}
       {local && <CloudflareTunnel info={local.cloudflare} onChange={setNetwork} />}
     </>
+  );
+}
+
+const stepLabels: Record<AddressTest["steps"][number]["step"], string> = { preflight: "CORS preflight", environment: "Environment", socket: "WebSocket" };
+
+/** How T3 Code would fare connecting to one address. Missing when the address appeared after the test ran. */
+function ConnectionSteps({ test }: { test: AddressTest | undefined }) {
+  if (!test) return null;
+  return (
+    <ul className="flex basis-full flex-col gap-1.5 border-t pt-2.5">
+      {test.steps.map(({ step, problems }) => (
+        <li key={step} className="flex items-start gap-2">
+          <HugeiconsIcon
+            icon={problems.length ? Cancel01Icon : Tick02Icon}
+            strokeWidth={2}
+            className={cn("mt-0.5 size-3.5 shrink-0", problems.length ? "text-destructive" : "text-success")}
+          />
+          <div className="min-w-0">
+            <p className="text-[13px]">{stepLabels[step]}</p>
+            {problems.map((problem) => (
+              <p key={problem} className="text-[13px] break-words text-muted-foreground">
+                {problem}
+              </p>
+            ))}
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }
 

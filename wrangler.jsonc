@@ -4,7 +4,9 @@
   "name": "vmbridge",
   "main": "apps/server/src/workers/index.ts",
   "compatibility_date": "2026-11-01",
-  "compatibility_flags": ["nodejs_compat"],
+  // global_fetch_strictly_public: the dashboard's connection test fetches the Worker's own address, which Cloudflare
+  // otherwise refuses with error 1042.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "assets": {
     "directory": "dist/assets",
     "binding": "ASSETS",
