@@ -36,6 +36,8 @@ export interface Worktree {
 const freshMs = 5 * 60_000;
 /** Trees kept in memory at once. The rest are read back from the database when searched again. */
 const keptTrees = 16;
+/** The most of a VM's file list that is read, about as much as GitHub's tree API gives before it truncates. */
+const maxListingBytes = 8 * 1024 * 1024;
 /** Paths per database row stay under Durable Object SQL's 2 MB value limit, even with multibyte names. */
 const chunkChars = 500_000;
 /** Files T3 offers when the composer asks for images only (T3's `PROJECT_FAVICON_EXTENSIONS`). */
@@ -227,8 +229,9 @@ export class FileTrees {
     const listing = Promise.all(
       worktrees.map(async ({ projectId, path }) => {
         const command = `git -C ${quote(path)} ls-files -z --cached --others --exclude-standard`;
-        const result = await box.run(command, { timeoutMs: this.captureMs }).catch(() => null);
-        if (!result?.ok) return;
+        const result = await box.run(command, { timeoutMs: this.captureMs, maxOutputBytes: maxListingBytes }).catch(() => null);
+        // A list cut short has lost its start, so it is not kept: the "@" menu falls back to GitHub's for this one.
+        if (!result?.ok || result.truncated) return;
         // Unmerged files are listed once per side. A name with a line break cannot be kept, as for GitHub's.
         const files = [...new Set(result.stdout.split("\0"))].filter((file) => file && !file.includes("\n"));
         const tree = { entries: indexTree(files), truncated: false, fetchedAt: Date.now() };

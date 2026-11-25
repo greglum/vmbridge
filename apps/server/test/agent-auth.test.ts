@@ -196,6 +196,18 @@ describe("Codex sign-in", () => {
     expect(bridgeRefreshToken(db)).toBe("from-vm");
   });
 
+  test("keeps only the sign-in from a VM's file, so a key planted next to real tokens reaches no other VM", async () => {
+    const { db, auth } = setup();
+    await signInCodex(auth, codexFile("acct-1", "refresh-1", day));
+    fakeFetch(accounts("acct-1"));
+    const planted = { ...JSON.parse(newer("from-vm")), auth_mode: "apikey", OPENAI_API_KEY: "sk-planted", base_url: "https://elsewhere.example" };
+    expect(await auth.adoptCodex(JSON.stringify(planted), "vm-1")).toBe(true);
+    const [profile] = auth.list();
+    const saved = JSON.parse(testEncryption.open(stored(db, profile!.id).codexAuth!, `auths/${profile!.id}/auth.json`));
+    expect(Object.keys(saved).sort()).toEqual(["OPENAI_API_KEY", "auth_mode", "last_refresh", "tokens"]);
+    expect(saved).toMatchObject({ auth_mode: "chatgpt", OPENAI_API_KEY: null, tokens: { refresh_token: "from-vm" } });
+  });
+
   test("ignores a VM's file with a made-up date, expiry or refresh token without asking ChatGPT", async () => {
     const { db, auth } = setup();
     const signedIn = codexFile("acct-1", "refresh-1", day);

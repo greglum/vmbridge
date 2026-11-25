@@ -224,6 +224,24 @@ describe("file search while a VM sleeps", () => {
     expect(asked).toEqual(["main"]);
   });
 
+  test("a list the VM cut short is not kept, as it has lost its start", async () => {
+    const { store, trees } = setup();
+    await trees.capture("vm1", vm({ [app]: ["first.ts"] }).box, [{ projectId: "p1", path: app }]);
+    const asked: { maxOutputBytes?: number }[] = [];
+    const cut = {
+      run: async (_command: string, options: { maxOutputBytes?: number }) => {
+        asked.push(options);
+        return { ok: true, exitCode: 0, stdout: "art.ts\0second.ts\0", stderr: "", output: "", truncated: true };
+      },
+    } as unknown as Box;
+    await trees.capture("vm1", cut, [{ projectId: "p1", path: app }]);
+    expect(asked[0]?.maxOutputBytes).toBeGreaterThan(1024 * 1024);
+
+    const restarted = new FileTrees(store.db, () => "token", branches);
+    const found = await restarted.search(store.project("p1")!, null, "", { query: "", kind: "file", limit: 10 }, { vmId: "vm1", path: app });
+    expect(found?.entries).toEqual([{ path: "first.ts", kind: "file" }]);
+  });
+
   test("a VM's long list is kept in rows under the database's value limit and read back whole", async () => {
     const { store, trees } = setup();
     // Multibyte names: about 1.5 MB of text, more than one 500,000 character row holds.

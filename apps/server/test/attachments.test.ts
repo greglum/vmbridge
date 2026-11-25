@@ -216,6 +216,18 @@ describe("attachments through VM Bridge", () => {
     close();
   });
 
+  test("a file link that climbs out of /api/assets/ is refused without asking the VM", async () => {
+    const vm1 = fakeVm();
+    const { fetch, close } = setup({ vm1: vm1.backend });
+    // Unauthenticated links, relayed with VM Bridge's own token: `..` would reach /api/projects or /. One the URL
+    // parser already collapsed no longer looks like a file link and needs a bearer like any other route.
+    for (const path of ["/api/assets/vm1.../projects", "/api/assets/vm1.payload.signature/%2e%2e", "/api/assets/vm1.../%2E%2E"]) {
+      expect([401, 404]).toContain((await fetch(path)).status);
+    }
+    expect(vm1.assets).toEqual([]);
+    close();
+  });
+
   test("a sleeping VM is not woken for an asset, and an unknown pending upload reads as missing", async () => {
     const vm1 = fakeVm();
     const { call, fetch, close, woken } = setup({ vm2: vm1.backend });
