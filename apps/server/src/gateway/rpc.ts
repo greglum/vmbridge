@@ -8,7 +8,7 @@ import { heldCommandTypes } from "./held.ts";
 import type { Hub } from "./hub.ts";
 import { projectForPath, projectRoot } from "./paths.ts";
 import { githubName, githubRepository, type RemoteBranches } from "./repos.ts";
-import { str, type Wire } from "./types.ts";
+import { str, type Row, type Wire } from "./types.ts";
 
 /** One connected T3 client socket. */
 export interface RpcClient {
@@ -46,13 +46,24 @@ const tagged = (requestId: RequestId, error: Wire) => ({
 
 type StreamEvent = "shell" | "config" | "scheduledTasks" | "clones";
 
+type SearchMatch = Wire & { threadId: string; source?: string; quality?: number; messageCreatedAt?: string | null };
+
+interface PullRequestList {
+  viewers: Record<string, string>;
+  providers: (Wire & { host: string; projectCount: number; projectIds?: string[]; configured: boolean; detail: string | null })[];
+  entries: (Wire & { updatedAt: string })[];
+  errors: Wire[];
+  truncated: boolean;
+  nextCursors: Record<string, string>;
+}
+
 /**
  * Requests T3 clients may forward to a VM. Anything else is refused rather than guessed at. Of the preview methods,
  * the ones on a thread's own tabs: the client opens a tab with `preview.open` when it reopens tabs a restarted T3 lost
  * (every Kubi wake restarts it) and when a link is opened in T3 Code's browser. Neither wakes a sleeping VM.
  */
 const forwardable =
-  /^(orchestration\.|projects\.|vcs\.|sourceControl\.|git\.|review\.|filesystem\.|server\.(getProvider|refreshProvider)|preview\.(list|close|open|resize|adjust)$)/;
+  /^(orchestration\.|projects\.|vcs\.|sourceControl\.|git\.|review\.|filesystem\.|pullRequests\.|server\.(getProvider|refreshProvider)|preview\.(list|close|open|resize|adjust)$)/;
 /** Stands in for a T3 server's epoch in the empty tab list of a VM that is not awake. */
 const asleepEpoch = "vmbridge-asleep";
 const mutation = /\.(create|write|mutate|switch|remove|stop|forceStop|pull$|runStackedAction$|preparePullRequestThread$|publishRepository$)/i;
@@ -75,7 +86,8 @@ export class Rpc {
   ) {
     this.local = {
       "server.probe": (call) => this.reply(call, {}),
-      "server.reportClientActivity": (call) => this.reply(call, undefined),
+      // A void answer is `null` in Effect's JSON; `undefined` would drop the `value` key the client requires.
+      "server.reportClientActivity": (call) => this.reply(call, null),
       "server.getConfig": (call) => this.reply(call, this.config()),
       "server.getSettings": (call) => this.reply(call, this.config().settings),
       "server.discoverSourceControl": (call) => this.reply(call, this.sourceControl()),
@@ -121,6 +133,20 @@ export class Rpc {
         const shell = hub.shell();
         this.reply(call, { ...shell, threads: shell.archivedThreads });
       },
+      "orchestration.searchThreads": (call) => this.searchThreads(call),
+      "pullRequests.list": (call) => this.pullRequestList(call),
+      "pullRequests.subscribeRefreshes": (call) => this.refreshes(call),
+      "pullRequests.subscribeLinkedThreadRefreshes": (call) => this.refreshes(call),
+      // A project with no awake checkout has no changes to show, as its VCS status already says.
+      "review.getDiffPreview": (call) => {
+        const target = this.unreachableProject(call);
+        return target ? this.reply(call, { cwd: target.cwd, generatedAt: new Date().toISOString(), sources: [] }) : this.forward(call);
+      },
+      // Servers listening on this machine, which T3 Code would offer to open. VM Bridge's own ports are no use to it.
+      subscribeDiscoveredLocalServers: (call) => {
+        call.client.cancels.set(String(call.id), () => {});
+        this.chunk(call, { servers: [], scannedAt: new Date().toISOString() });
+      },
       "orchestration.getThreadTitles": (call) => {
         const ids = new Set(Array.isArray(call.payload.threadIds) ? call.payload.threadIds : []);
         const shell = hub.shell();
@@ -147,7 +173,7 @@ export class Rpc {
       "preview.list": (call) => this.previewTabs(call),
       "preview.close": (call) => this.previewTabs(call),
       // The client's own browser profiles, for tabs it hosts. Tabs on a VM use the VM's browser, so this is dropped.
-      "preview.reportProfiles": (call) => this.reply(call, undefined),
+      "preview.reportProfiles": (call) => this.reply(call, null),
       // T3 asks for an upload URL without naming a thread, so VM Bridge takes the upload. See `Attachments`.
       "attachments.createUploadUrl": (call) => this.reply(call, hub.attachments.mint(call.payload, call.client.clientId)),
       "attachments.delete": (call) => this.reply(call, hub.attachments.remove(String(call.payload.attachmentId))),
@@ -239,7 +265,7 @@ export class Rpc {
     const login = this.hub.settings.get("github")?.login;
     return {
       versionControlSystems: [
-        { kind: "git", label: "Git", status: "available", implemented: true, executable: "git", version: none, detail: some("Runs on each VM"), installHint: "" },
+        { kind: "git", label: "Git", status: "available", implemented: true, executable: "git", version: none, detail: some("Runs on each VM"), installHint: "Installed on each VM." },
       ],
       sourceControlProviders: [
         {
@@ -555,6 +581,24 @@ export class Rpc {
    * another VM's thread is dropped, so no VM can open or change a tab in another project's thread.
    */
   private previewEvents(call: Call) {
+    this.fanIn(call, (events, vmId) => {
+      for (const event of events) {
+        if (this.hub.store.threadVm(String(event.threadId)) === vmId) this.chunk(call, this.hub.out(event, vmId));
+      }
+    });
+  }
+
+  /**
+   * Pull request refreshes from every awake VM. Each VM counts its own, so the client gets one fleet count that
+   * moves whenever any of them does.
+   */
+  private refreshes(call: Call) {
+    let revision = 0;
+    this.fanIn(call, () => this.chunk(call, ++revision));
+  }
+
+  /** The same stream from every awake VM, and from each VM that wakes later, until the client interrupts. */
+  private fanIn(call: Call, receive: (values: Wire[], vmId: string) => void) {
     const upstreams = new Map<string, () => void>();
     const detach = (vmId: string) => {
       upstreams.get(vmId)?.();
@@ -567,10 +611,7 @@ export class Rpc {
       try {
         const stop = backend.request(call.tag, {}, (frame) => {
           // An Exit is the VM disconnecting; its next connection attaches again.
-          if (frame._tag !== "Chunk") return;
-          for (const event of (frame.values ?? []) as Wire[]) {
-            if (this.hub.store.threadVm(String(event.threadId)) === vmId) this.chunk(call, this.hub.out(event, vmId));
-          }
+          if (frame._tag === "Chunk") receive((frame.values ?? []) as Wire[], vmId);
         });
         upstreams.set(vmId, stop);
       } catch {
@@ -614,11 +655,108 @@ export class Rpc {
     this.reply(call, { ...value, relativeUrl: relayedAssetUrl(vmId, value.relativeUrl) });
   }
 
-  /** A thread's preview tabs live on its VM. One that is not awake has none: its list is empty, and closing is done. */
+  /**
+   * A thread's preview tabs live on its VM. One that is not awake has none, nor does a thread no VM has reported,
+   * such as a draft: its list is empty, and closing is done.
+   */
   private previewTabs(call: Call) {
     const vmId = this.hub.store.threadVm(String(call.payload.threadId));
-    if (!vmId || this.hub.fleet.backend(vmId)) return this.forward(call);
-    this.reply(call, call.tag === "preview.list" ? { sessions: [], serverEpoch: asleepEpoch, revision: 0 } : undefined);
+    if (vmId && this.hub.fleet.backend(vmId)) return this.forward(call);
+    this.reply(call, call.tag === "preview.list" ? { sessions: [], serverEpoch: asleepEpoch, revision: 0 } : null);
+  }
+
+  /** Each awake VM's answer to the same read, `null` for a VM that failed it. Sleeping VMs are not woken for it. */
+  private awakeAnswers<T>(tag: string, payloadFor: (vmId: string) => Wire | null) {
+    return Promise.all(
+      this.hub.fleet.connected().flatMap((vmId) => {
+        const backend = this.hub.fleet.backend(vmId);
+        const payload = payloadFor(vmId);
+        if (!backend || !payload) return [];
+        return [
+          backend
+            .call<unknown>(tag, this.hub.into(payload, vmId))
+            .then((value) => ({ vmId, value: this.hub.out(value, vmId) as T }))
+            .catch(() => ({ vmId, value: null })),
+        ];
+      }),
+    );
+  }
+
+  /**
+   * Message search on every awake VM, ranked as T3 ranks one server's hits. Titles need no server: the client
+   * matches them itself from the shell, which covers sleeping VMs.
+   */
+  private async searchThreads(call: Call) {
+    const answers = await this.awakeAnswers<{ matches?: SearchMatch[] }>(call.tag, () => call.payload);
+    const found = answers.filter((answer) => answer.value !== null);
+    if (answers.length && !found.length) {
+      return call.client.send(tagged(call.id, { _tag: "OrchestrationSearchThreadsError", message: "Failed to search threads" }));
+    }
+    const matches = found
+      // A VM's hits count only for its own threads.
+      .flatMap(({ vmId, value }) => (value?.matches ?? []).filter((match) => this.hub.store.threadVm(match.threadId) === vmId))
+      .sort(
+        (left, right) =>
+          (right.quality ?? 0) - (left.quality ?? 0) ||
+          Number(left.source !== "user") - Number(right.source !== "user") ||
+          (right.messageCreatedAt ?? "").localeCompare(left.messageCreatedAt ?? ""),
+      )
+      .slice(0, Number(call.payload.limit ?? 50));
+    this.reply(call, { matches });
+  }
+
+  /**
+   * Pull requests are read by each project's primary VM, for the projects the client asked about (or all of them),
+   * and merged. A project whose VM is asleep is listed as an error rather than waking it.
+   */
+  private async pullRequestList(call: Call) {
+    const { projectId, projectIds, ...rest } = call.payload;
+    const projects = this.hub.shell().projects ?? [];
+    const named = Array.isArray(projectIds) ? projects.filter((project) => projectIds.includes(project.id)) : projects;
+    const asked = typeof projectId === "string" ? named.filter((project) => project.id === projectId) : named;
+    const byVm = new Map<string, Row[]>();
+    const merged: PullRequestList = { viewers: {}, providers: [], entries: [], errors: [], truncated: false, nextCursors: {} };
+    const unlisted = (project: Row, message: string) =>
+      merged.errors.push({ projectId: project.id, projectTitle: str(project.title) || "Project", message });
+    for (const project of asked) {
+      const vmId = this.hub.routeOrNull({ projectId: project.id });
+      if (vmId && this.hub.fleet.backend(vmId)) byVm.set(vmId, [...(byVm.get(vmId) ?? []), project]);
+      else unlisted(project, vmId ? "Its VM is asleep. Sending a message in one of its threads wakes it." : "This project is not on a VM yet.");
+    }
+    const answers = await this.awakeAnswers<PullRequestList>(call.tag, (vmId) => {
+      const rows = byVm.get(vmId);
+      return rows ? { ...rest, projectIds: rows.map((project) => project.id) } : null;
+    });
+    for (const { vmId, value } of answers) {
+      if (!value) {
+        for (const project of byVm.get(vmId) ?? []) unlisted(project, "Its pull requests could not be read.");
+        continue;
+      }
+      merged.viewers = { ...merged.viewers, ...value.viewers };
+      merged.entries.push(...value.entries);
+      merged.errors.push(...value.errors);
+      merged.truncated ||= value.truncated;
+      merged.nextCursors = { ...merged.nextCursors, ...value.nextCursors };
+      for (const provider of value.providers) {
+        const index = merged.providers.findIndex((seen) => seen.host === provider.host);
+        const seen = merged.providers[index];
+        if (!seen) {
+          merged.providers.push(provider);
+          continue;
+        }
+        const { projectIds: _, ...shared } = seen;
+        merged.providers[index] = {
+          ...shared,
+          projectCount: seen.projectCount + provider.projectCount,
+          // Absent means every counted project, so the merge keeps the list only when both have one.
+          ...(seen.projectIds && provider.projectIds ? { projectIds: [...seen.projectIds, ...provider.projectIds] } : {}),
+          configured: seen.configured && provider.configured,
+          detail: seen.detail ?? provider.detail,
+        };
+      }
+    }
+    merged.entries.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    this.reply(call, merged);
   }
 
   /** Routes a request to its VM, waking the VM only for requests that change something. */
