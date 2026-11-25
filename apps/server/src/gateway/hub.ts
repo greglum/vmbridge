@@ -105,6 +105,8 @@ export class Hub extends EventEmitter<HubEvents> {
   private readonly configs: Map<string, ServerConfig>;
   private readonly schedules: Map<string, ScheduledTasks>;
   private readonly setupProgress = new Map<string, Wire>();
+  /** The agent feedback mode each connected VM's T3 last reported or was sent. */
+  private readonly feedbackModes = new Map<string, unknown>();
   /** Threads placed on a VM without room, with the notice their setup shows. */
   private readonly busyNotices = new Map<string, string>();
   /** Top-level threads placed on a VM, by thread ID, counted toward its load until T3 lists them. */
@@ -140,6 +142,9 @@ export class Hub extends EventEmitter<HubEvents> {
     fleet.onConnect = (vmId, backend) => this.attach(vmId, backend);
     fleet.on("awake", (vmId) => {
       this.emit("awake", vmId);
+      // A save while the VM connected reached neither it (not yet awake) nor the mode it was sent.
+      const backend = fleet.backend(vmId);
+      if (backend && this.feedbackModes.get(vmId) !== settings.get("agentFeedback")) void this.applyAgentFeedback(vmId, backend);
       void this.replayHeld(vmId);
     });
     fleet.on("offline", (vmId) => {
@@ -183,8 +188,9 @@ export class Hub extends EventEmitter<HubEvents> {
     }
     this.configs.set(vmId, config);
     this.store.saveSnapshot(vmId, "config", config);
+    this.feedbackModes.set(vmId, (config.settings?.agentFeedback as Wire | undefined)?.mode);
     // Before the VM counts as awake, so the turns that woke it already use the mode.
-    if ((config.settings?.agentFeedback as Wire | undefined)?.mode !== this.settings.get("agentFeedback")) await this.applyAgentFeedback(vmId, backend);
+    if (this.feedbackModes.get(vmId) !== this.settings.get("agentFeedback")) await this.applyAgentFeedback(vmId, backend);
 
     backend.request(
       "subscribeServerConfig",
@@ -314,6 +320,7 @@ export class Hub extends EventEmitter<HubEvents> {
     if (config && this.configs.size === 1) this.settings.set("fallbackConfig", { vmId, config });
     else this.configs.delete(vmId);
     this.schedules.delete(vmId);
+    this.feedbackModes.delete(vmId);
     this.bump();
     this.emit("shell");
     this.emit("scheduledTasks");
@@ -634,9 +641,12 @@ export class Hub extends EventEmitter<HubEvents> {
     const capabilities = this.configs.get(vmId)?.environment?.capabilities as Wire | undefined;
     if (capabilities?.agentFeedback !== true) return;
     const mode = this.settings.get("agentFeedback");
-    await backend.call("server.updateSettings", { patch: { agentFeedback: { mode } } }, 15_000).catch((error) => {
+    try {
+      await backend.call("server.updateSettings", { patch: { agentFeedback: { mode } } }, 15_000);
+      this.feedbackModes.set(vmId, mode);
+    } catch (error) {
       console.warn(`[hub] could not set agent feedback to ${mode} on VM ${vmId}: ${message(error)}`);
-    });
+    }
   }
 
   scheduledTasks(): Wire {

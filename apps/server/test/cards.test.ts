@@ -300,6 +300,32 @@ describe("feedback card setting", () => {
     hub.close();
   });
 
+  test("a save that lands while a VM connects reaches it once it is awake", async () => {
+    const vm3 = settingsVm();
+    // Empty until the fleet publishes the VM, as while it connects.
+    const backends: Record<string, Backend | undefined> = {};
+    const { hub } = setup(backends);
+    hub.setAgentFeedback("auto");
+    const call = vm3.backend.call.bind(vm3.backend);
+    // The save lands during the connecting VM's own update, before it counts as awake.
+    (vm3.backend as { call: unknown }).call = async (tag: string, payload: Wire) => {
+      const result = await call(tag, payload);
+      if (tag === "server.updateSettings" && vm3.updates.length === 1) hub.setAgentFeedback("off");
+      return result;
+    };
+    await hub.fleet.onConnect("vm3", vm3.backend);
+    expect(vm3.updates).toEqual([feedbackMode("auto")]);
+    backends.vm3 = vm3.backend;
+    hub.fleet.emit("awake", "vm3");
+    await settle();
+    expect(vm3.updates).toEqual([feedbackMode("auto"), feedbackMode("off")]);
+    // Already sent: waking again sends nothing.
+    hub.fleet.emit("awake", "vm3");
+    await settle();
+    expect(vm3.updates).toHaveLength(2);
+    hub.close();
+  });
+
   test("a VM refusing it still connects", async () => {
     const vm1 = settingsVm();
     const backend = {
