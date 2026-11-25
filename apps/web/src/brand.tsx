@@ -57,8 +57,10 @@ const agentLogos: Record<AgentKind, { src: string; tile: string; inset: string }
   opencode: { src: opencode, tile: "bg-black", inset: "" },
 };
 
-export function AgentLogo({ agent, className }: { agent: AgentKind; className?: string }) {
+/** An agent's logo on its tile. `bare` drops the tile, for small logos beside text. */
+export function AgentLogo({ agent, className, bare = false }: { agent: AgentKind; className?: string; bare?: boolean }) {
   const logo = agentLogos[agent];
+  if (bare) return <img src={logo.src} alt="" className={cn("size-6 shrink-0 object-contain", className)} draggable={false} />;
   return (
     <span className={cn("grid size-6 shrink-0 place-items-center overflow-hidden rounded-md ring-1 ring-white/10", logo.tile, className)}>
       <img src={logo.src} alt="" className={cn("size-full object-contain", logo.inset)} draggable={false} />

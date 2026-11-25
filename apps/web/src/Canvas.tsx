@@ -225,18 +225,18 @@ function CloudflareUpdate({ version }: { version: string }) {
 
 /** An agent's logo, or its first letter when VM Bridge has no logo for it. */
 function AgentAvatar({ agent, className }: { agent: SessionAgent; className?: string }) {
-  if (agent.kind) return <AgentLogo agent={agent.kind} className={cn("rounded-[25%]", className)} />;
-  return <span className={cn("grid shrink-0 place-items-center rounded-[25%] bg-muted text-[10px] font-medium text-muted-foreground", className)}>{agent.name.slice(0, 1).toUpperCase()}</span>;
+  if (agent.kind) return <AgentLogo agent={agent.kind} bare className={className} />;
+  return <span className={cn("grid shrink-0 place-items-center text-[11px] font-semibold text-muted-foreground", className)}>{agent.name.slice(0, 1).toUpperCase()}</span>;
 }
 
-/** Every agent with a session on a VM, once each, overlapping like avatars. */
+/** Every agent with a session on a VM, once each, side by side: without tiles, overlapping logos would run together. */
 function AgentStack({ agents }: { agents: SessionAgent[] }) {
   const unique = [...new Map(agents.map((agent) => [agent.kind ?? agent.name, agent])).values()];
   if (!unique.length) return null;
   return (
-    <span className="flex -space-x-1" title={unique.map((agent) => agent.name).join(", ")}>
+    <span className="flex items-center gap-1" title={unique.map((agent) => agent.name).join(", ")}>
       {unique.map((agent) => (
-        <AgentAvatar key={agent.kind ?? agent.name} agent={agent} className="size-6 ring-2 ring-card" />
+        <AgentAvatar key={agent.kind ?? agent.name} agent={agent} className="size-4" />
       ))}
     </span>
   );
