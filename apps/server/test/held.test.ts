@@ -227,11 +227,12 @@ const instantCommands: [string, Wire, Wire | null][] = [
 const shown = (hub: Hub) => hub.shell().threads?.find((row) => row.id === "t1") ?? null;
 
 describe("opening, renaming, pickers and deleting", () => {
-  test.each(instantCommands)("%s shows at once on a sleeping VM without waking it, and reaches it when it connects", async (_name, command, expected) => {
+  test.each(instantCommands)("%s shows at once on a sleeping VM without waiting for it, and reaches it when it connects", async (name, command, expected) => {
     const context = setup();
     await context.dispatch(command);
     expect(context.sent.at(-1)?.exit?._tag).toBe("Success");
-    expect(context.woken).toEqual([]);
+    // Opening a thread starts waking its VM in the background (see prewake.test.ts); the others wake nothing.
+    expect(context.woken).toEqual(name === "open" ? ["vm1"] : []);
     if (expected) expect(shown(context.hub)).toMatchObject(expected);
     else expect(shown(context.hub)).toBeNull();
 
