@@ -40,6 +40,10 @@ export async function pair(base: string, cookie: string): Promise<Paired> {
     });
   const network = (await (await admin("/network")).json()) as { platform: string; addresses: { url: string }[] };
   check(network.platform === "workers" && network.addresses.length === 1 && network.addresses[0]!.url === base, "the only address is the Worker's own");
+  const tests = (await (await admin("/network/test", {})).json()) as { url: string; steps: { problems: string[] }[] }[];
+  const problems = tests.flatMap((test) => test.steps.flatMap((step) => step.problems));
+  if (problems.length > 0) console.log(`  ${problems.join("\n  ")}`);
+  check(tests.length === 1 && tests[0]!.url === base && problems.length === 0, "the connection test passes on the Worker's address");
   const pairing = (await (await admin("/pairing", { name: "smoke test" })).json()) as { urls: { url: string }[] };
   const link = pairing.urls[0]?.url ?? "";
   check(link.startsWith(`${base}/pair#token=`), "the pairing link uses the Worker's address");

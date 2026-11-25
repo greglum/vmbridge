@@ -136,6 +136,15 @@ export interface WorkerNetworkInfo {
 
 export type BridgeNetworkInfo = NetworkInfo | WorkerNetworkInfo;
 
+/** A step a T3 client takes to connect: the CORS preflight, the environment read, and the RPC WebSocket. */
+export type ConnectionStep = "preflight" | "environment" | "socket";
+
+/** One address tested the way a T3 client connects to it. A step passes when it has no problems. */
+export interface AddressTest {
+  url: string;
+  steps: { step: ConnectionStep; problems: string[] }[];
+}
+
 export interface PairingLink {
   id: string;
   name: string;

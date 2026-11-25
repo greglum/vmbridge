@@ -16,6 +16,7 @@ import {
 import { analyticsReport } from "./analytics.ts";
 import { InvalidSignIn, type AgentAuth, type TokenInput } from "./agent-auth/profiles.ts";
 import { InvalidPassword, TooManyAttempts, type DashboardAuth } from "./auth/dashboard.ts";
+import { testAddress } from "./connection-test.ts";
 import { fetchGitHubAccount, fetchGitHubRepos, GitHubRejected } from "./github.ts";
 import type { Clients } from "./auth/clients.ts";
 import { message, providerValues, type Fleet } from "./fleet.ts";
@@ -209,6 +210,10 @@ export class Admin {
     }
 
     if (path === "/network" && method === "GET") return json(await this.deps.network.info(request));
+    if (path === "/network/test" && method === "POST") {
+      const { addresses } = await this.deps.network.info(request);
+      return json(await Promise.all(addresses.map((address) => testAddress(address.url, settings.get("bridgeId")))));
+    }
     if (section === "network" && id && !action && method === "POST") {
       const changed = await this.deps.network.change(id, await body(request));
       return changed ? json(changed) : json({ error: "Not found." }, 404);
