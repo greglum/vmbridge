@@ -252,9 +252,8 @@ export function relayedAsset(upstream: Response) {
     if (value !== null) headers.set(name, value);
   }
   headers.set("x-content-type-options", "nosniff");
-  const policy = headers.get("content-security-policy") ?? "";
-  const sandboxed = /(?:^|;)\s*sandbox\b/i.test(policy) && !/allow-same-origin/i.test(policy);
   const media = /^(?:image\/(?!svg)|audio\/|video\/|application\/pdf\b)/i.test(headers.get("content-type") ?? "");
-  if (!sandboxed && !media) headers.set("content-security-policy", sandbox);
+  // A second policy of VM Bridge's own: browsers enforce every policy, so the VM's can only add restrictions.
+  if (!media) headers.append("content-security-policy", sandbox);
   return new Response(upstream.body, { status: upstream.status, headers });
 }

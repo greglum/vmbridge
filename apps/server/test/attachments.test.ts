@@ -75,7 +75,8 @@ function setup(backends: Record<string, Backend | undefined>, capabilities?: Wir
   const rpc = new Rpc(hub, {} as never, {} as never, traffic, () => false);
   const gateway = new T3Gateway(hub, rpc, new Clients(store.db));
   const sent: Wire[] = [];
-  const client: RpcClient = { clientId: "c1", cancels: new Map(), send: (frame) => sent.push(frame as Wire), open: () => true };
+  let open = true;
+  const client: RpcClient = { clientId: "c1", cancels: new Map(), send: (frame) => sent.push(frame as Wire), open: () => open };
   let id = 0;
   const call = async (tag: string, payload: Wire) => {
     const requestId = ++id;
@@ -89,7 +90,8 @@ function setup(backends: Record<string, Backend | undefined>, capabilities?: Wir
     gateway.close();
     hub.close();
   };
-  return { store, hub, call, fetch, close, woken, recorded };
+  const leave = () => (open = false);
+  return { store, hub, rpc, client, call, fetch, close, woken, recorded, leave };
 }
 
 const bytes = (size: number) => Uint8Array.from({ length: size }, (_, index) => index % 251);
@@ -131,6 +133,29 @@ describe("attachments through VM Bridge", () => {
     expect((await dispatch("cmd2"))._tag).toBe("Success");
     expect(vm1.uploads).toHaveLength(1);
     expect((vm1.requests.at(-1)!.payload.message as { attachments: Wire[] }).attachments[0]!.id).toBe("pending-00000000-0000-4000-8000-000000000001");
+    close();
+  });
+
+  test("a device that leaves while its files are handed over gets nothing run", async () => {
+    const vm1 = fakeVm();
+    const { rpc, client, call, fetch, close, leave } = setup({ vm1: vm1.backend });
+    const minted = value(await call("attachments.createUploadUrl", { name: "a.png", mimeType: "image/png", sizeBytes: 3 }));
+    expect((await fetch(String(minted.relativeUrl), { method: "POST", body: bytes(3) })).status).toBe(204);
+    const upload = vm1.backend.http.bind(vm1.backend);
+    vm1.backend.http = async (path, init) => {
+      leave();
+      return upload(path, init);
+    };
+    const attachment = { type: "image", id: minted.attachmentId, name: "a.png", mimeType: "image/png", sizeBytes: 3 };
+    await rpc.handle(client, {
+      _tag: "Request",
+      id: 99,
+      tag: "orchestration.dispatchCommand",
+      payload: { type: "message.dispatch", commandId: "cmd1", threadId: threadUuid, message: { text: "hi", attachments: [attachment] } },
+    });
+    await Bun.sleep(0);
+    expect(vm1.uploads).toHaveLength(1);
+    expect(vm1.requests.map((request) => request.tag)).toEqual(["attachments.createUploadUrl"]);
     close();
   });
 
@@ -179,10 +204,14 @@ describe("attachments through VM Bridge", () => {
     expect(image.headers.get("cache-control")).toBe("private, max-age=3600");
     expect(image.headers.get("content-security-policy")).toBeNull();
 
-    // A page the VM sends unsandboxed is sandboxed here: VM Bridge's origin also serves the dashboard.
-    vm1.serve(() => new Response("<script>", { headers: { "content-type": "text/html", "content-security-policy": "sandbox allow-scripts allow-same-origin" } }));
-    const page = await fetch("/api/assets/vm1.other.signature/page.html");
-    expect(page.headers.get("content-security-policy")).toBe("sandbox allow-scripts allow-forms allow-popups allow-downloads");
+    // A page the VM sends is sandboxed here whatever its own policy says: VM Bridge's origin also serves the dashboard.
+    const bridgePolicy = "sandbox allow-scripts allow-forms allow-popups allow-downloads";
+    for (const policy of ["sandbox allow-scripts allow-same-origin", "sandbox-invalid", "default-src 'self'"]) {
+      vm1.serve(() => new Response("<script>", { headers: { "content-type": "text/html", "content-security-policy": policy } }));
+      const page = await fetch("/api/assets/vm1.other.signature/page.html");
+      // Two policies, both enforced: the VM's can only narrow VM Bridge's.
+      expect(page.headers.get("content-security-policy")).toBe(`${policy}, ${bridgePolicy}`);
+    }
     expect((await fetch("/api/assets/nope.payload.signature/image.png")).status).toBe(404);
     close();
   });
