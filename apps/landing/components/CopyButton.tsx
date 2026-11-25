@@ -81,13 +81,16 @@ export function Command({ text, className = "" }: { text: string; className?: st
   );
 }
 
-/** A button that copies the setup prompt for a coding agent (lib/prompt.ts, passed in from a server component). */
-export function CopyPrompt({ prompt }: { prompt: string }) {
+/**
+ * A button that copies the setup prompt for a coding agent (lib/prompt.ts, passed in from a server component).
+ * `className` replaces the default secondary look, as in the hero where it is the main action.
+ */
+export function CopyPrompt({ prompt, className = secondaryButton }: { prompt: string; className?: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
       type="button"
-      className={secondaryButton}
+      className={className}
       onClick={async () => {
         await navigator.clipboard.writeText(prompt);
         setCopied(true);

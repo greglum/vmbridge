@@ -1,17 +1,16 @@
-import { ArrowRight01Icon, CloudUploadIcon, GithubIcon } from "@hugeicons/core-free-icons";
+import { CloudUploadIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import Link from "next/link";
 import { copy } from "@/lib/copy";
-import { deployToCloudflare, github, install } from "@/lib/data";
-import { cloudflareButton, innerPad, primaryButton, secondaryButton } from "@/lib/styles";
+import { deployToCloudflare } from "@/lib/data";
 import { agentPrompt } from "@/lib/prompt";
-import { Command, CopyPrompt } from "./CopyButton";
+import { cloudflareButton, innerPad, primaryButton } from "@/lib/styles";
+import { CopyPrompt } from "./CopyButton";
 import { Topology } from "./Topology";
 
 /**
- * The landing header as one centred column — title, body, install command and
- * buttons — above a full-width stage holding the flat wiring diagram (devices
- * to VM Bridge to cloud VMs). The diagram is plain server-rendered markup that
+ * The landing header as one centred column (title, body, and the two ways to set
+ * up: a prompt for your agent or a Cloudflare deploy) above a full-width stage
+ * holding the flat wiring diagram (devices to VM Bridge to cloud VMs). The diagram is plain server-rendered markup that
  * fills every pixel left over so the hint row lands on the fold, so nothing
  * moves while the page loads and it reads identically with JavaScript off.
  * The VM cards themselves are the sleep/wake controls.
@@ -34,29 +33,12 @@ export function Hero() {
         >
           {copy.hero.body}
         </p>
-        <div className="mt-7 flex flex-col items-center" style={{ animation: "rise 500ms 120ms both" }}>
-          <div className="mx-auto w-full max-w-[46rem]">
-            <Command text={install} className="text-left lg:text-[12px] xl:text-[11px] 2xl:text-[12px]" />
-          </div>
-          <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-            <Link href="/docs" className={`${primaryButton} group`}>
-              {copy.hero.docs}
-              <HugeiconsIcon
-                icon={ArrowRight01Icon}
-                size={15}
-                className="transition-transform duration-150 group-hover:translate-x-0.5"
-              />
-            </Link>
-            <CopyPrompt prompt={agentPrompt} />
-            <a href={github} className={secondaryButton}>
-              <HugeiconsIcon icon={GithubIcon} size={15} />
-              {copy.nav.github}
-            </a>
-            <a href={deployToCloudflare} target="_blank" rel="noopener noreferrer" className={cloudflareButton}>
-              <HugeiconsIcon icon={CloudUploadIcon} size={15} />
-              {copy.hero.cloudflare}
-            </a>
-          </div>
+        <div className="mt-7 flex flex-wrap items-center justify-center gap-2" style={{ animation: "rise 500ms 120ms both" }}>
+          <CopyPrompt prompt={agentPrompt} className={primaryButton} />
+          <a href={deployToCloudflare} target="_blank" rel="noopener noreferrer" className={cloudflareButton}>
+            <HugeiconsIcon icon={CloudUploadIcon} size={15} />
+            {copy.hero.cloudflare}
+          </a>
         </div>
       </div>
       {/* The stage runs rail to rail: the diagram fills its width up to a 72rem
