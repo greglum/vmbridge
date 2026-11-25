@@ -67,23 +67,31 @@ describe("the desktop server", () => {
     return { answers, log };
   }
 
-  test("speaks MCP, names its screen for Kubi's tools, and drives xdotool on display :0", async () => {
+  test("speaks MCP, names its screen for Kubi's tools, and drives xdotool on display :0, one call at a time", async () => {
     const { answers, log } = await talk([
       { id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } } },
       { method: "notifications/initialized" },
       { id: 2, method: "tools/list" },
       { id: 3, method: "tools/call", params: { name: "click", arguments: { x: 10, y: 20, count: 2 } } },
-      { id: 4, method: "tools/call", params: { name: "type", arguments: { text: "--help" } } },
-      { id: 5, method: "tools/call", params: { name: "key", arguments: { keys: "ctrl+l Return" } } },
+      { id: 4, method: "tools/call", params: { name: "drag", arguments: { x: 1, y: 2, to_x: 3, to_y: 4 } } },
+      { id: 5, method: "tools/call", params: { name: "type", arguments: { text: "--help" } } },
+      { id: 6, method: "tools/call", params: { name: "key", arguments: { keys: "ctrl+l Return" } } },
     ]);
     expect(answers.get(1)!.result).toMatchObject({ protocolVersion: "2025-06-18", capabilities: { tools: {} } });
     expect(answers.get(1)!.result!.instructions).toContain('pass screen "scr_1"');
     const tools = answers.get(2)!.result!.tools as { name: string; description: string }[];
     expect(tools.map((tool) => tool.name)).toEqual(["screenshot", "click", "move", "drag", "scroll", "type", "key"]);
     expect(tools[0]!.description).toContain("Kubi screen scr_1");
-    for (const id of [3, 4, 5]) expect(answers.get(id)!.result!.isError).toBeUndefined();
-    // Typed text comes after `--`, so it is never read as an option.
-    expect(log()).toEqual([":0 mousemove --sync 10 20 click --repeat 2 1", ":0 type --delay 12 -- --help", ":0 key -- ctrl+l Return"]);
+    for (const id of [3, 4, 5, 6]) expect(answers.get(id)!.result!.isError).toBeUndefined();
+    // Calls sent together still run in order, so the drag ends before typing starts. Typed text comes after `--`, so it
+    // is never read as an option.
+    expect(log()).toEqual([
+      ":0 mousemove --sync 10 20 click --repeat 2 1",
+      ":0 mousemove --sync 1 2 mousedown 1",
+      ":0 mousemove --sync 3 4 mouseup 1",
+      ":0 type --delay 12 -- --help",
+      ":0 key -- ctrl+l Return",
+    ]);
   });
 
   test("answers a bad call as a tool error, and an unknown method as a protocol error", async () => {
