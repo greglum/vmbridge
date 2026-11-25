@@ -24,6 +24,9 @@ Website and docs: [vmbridge.ordinity.com](https://vmbridge.ordinity.com)
 - Attach images and files to a message in T3 Code, as on a local T3 server. VM Bridge hands them
   to the thread's VM.
 - Thread search and the pull requests list work across your VMs, without waking sleeping ones.
+- Opening, renaming, settling, snoozing, pinning, archiving and deleting a thread show at once, and
+  so do the model and access pickers. A sleeping VM is not woken for them: it gets them when it next
+  wakes.
 - Answer an agent's cards in T3 Code: a request for a secret, or an offer to send feedback to the T3
   team. Feedback cards are off until you turn them on under **Settings**, **VMs**.
 - Works over Tailscale, Cloudflare Tunnel and, once you turn it on, your local network. Or deploy it
