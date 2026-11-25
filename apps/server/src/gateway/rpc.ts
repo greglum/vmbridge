@@ -589,7 +589,7 @@ export class Rpc {
       return true;
     };
     const onAwake = (id: string) => id === vmId && attach();
-    const onWake = (id: string) => id === threadId && !this.hub.fleet.backend(vmId) && sleepingSnapshot();
+    const onWake = (id: string) => id === vmId && !this.hub.fleet.backend(vmId) && sleepingSnapshot();
     this.hub.on("awake", onAwake);
     this.hub.on("wake", onWake);
     const cancel = () => {
@@ -908,9 +908,6 @@ export class Rpc {
     }
 
     const release = mutating ? this.hub.fleet.lease(vmId) : () => {};
-    const threadId = str(payload.threadId);
-    const wakeNotice =
-      !awake && threadId && tag === "orchestration.dispatchCommand" && payload.type === "message.dispatch" ? this.hub.beginWake(threadId, vmId) : undefined;
     progress(awake ? "Preparing the workspace" : "Starting the VM");
     let backend;
     try {
@@ -918,8 +915,6 @@ export class Rpc {
     } catch (error) {
       release();
       throw error;
-    } finally {
-      wakeNotice?.();
     }
     // Placement and waking can take minutes. A device that left or was removed meanwhile gets nothing run for it.
     if (!client.open()) {

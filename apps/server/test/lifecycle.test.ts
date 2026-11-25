@@ -242,6 +242,8 @@ describe("creating and deleting VMs", () => {
 
   test("records create, first start, sleep, wake and delete for analytics, but not a reconnect", async () => {
     const { fleet, store, newFleet } = setup();
+    const waking: [string, boolean][] = [];
+    fleet.on("waking", (id, fromSleep) => waking.push([id, fromSleep]));
     const vm = await fleet.create();
     await fleet.ensure(vm.id);
     await fleet.sleep(vm.id);
@@ -251,8 +253,11 @@ describe("creating and deleting VMs", () => {
     // VM Bridge restarts while the VM runs: connecting again is not a start.
     fleet.close();
     const after = newFleet();
+    after.on("waking", (id, fromSleep) => waking.push([id, fromSleep]));
     await after.ensure(vm.id);
     await after.destroy(vm.id);
+    // Each wake tells the threads it is coming; the reconnect says it is not a wake from sleep.
+    expect(waking).toEqual([[vm.id, true], [vm.id, true], [vm.id, false]]);
     const recorded = store.vmEvents(0, Date.now() + 1);
     expect(recorded.map((event) => event.kind)).toEqual(["create", "start", "sleep", "wake", "delete"]);
     expect(recorded.every((event) => event.vmId === vm.id && event.provider === "boxd")).toBe(true);
@@ -331,8 +336,11 @@ describe("waking", () => {
     fleet.onConnect = async () => {
       throw new Error("T3 sent something unexpected.");
     };
+    const failures: string[] = [];
+    fleet.on("wakeFailed", (_, reason) => failures.push(reason));
     const vm = await fleet.create();
     await expect(fleet.ensure(vm.id)).rejects.toThrow("T3 sent something unexpected.");
+    expect(failures).toEqual(["T3 sent something unexpected."]);
     expect(events).toEqual(["create", "wake", "sleep"]);
     expect(store.vm(vm.id)).toMatchObject({ state: "error", error: "T3 sent something unexpected." });
     expect(fleet.backend(vm.id)).toBeUndefined();

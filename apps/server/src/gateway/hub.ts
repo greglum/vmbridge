@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import type { AgentFeedbackMode } from "@vmbridge/contracts";
+import { median } from "../analytics.ts";
 import { providers } from "../providers/index.ts";
 import { mayBeAwake, message, type Fleet } from "../fleet.ts";
 import { labelVcpus, type VmLoad } from "../placement.ts";
@@ -37,8 +38,8 @@ type HubEvents = {
   clones: [];
   /** Worktree setup progress changed for a thread. */
   setup: [threadId: string];
-  /** A "waking the VM" notice started or ended for a thread. */
-  wake: [threadId: string];
+  /** The "waking the VM" notice changed for a VM's threads. */
+  wake: [vmId: string];
   /** A project's placement progressed (VM creation, clone). */
   placement: [projectId: string, detail: string];
   awake: [vmId: string];
@@ -107,8 +108,8 @@ export class Hub extends EventEmitter<HubEvents> {
   private readonly shells = new Map<string, Shell>();
   /** Held commands a VM accepted, by command ID, with the sequence its shell shows them at. */
   private readonly answered = new Map<string, number>();
-  /** VMs being sent their held commands, so each gets them one at a time and in order, with the commands each refused. */
-  private readonly replaying = new Map<string, Promise<Wire[]>>();
+  /** VMs being sent their held commands, so each gets them one at a time and in order. */
+  private readonly replaying = new Map<string, Promise<void>>();
   private readonly configs: Map<string, ServerConfig>;
   private readonly schedules: Map<string, ScheduledTasks>;
   private readonly setupProgress = new Map<string, Wire>();
@@ -118,7 +119,10 @@ export class Hub extends EventEmitter<HubEvents> {
   private readonly busyNotices = new Map<string, string>();
   /** Top-level threads placed on a VM, by thread ID, counted toward its load until T3 lists them. */
   private readonly launches = new Map<string, { vmId: string; at: number }>();
-  private readonly waking = new Map<string, { count: number; id: string; startedAt: string; message: string }>();
+  /** The notice a VM's threads show from the start of its wake until it connects, or after the wake failed until the next. */
+  private readonly wakeNotices = new Map<string, WakeNotice>();
+  /** Next-turn settings a VM refused, by thread and command type, until the thread's next message or a newer one accepted. */
+  private readonly refusedSettings = new Map<string, Set<string>>();
   private readonly projectionRefreshes = new Map<string, ReturnType<typeof setTimeout>>();
   /** Fleet-wide agent updates T3 started, by agent instance. */
   private readonly agentUpdates = new Map<string, Wire>();
@@ -148,7 +152,10 @@ export class Hub extends EventEmitter<HubEvents> {
     this.schedules = store.snapshots<ScheduledTasks>("scheduled_tasks");
     this.sequence = settings.get("shellSequence");
     fleet.onConnect = (vmId, backend) => this.attach(vmId, backend);
+    fleet.on("waking", (vmId, fromSleep) => this.showWake(vmId, fromSleep));
+    fleet.on("wakeFailed", (vmId, reason) => this.showWakeFailed(vmId, reason));
     fleet.on("awake", (vmId) => {
+      if (this.wakeNotices.delete(vmId)) this.emit("wake", vmId);
       this.emit("awake", vmId);
       // A save while the VM connected reached neither it (not yet awake) nor the mode it was sent.
       const backend = fleet.backend(vmId);
@@ -330,6 +337,7 @@ export class Hub extends EventEmitter<HubEvents> {
     else this.configs.delete(vmId);
     this.schedules.delete(vmId);
     this.feedbackModes.delete(vmId);
+    this.wakeNotices.delete(vmId);
     this.bump();
     this.emit("shell");
     this.emit("scheduledTasks");
@@ -359,8 +367,7 @@ export class Hub extends EventEmitter<HubEvents> {
    * Sends held commands to a connected VM, one at a time and in the order they were given. A command the VM rejects
    * is dropped, so the thread shows the VM's own state again. One the VM accepted stays laid over its shell until
    * the shell shows it, so the thread does not flicker back in between. One that did not get an answer (the socket
-   * dropped, a timeout) stays, with those after it, for the next try. Resolves, once none is left to send, to the
-   * commands the VM refused meanwhile.
+   * dropped, a timeout) stays, with those after it, for the next try. Resolves once none is left to send.
    */
   private replayHeld(vmId: string) {
     const running = this.replaying.get(vmId);
@@ -371,21 +378,19 @@ export class Hub extends EventEmitter<HubEvents> {
   }
 
   private async sendHeld(vmId: string) {
-    const refused: Wire[] = [];
     while (true) {
       const backend = this.fleet.backend(vmId);
       const held = this.store.heldCommands(vmId).find((row) => !this.answered.has(row.id));
-      if (!backend || !held) return refused;
+      if (!backend || !held) return;
       const outcome = await backend.call<{ sequence?: number }>("orchestration.dispatchCommand", held.payload).then(
         (result) => result?.sequence ?? 0,
         (error) => (error instanceof T3Rejected ? ("rejected" as const) : ("unanswered" as const)),
       );
       this.traffic.record({ kind: "system", operation: `replay ${String(held.payload.type)}`, vmId, status: typeof outcome === "number" ? "ok" : "error" });
-      if (outcome === "unanswered") return refused;
-      if (outcome === "rejected") {
-        this.store.dropHeldCommand(held.id);
-        refused.push(held.payload);
-      } else this.answered.set(held.id, outcome);
+      if (outcome === "unanswered") return;
+      this.noteSetting(held.payload, outcome === "rejected");
+      if (outcome === "rejected") this.store.dropHeldCommand(held.id);
+      else this.answered.set(held.id, outcome);
       if (outcome === "rejected" || this.dropShown(vmId)) {
         this.overlay(vmId);
         this.bump();
@@ -397,15 +402,26 @@ export class Hub extends EventEmitter<HubEvents> {
   /**
    * Waits until a connected VM has been sent the commands VM Bridge holds for it, so a command sent after them reaches
    * it after them, as it would reach T3 after them. Fails when a setting held for the thread a message goes to was
-   * refused: T3 clients send those settings just before a message and stop when one fails, so the message would
-   * otherwise run with the setting the user moved away from.
+   * refused, in this replay or an earlier one: T3 clients send those settings just before a message and stop when one
+   * fails, so the message would otherwise run with the setting the user moved away from. Only that message fails.
    */
   async afterHeld(vmId: string, payload: Wire) {
-    const refused = await this.replayHeld(vmId);
-    const setting = refused.find((command) => command.threadId === payload.threadId && nextTurnCommandTypes.has(String(command.type)));
-    if (payload.type === "message.dispatch" && setting) {
-      throw new Error("This thread's VM refused the change to its settings, so the message was not sent. Check them and send it again.");
-    }
+    await this.replayHeld(vmId);
+    const threadId = str(payload.threadId);
+    if (payload.type !== "message.dispatch" || !threadId || !this.refusedSettings.delete(threadId)) return;
+    throw new Error("This thread's VM refused the change to its settings, so the message was not sent. Check them and send it again.");
+  }
+
+  /** Remembers a next-turn setting the VM refused for its thread, or forgets an older refusal one it accepted replaces. */
+  private noteSetting(command: Wire, refused: boolean) {
+    const threadId = str(command.threadId);
+    const type = String(command.type);
+    if (!threadId || !nextTurnCommandTypes.has(type)) return;
+    const types = this.refusedSettings.get(threadId) ?? new Set<string>();
+    if (refused) types.add(type);
+    else types.delete(type);
+    if (types.size) this.refusedSettings.set(threadId, types);
+    else this.refusedSettings.delete(threadId);
   }
 
   /** Drops the held commands a VM accepted once its shell has reached them. Returns whether it dropped any. */
@@ -1089,29 +1105,34 @@ export class Hub extends EventEmitter<HubEvents> {
     this.prewake(vmId, reason);
   }
 
-  /** Shows a "waking" notice in a sleeping thread until the VM answers. Call the result when done. */
-  beginWake(threadId: string, vmId: string): () => void {
-    const label = providers[this.store.vm(vmId)?.provider ?? "boat"].label;
-    const wake = this.waking.get(threadId) ?? {
-      count: 0,
-      id: crypto.randomUUID(),
-      startedAt: new Date().toISOString(),
-      message: this.store.vm(vmId)?.state === "sleeping" ? `Waking the ${label} VM...` : `Reconnecting to the ${label} VM...`,
-    };
-    wake.count++;
-    this.waking.set(threadId, wake);
-    if (wake.count === 1) this.emit("wake", threadId);
-    return () => {
-      if (--wake.count !== 0) return;
-      this.waking.delete(threadId);
-      this.emit("wake", threadId);
-    };
+  /** Starts a VM's waking notice, with how long its provider's latest wakes took when there are any. */
+  private showWake(vmId: string, fromSleep: boolean) {
+    const vm = this.store.vm(vmId);
+    if (!vm) return;
+    const label = providers[vm.provider].label;
+    let message = `Reconnecting to the ${label} VM...`;
+    if (fromSleep) {
+      const typical = median(this.store.recentWakeMs(vm.provider));
+      message = typical === null ? `Waking the ${label} VM...` : `Waking the ${label} VM, about ${roughly(typical)}`;
+    }
+    this.wakeNotices.set(vmId, { id: crypto.randomUUID(), startedAt: new Date().toISOString(), message, fromSleep, failedAt: null });
+    this.emit("wake", vmId);
   }
 
-  /** The cached projection of a thread on a sleeping VM, with the waking notice when one is showing. */
+  private showWakeFailed(vmId: string, reason: string) {
+    const notice = this.wakeNotices.get(vmId);
+    const vm = this.store.vm(vmId);
+    if (!notice || !vm) return;
+    const label = providers[vm.provider].label;
+    const message = `${notice.fromSleep ? `Could not wake the ${label} VM` : `Could not reconnect to the ${label} VM`}: ${reason}`.slice(0, 300);
+    this.wakeNotices.set(vmId, { ...notice, message, failedAt: new Date().toISOString() });
+    this.emit("wake", vmId);
+  }
+
+  /** The cached projection of a thread on a sleeping VM, with its VM's waking notice when one is showing. */
   sleepingProjection(threadId: string, vmId: string): Projection | null {
     const projection = this.store.projection<Projection>(threadId, vmId);
-    const wake = this.waking.get(threadId);
+    const wake = this.wakeNotices.get(vmId);
     if (!projection || !wake) return projection;
     const turnItems = projection.turnItems ?? [];
     const visible = projection.visibleTurnItems ?? [];
@@ -1119,8 +1140,8 @@ export class Hub extends EventEmitter<HubEvents> {
       id: wake.id,
       threadId,
       type: "system_notice",
-      level: "info",
-      status: "running",
+      level: wake.failedAt ? "error" : "info",
+      status: wake.failedAt ? "failed" : "running",
       message: wake.message,
       runId: null,
       nodeId: null,
@@ -1131,8 +1152,8 @@ export class Hub extends EventEmitter<HubEvents> {
       ordinal: Math.max(0, ...turnItems.map((entry) => entry.ordinal ?? 0)) + 1,
       title: null,
       startedAt: wake.startedAt,
-      completedAt: null,
-      updatedAt: wake.startedAt,
+      completedAt: wake.failedAt,
+      updatedAt: wake.failedAt ?? wake.startedAt,
     };
     return {
       ...projection,
@@ -1310,6 +1331,21 @@ export class Hub extends EventEmitter<HubEvents> {
   close() {
     for (const timer of this.projectionRefreshes.values()) clearTimeout(timer);
   }
+}
+
+interface WakeNotice {
+  /** Its turn item's ID. A failure keeps it, so the notice changes in place. */
+  id: string;
+  startedAt: string;
+  message: string;
+  fromSleep: boolean;
+  failedAt: string | null;
+}
+
+/** A duration as the waking notice gives it: whole seconds, or minutes from 90 seconds. */
+function roughly(ms: number) {
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  return seconds < 90 ? `${seconds} s` : `${Math.round(seconds / 60)} min`;
 }
 
 /** The values of a stream chunk; nothing for other frames. */
