@@ -101,7 +101,7 @@ export async function start(options: StartOptions = {}) {
       if (!migrated) markMigrated();
     },
   });
-  const { settings, key: encryptionKey, secrets, traffic, skills, fleet, stats, usage, hub, gateway, auth, watch } = bridge;
+  const { settings, key: encryptionKey, secrets, traffic, skills, fleet, stats, usage, budget, hub, gateway, auth, watch } = bridge;
   // Defined before the server starts listening; its listener only opens once the tunnel is on.
   let tunnel: CloudflareTunnel;
   let listeners: Listeners<Socket>;
@@ -198,7 +198,7 @@ export async function start(options: StartOptions = {}) {
   };
   // Follows Tailscale coming up or changing address, and the local network appearing or changing.
   const addresses = { name: "addresses", everyMs: 5_000, run: () => listeners.apply() };
-  const stopJobs = runJobs([...bridgeJobs({ hub, fleet, stats, usage, traffic, watch }), localSkills, ...(host ? [] : [addresses])]);
+  const stopJobs = runJobs([...bridgeJobs({ hub, fleet, stats, usage, budget, traffic, watch }), localSkills, ...(host ? [] : [addresses])]);
   void fleet.resume();
   // Accounts saved by older versions lack the details the dashboard shows.
   const githubToken = secrets.get("github.token");

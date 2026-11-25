@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import type { AgentAuth, AgentSecrets } from "../src/agent-auth/profiles.ts";
+import { BudgetReached } from "../src/budget.ts";
 import { bunMachine } from "../src/bun/machine.ts";
 import { openSocket } from "../src/bun/socket.ts";
 import { openDatabase } from "../src/bun/sqlite.ts";
@@ -375,6 +376,48 @@ describe("waking", () => {
   });
 });
 
+describe("a spent budget", () => {
+  const reason = "VM Bridge reached this month's budget of $1.00.";
+
+  test("refuses new VMs and wakes with its reason, leaving a sleeping VM asleep until the budget is raised", async () => {
+    const { fleet, store, events } = setup();
+    fleet.onConnect = async () => {};
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    await fleet.sleep(vm.id);
+    // A wake connects after the sleep, never in the same millisecond as here.
+    await Bun.sleep(2);
+    fleet.refusal = () => reason;
+    events.length = 0;
+
+    await expect(fleet.create()).rejects.toThrow(reason);
+    await expect(fleet.ensure(vm.id)).rejects.toBeInstanceOf(BudgetReached);
+    expect(events).toEqual([]);
+    expect(store.vms().map((entry) => entry.state)).toEqual(["sleeping"]);
+
+    fleet.refusal = () => null;
+    await fleet.ensure(vm.id);
+    expect(events).toEqual(["wake"]);
+  });
+
+  test("never stops a VM already running: it keeps serving, and a dropped connection reconnects", async () => {
+    const { fleet, store, t3, events } = setup();
+    fleet.reconnectPausesMs = [1, 1, 1];
+    fleet.onConnect = async () => {};
+    const vm = await fleet.create();
+    const before = await fleet.ensure(vm.id);
+    t3.state.shell = { threads: [{ id: "t1", status: "running" }], archivedThreads: [], projects: [] } as Shell;
+    fleet.refusal = () => reason;
+    events.length = 0;
+
+    expect(await fleet.ensure(vm.id)).toBe(before);
+    for (const socket of t3.sockets) socket.close();
+    await until(() => Boolean(fleet.backend(vm.id)?.open) && fleet.backend(vm.id) !== before);
+    expect(store.vm(vm.id)?.state).toBe("ready");
+    expect(events).toEqual(["wake"]);
+  });
+});
+
 describe("checkpoints", () => {
   test("waking from a checkpoint deletes the checkpoint", async () => {
     const { fleet, store, driver, box, events } = setup();
@@ -468,6 +511,26 @@ describe("placing new threads", () => {
     expect(store.vm(second.vmId)).toMatchObject({ provider: "boxd", size: store.vm(primary)!.size });
     expect(store.project("p1")?.vms.map((entry) => entry.vmId)).toEqual([primary, second.vmId]);
     expect(store.project("p1")?.vms[1]?.checkoutPath).toBe("/workspace/app");
+  });
+
+  test("with the budget spent, a full project gets no new VM: the thread goes to its awake VM with the busy notice", async () => {
+    const { primary, turns, fleet, store, events, placeThread } = await placed();
+    turns.set(primary, 4);
+    fleet.refusal = () => "VM Bridge reached this month's budget.";
+    events.length = 0;
+    const placement = await placeThread();
+    expect(placement.vmId).toBe(primary);
+    expect(placement.notice).not.toBeNull();
+    expect(store.vms()).toHaveLength(1);
+    expect(events).toEqual([]);
+  });
+
+  test("with the budget spent, a thread for a sleeping project fails with the budget's reason", async () => {
+    const { primary, fleet, placeThread } = await placed();
+    await fleet.sleep(primary);
+    await Bun.sleep(2);
+    fleet.refusal = () => "VM Bridge reached this month's budget.";
+    await expect(placeThread()).rejects.toThrow("VM Bridge reached this month's budget.");
   });
 
   test("a sleeping VM with room is woken before a new one is made", async () => {

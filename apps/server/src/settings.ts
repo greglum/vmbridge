@@ -53,6 +53,10 @@ interface SettingValues {
   localNetwork: boolean;
   /** On Workers, the origin requests last came in on: the address watch links use (see watch/watch.ts). */
   workerOrigin: string | null;
+  /** The monthly spending budget (see budget.ts). Refusing at the limit is off until the user turns it on. */
+  budget: { monthlyUsd: number | null; stopAtLimit: boolean };
+  /** The start of the month T3 last got a budget notice in, so it gets one a month. */
+  budgetNoticeMonth: number | null;
 }
 
 /** The dashboard password's hash. Older versions kept it unencrypted, as the `dashboardKeyHash` setting. */
@@ -89,6 +93,8 @@ const defaults: { [K in keyof SettingValues]: () => SettingValues[K] } = {
   cloudflareTunnel: () => ({ enabled: false, hostname: null, port: null }),
   localNetwork: () => false,
   workerOrigin: () => null,
+  budget: () => ({ monthlyUsd: null, stopAtLimit: false }),
+  budgetNoticeMonth: () => null,
 };
 
 export class Settings {
