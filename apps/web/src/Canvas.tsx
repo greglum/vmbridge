@@ -17,7 +17,7 @@ import {
 } from "@xyflow/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Add01Icon, Alert02Icon, Cancel01Icon, CenterFocusIcon, Delete02Icon, Folder01Icon, InformationCircleIcon, LaptopIcon, Message01Icon, Moon02Icon, PowerIcon, ZoomInIcon, ZoomOutIcon } from "@hugeicons/core-free-icons";
-import { vmSizes, type ClientInfo, type Overview, type ProjectInfo, type ProviderId, type TrafficEvent, type Usage, type VmInfo, type VmSize, type VmState, type VmStats } from "@vmbridge/contracts";
+import { vmSizes, type BridgeUpdate, type ClientInfo, type Overview, type ProjectInfo, type ProviderId, type TrafficEvent, type Usage, type VmInfo, type VmSize, type VmState, type VmStats } from "@vmbridge/contracts";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,6 +42,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "@/components/ui/item";
@@ -147,18 +148,78 @@ function BridgeCard({ data }: NodeProps<BridgeNode>) {
           <div className="font-mono text-xs text-muted-foreground">v{overview.bridge.version}</div>
         </div>
       </div>
-      {overview.bridge.update && (
-        <div className="flex items-center gap-2 border-t py-1.5 pr-1.5 pl-3.5 text-[13px]">
-          <div className="min-w-0 flex-1">
-            <div>VM Bridge {overview.bridge.update} is available</div>
-            <code className="font-mono text-xs text-muted-foreground">vmbridge update</code>
-          </div>
-          <CopyButton value="vmbridge update" label="Copy command" />
-        </div>
-      )}
+      {overview.bridge.update && <UpdateRow update={overview.bridge.update} />}
       {overview.providers.length === 0 && <div className="border-t px-3.5 py-2.5 text-[13px] text-muted-foreground">No provider yet</div>}
       <Handle type="source" position={stacked ? Position.Bottom : Position.Right} style={stacked ? stackedHandle : undefined} isConnectable={false} className={hidden} />
     </div>
+  );
+}
+
+/** The new release's notice, and the way to it this runtime has. The page reloads once the new version runs (useLive). */
+function UpdateRow({ update }: { update: BridgeUpdate }) {
+  const action = useAction();
+  const error = action.error ?? update.error;
+  if (update.how === "command") {
+    return (
+      <div className="flex items-center gap-2 border-t py-1.5 pr-1.5 pl-3.5 text-[13px]">
+        <div className="min-w-0 flex-1">
+          <div>VM Bridge {update.version} is available</div>
+          <code className="font-mono text-xs text-muted-foreground">vmbridge update</code>
+        </div>
+        <CopyButton value="vmbridge update" label="Copy command" />
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1.5 border-t px-3.5 py-2.5 text-[13px]">
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1">{update.installing ? `Updating to ${update.version}...` : `VM Bridge ${update.version} is available`}</div>
+        {update.how === "cloudflare" && <CloudflareUpdate version={update.version} />}
+        {update.how === "dashboard" && !update.installing && (
+          <Button size="sm" disabled={action.busy} onClick={() => void action.run(() => api("/update", { method: "POST", body: {} }))}>
+            {error ? "Try again" : "Update"}
+          </Button>
+        )}
+      </div>
+      {error && !update.installing && <div className="text-xs text-destructive">{error}</div>}
+    </div>
+  );
+}
+
+/** A Worker deploys from the user's own copy of the repository, so the update is a commit there. */
+function CloudflareUpdate({ version }: { version: string }) {
+  const commands = [
+    "git clone https://github.com/YOUR-NAME/YOUR-REPOSITORY.git vmbridge-worker",
+    "cd vmbridge-worker",
+    `git fetch --no-tags https://github.com/vkpdeveloper/vmbridge.git refs/tags/v${version}`,
+    "git read-tree -u --reset FETCH_HEAD",
+    "git checkout HEAD -- wrangler.jsonc",
+    `git commit -m "VM Bridge ${version}"`,
+    "git push",
+  ].join("\n");
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="outline">
+          How to update
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Update to {version}</DialogTitle>
+          <DialogDescription>
+            This Worker deploys from your copy of VM Bridge on GitHub. Run these with your repository's address, keeping your wrangler.jsonc. Cloudflare
+            deploys the push, and this page reloads within a few minutes.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex min-w-0 items-start rounded-lg border bg-muted/40">
+          <pre className="min-w-0 flex-1 overflow-x-auto p-3 font-mono text-xs leading-relaxed">{commands}</pre>
+          <div className="p-1">
+            <CopyButton value={commands} label="Copy commands" />
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

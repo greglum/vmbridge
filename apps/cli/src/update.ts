@@ -1,6 +1,6 @@
-import { realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { checksumFor, childEnv, compiled, isNewer, latestVersion, releaseRepo, version } from "@vmbridge/server";
+import { checksumFor, childEnv, compiled, dataDir, isNewer, latestVersion, releaseRepo, version } from "@vmbridge/server";
 import { pidFile, restartSignal, runningPid, stopProcess } from "./process.ts";
 import { service } from "./service.ts";
 
@@ -93,4 +93,17 @@ export async function update({ check }: { check: boolean }) {
   }
   console.log(`Updated VM Bridge from ${version} to ${latest}.`);
   await restart(latest);
+}
+
+/**
+ * The dashboard's Update button, in the background service: runs `vmbridge update` outside the service, since the
+ * update stops the service and starts it again on the new release. Rejects with the update's last line when it fails;
+ * when it works, this process is stopped first.
+ */
+export async function updateFromDashboard() {
+  const log = join(dataDir(), "update.log");
+  writeFileSync(log, "", { mode: 0o600 });
+  const code = await service.detached([process.execPath, "update"], log);
+  const last = readFileSync(log, "utf8").trim().split("\n").at(-1);
+  throw new Error(last || (code === 0 ? "The update finished, but VM Bridge did not restart." : "The update failed."));
 }

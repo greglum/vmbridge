@@ -12,6 +12,7 @@ import {
   type RepoRule,
   type VmInfo,
   type VmSize,
+  type BridgeUpdate,
 } from "@vmbridge/contracts";
 import { analyticsReport } from "./analytics.ts";
 import { InvalidSignIn, type AgentAuth, type TokenInput } from "./agent-auth/profiles.ts";
@@ -62,8 +63,8 @@ export interface AdminDeps {
   network: BridgeNetwork;
   /** Where the dashboard password is set instead of the dashboard, such as a Worker's secret. Null when it can be changed here. */
   passwordSource: string | null;
-  /** A newer VM Bridge release that `vmbridge update` installs, or null. */
-  availableUpdate: () => string | null;
+  /** A newer VM Bridge release, or null, how this runtime moves to it, and the install the Update button runs, if it has one. */
+  update: { available: () => string | null; how: BridgeUpdate["how"]; install: (() => Promise<void>) | null };
   settings: Settings;
   secrets: Secrets;
   store: Store;
@@ -126,6 +127,10 @@ function timeRange(request: Request) {
  * Secret values go in and never come out: responses only say whether each one is set.
  */
 export class Admin {
+  /** The dashboard's install of a new release is running. A second Update click while it runs does nothing. */
+  private installing = false;
+  private installError: string | null = null;
+
   constructor(private readonly deps: AdminDeps) {}
 
   async fetch(request: Request, origin: RequestOrigin): Promise<Response> {
@@ -195,6 +200,25 @@ export class Admin {
       return json({ ok: true });
     }
     if (path === "/overview" && method === "GET") return json(this.overview());
+    if (path === "/update" && method === "POST") {
+      const { install, available } = this.deps.update;
+      if (!install || !available()) throw new BadRequest("There is no update to install from the dashboard.");
+      if (!this.installing) {
+        this.installing = true;
+        this.installError = null;
+        // When the install works, VM Bridge restarts on the new release before this settles.
+        void install()
+          .catch((error) => {
+            this.installError = message(error);
+          })
+          .finally(() => {
+            this.installing = false;
+            fleet.emit("changed");
+          });
+        fleet.emit("changed");
+      }
+      return json({ ok: true }, 202);
+    }
     if (path === "/events" && method === "GET") return this.events(request);
     if (path === "/traffic" && method === "GET") return json(this.deps.traffic.recent);
     if (path === "/usage" && method === "GET") {
@@ -628,6 +652,12 @@ export class Admin {
     this.deps.hub.emit("config");
   }
 
+  private availableUpdate(): BridgeUpdate | null {
+    const version = this.deps.update.available();
+    if (!version) return null;
+    return { version, how: this.deps.update.how, installing: this.installing, error: this.installError };
+  }
+
   overview(): Overview {
     const { settings, secrets, store, fleet, hub, clients, gateway } = this.deps;
     const defaultProvider = settings.get("defaultProvider");
@@ -680,7 +710,7 @@ export class Admin {
         };
       });
     return {
-      bridge: { id: settings.get("bridgeId"), version: this.deps.version, startedAt: this.deps.startedAt, update: this.deps.availableUpdate() },
+      bridge: { id: settings.get("bridgeId"), version: this.deps.version, startedAt: this.deps.startedAt, update: this.availableUpdate() },
       setup: {
         provider: Boolean(defaultProvider),
         github: secrets.has("github.token"),

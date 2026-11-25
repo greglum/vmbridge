@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { childEnv, compiled, dataDir } from "@vmbridge/server";
@@ -43,6 +44,9 @@ function environment() {
     ...(process.env.VMBRIDGE_HOME ? { VMBRIDGE_HOME: process.env.VMBRIDGE_HOME } : {}),
   };
 }
+
+/** What a command run outside the service needs: VM Bridge's own update finds the data directory with it. */
+const detachedEnv = () => childEnv(process.env.VMBRIDGE_HOME ? { VMBRIDGE_HOME: process.env.VMBRIDGE_HOME } : {});
 
 async function exec(args: string[]) {
   const child = Bun.spawn(args, { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: childEnv() });
@@ -129,6 +133,20 @@ ${env}
     await must(["launchctl", "kickstart", `${this.domain()}/${label}`]);
   },
 
+  /**
+   * Runs `args` with its output appended to `log`, and resolves with its exit code. It runs in its own process group,
+   * which launchd leaves running when the service exits, so it can stop and start the service.
+   */
+  detached(args: string[], log: string) {
+    const out = openSync(log, "a", 0o600);
+    const child = spawn(args[0]!, args.slice(1), { detached: true, stdio: ["ignore", out, out], env: detachedEnv() });
+    closeSync(out);
+    return new Promise<number>((resolve) => {
+      child.on("error", () => resolve(1));
+      child.on("exit", (code) => resolve(code ?? 1));
+    });
+  },
+
   async uninstall() {
     await this.stop();
     rmSync(this.plist(), { force: true });
@@ -186,6 +204,20 @@ WantedBy=default.target
     await must(["systemctl", "--user", "start", "vmbridge.service"]);
   },
 
+  /**
+   * Runs `args` with its output appended to `log`, and resolves with its exit code. It runs as its own transient unit:
+   * systemd stops everything in the service's unit when it exits, which would end a plain child halfway.
+   */
+  async detached(args: string[], log: string) {
+    const env = Object.entries(detachedEnv()).map(([key, value]) => `--setenv=${key}=${value}`);
+    const output = [`--property=StandardOutput=append:${log}`, `--property=StandardError=append:${log}`];
+    const child = Bun.spawn(["systemd-run", "--user", "--collect", "--quiet", "--wait", ...output, ...env, "--", ...args], {
+      stdio: ["ignore", "ignore", "ignore"],
+      env: childEnv(),
+    });
+    return await child.exited;
+  },
+
   async uninstall() {
     if (!existsSync(this.unit())) return;
     await exec(["systemctl", "--user", "disable", "--now", "vmbridge.service"]);
@@ -201,6 +233,7 @@ const unsupported = {
   stop: async () => false,
   pid: async (): Promise<number | null> => null,
   start: async () => {},
+  detached: async (_: string[], __: string) => 1,
   uninstall: async () => {},
 };
 
