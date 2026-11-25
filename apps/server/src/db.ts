@@ -252,6 +252,30 @@ export const migrations = [
     created_at INTEGER NOT NULL
   );
   `,
+  // Files a T3 client uploaded for a message not sent yet (see gateway/attachments.ts). The bytes are in 1 MB chunks,
+  // under Durable Object SQL's 2 MB limit, and are dropped once the thread's VM has them. No foreign key to vms: a
+  // row outlives a deleted VM only until it expires.
+  `
+  CREATE TABLE attachment_uploads (
+    id TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL UNIQUE,
+    client_id TEXT,
+    type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    vm_id TEXT,
+    vm_attachment_id TEXT,
+    expires_at INTEGER NOT NULL
+  );
+  CREATE TABLE attachment_chunks (
+    upload_id TEXT NOT NULL REFERENCES attachment_uploads(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    data BLOB NOT NULL,
+    PRIMARY KEY (upload_id, seq)
+  );
+  `,
 ];
 
 /**

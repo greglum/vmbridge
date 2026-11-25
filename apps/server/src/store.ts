@@ -308,6 +308,10 @@ export class Store {
   }
 
   /** Places a thread on a VM. Only VM Bridge's own placement calls this: a VM's report goes through `claimThread`. */
+  threads() {
+    return this.db.all<{ id: string; vmId: string }>("SELECT id, vm_id AS vmId FROM threads");
+  }
+
   setThreadVm(threadId: string, vmId: string) {
     this.db.run("INSERT INTO threads (id, vm_id) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET vm_id = excluded.vm_id", threadId, vmId);
   }
