@@ -16,6 +16,7 @@ import { defaultAgents, pendingAgent, presentAgent, type AgentReport } from "./a
 import { Attachments, maxUploadBytes } from "./attachments.ts";
 import type { FileTrees, Worktree } from "./files.ts";
 import { applyHeldCommand, nextTurnCommandTypes } from "./held.ts";
+import { ProjectIcons } from "./icons.ts";
 import { isPathKey, projectForPath, projectRoot, translate, vmForPath, within, type Environments } from "./paths.ts";
 import { repositoryIdentity } from "./repos.ts";
 import { threadStamp } from "./saved.ts";
@@ -141,6 +142,8 @@ export class Hub extends EventEmitter<HubEvents> {
   private sequence: number;
   /** Uploads waiting for the message that sends them. */
   readonly attachments: Attachments;
+  /** Each project's logo, kept for while its VMs sleep. */
+  readonly icons: ProjectIcons;
 
   constructor(
     readonly store: Store,
@@ -155,6 +158,7 @@ export class Hub extends EventEmitter<HubEvents> {
     super();
     this.setMaxListeners(0);
     this.attachments = new Attachments(store.db);
+    this.icons = new ProjectIcons(store.db);
     this.reported = new Map([...store.snapshots<Shell>("shell")].map(([vmId, shell]) => [vmId, this.owned(vmId, shell)]));
     for (const vmId of this.reported.keys()) this.overlay(vmId);
     this.configs = store.snapshots<ServerConfig>("config");
@@ -289,12 +293,39 @@ export class Hub extends EventEmitter<HubEvents> {
     if (updated) this.refreshProjectionSoon(vmId, updated.id);
     const backend = this.fleet.backend(vmId);
     if (item.kind === "snapshot" && !enrichment && backend) void this.saveThreads(vmId, backend, reported, connectSaveMs);
+    if (backend && ((item.kind === "snapshot" && !enrichment) || item.kind === "project.updated")) {
+      const only = item.kind === "project.updated" ? item.project?.id : undefined;
+      this.refreshIcons(vmId, backend, only);
+    }
     const working = hasLiveWork(shell);
     if (working) this.fleet.touch(vmId);
     // Shown as soon as the VM reports it, rather than on the next idle sweep.
     this.setBusy(vmId, working);
     this.bump();
     this.emit("shell");
+  }
+
+  /**
+   * Asks a VM's T3 for the logos of the projects it is the primary VM of, or of one, to keep for while it sleeps.
+   * Only the primary asks, so a second VM still cloning a project does not report it without one.
+   */
+  private refreshIcons(vmId: string, backend: Backend, only?: string) {
+    for (const project of this.reported.get(vmId)?.projects ?? []) {
+      const cwd = str(project.workspaceRoot);
+      if (!cwd || (only && project.id !== only)) continue;
+      const registered = this.store.project(project.id);
+      if (!registered || primaryVm(registered)?.vmId !== vmId) continue;
+      void this.icons.refresh(project.id, cwd, backend);
+    }
+  }
+
+  /** The icon picked for a project in T3, from the shell a VM holding it last reported. */
+  pickedIcon(projectId: string): unknown {
+    for (const shell of this.shells.values()) {
+      const project = shell.projects?.find((row) => row.id === projectId);
+      if (project?.projectIcon) return project.projectIcon;
+    }
+    return null;
   }
 
   /** Records a thread's latest run as a turn for analytics, once per run. Only IDs and names: never messages. */

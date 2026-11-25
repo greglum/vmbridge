@@ -317,6 +317,18 @@ export const migrations = [
     FOREIGN KEY (project_id, vm_id) REFERENCES project_vms(project_id, vm_id) ON DELETE CASCADE
   );
   `,
+  // The logo T3 finds in each project's repository, kept from when a VM holding it was last awake (see gateway/icons.ts).
+  `
+  CREATE TABLE project_icons (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    content_type TEXT NOT NULL,
+    data BLOB NOT NULL,
+    revision TEXT NOT NULL,
+    name TEXT NOT NULL,
+    fetched_at INTEGER NOT NULL
+  );
+  CREATE INDEX project_icons_revision ON project_icons (revision);
+  `,
 ];
 
 /**

@@ -1,4 +1,4 @@
-import type { AgentKind, ProviderId } from "@vmbridge/contracts";
+import type { AgentKind, ProjectIcon as ProjectIconInfo, ProjectIconColor, ProviderId } from "@vmbridge/contracts";
 import { cn } from "@/lib/utils";
 import claude from "./assets/agents/claude.svg";
 import codex from "./assets/agents/codex.svg";
@@ -62,6 +62,50 @@ export function AgentLogo({ agent, className }: { agent: AgentKind; className?: 
   return (
     <span className={cn("grid size-6 shrink-0 place-items-center overflow-hidden rounded-md ring-1 ring-white/10", logo.tile, className)}>
       <img src={logo.src} alt="" className={cn("size-full object-contain", logo.inset)} draggable={false} />
+    </span>
+  );
+}
+
+// Whole class names, so Tailwind sees each one. The shades T3 uses on a dark background.
+const projectColors: Record<ProjectIconColor, string> = {
+  gray: "text-gray-400",
+  red: "text-red-400",
+  orange: "text-orange-400",
+  amber: "text-amber-400",
+  yellow: "text-yellow-400",
+  lime: "text-lime-400",
+  green: "text-green-400",
+  emerald: "text-emerald-400",
+  teal: "text-teal-400",
+  cyan: "text-cyan-400",
+  sky: "text-sky-400",
+  blue: "text-blue-400",
+  indigo: "text-indigo-400",
+  violet: "text-violet-400",
+  purple: "text-purple-400",
+  fuchsia: "text-fuchsia-400",
+  pink: "text-pink-400",
+  rose: "text-rose-400",
+};
+
+/** A project's icon as T3 shows it: its repository's logo, an emoji, or letters on a tile of their color. */
+export function ProjectIcon({ icon, className }: { icon: ProjectIconInfo; className?: string }) {
+  const box = cn("inline-flex size-4 shrink-0 items-center justify-center", className);
+  if (icon.kind === "image") return <img src={icon.url} alt="" className={cn(box, "rounded-[25%] object-contain")} />;
+  if (icon.kind === "emoji") {
+    return (
+      <span aria-hidden="true" className={cn(box, "[container-type:size]")}>
+        <span className="text-[80cqh] leading-none">{icon.emoji}</span>
+      </span>
+    );
+  }
+  return (
+    <span aria-hidden="true" className={box}>
+      <svg viewBox="0 0 16 16" className={cn("size-full rounded-[25%] font-mono select-none", projectColors[icon.color])} style={{ backgroundColor: "color-mix(in srgb, currentColor 14%, transparent)" }}>
+        <text x="8" y="10.8" textAnchor="middle" fill="currentColor" fontSize="8.25" fontWeight="700" textLength={Array.from(icon.text).length === 1 ? 6 : 12} lengthAdjust="spacingAndGlyphs">
+          {icon.text}
+        </text>
+      </svg>
     </span>
   );
 }

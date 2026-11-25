@@ -5,6 +5,7 @@ import type { Frame } from "../vm/backend.ts";
 import type { WatchUpgrade } from "../watch/watch.ts";
 import { assetPrefix, bridgeAssetUrl, heldOwner, relayedAsset, uploadPrefix } from "./attachments.ts";
 import { bridgeAuth, bridgeScopes, type Hub } from "./hub.ts";
+import { iconOwner, keptIconHeaders } from "./icons.ts";
 import { previewQuery, previewRelay, previewStreamPath } from "./preview.ts";
 import type { Rpc, RpcClient } from "./rpc.ts";
 import { historyPage, latestOrdinal } from "./saved.ts";
@@ -301,9 +302,15 @@ export class T3Gateway {
 
   /**
    * An asset, from the VM that signed its URL. A VM that is not awake is not woken for it, and the client shows the
-   * asset as missing. An upload VM Bridge still holds is served from here, as a download unless it is an image.
+   * asset as missing. An upload VM Bridge still holds is served from here, as a download unless it is an image, and
+   * so is a project logo it kept.
    */
   private async asset(request: Request, owner: string, token: string, name: string) {
+    if (owner === iconOwner) {
+      const file = this.hub.icons.file(token);
+      if (!file) return notFound();
+      return new Response(request.method === "HEAD" ? null : file, { headers: keptIconHeaders(file.type) });
+    }
     if (owner === heldOwner) {
       const file = this.hub.attachments.file(token);
       if (!file) return notFound();

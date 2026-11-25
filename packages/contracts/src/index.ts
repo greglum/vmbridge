@@ -330,9 +330,21 @@ export interface SkillSearchResult {
   installs: number;
 }
 
+/** T3's colors for a project's letters. */
+export type ProjectIconColor =
+  | "gray" | "red" | "orange" | "amber" | "yellow" | "lime" | "green" | "emerald" | "teal"
+  | "cyan" | "sky" | "blue" | "indigo" | "violet" | "purple" | "fuchsia" | "pink" | "rose";
+
+/** The icon T3 shows for a project: its repository's logo, or letters or an emoji. */
+export type ProjectIcon =
+  | { kind: "image"; url: string }
+  | { kind: "monogram"; text: string; color: ProjectIconColor }
+  | { kind: "emoji"; emoji: string };
+
 export interface ProjectInfo {
   id: string;
   title: string;
+  icon: ProjectIcon;
   url: string;
   branch: string | null;
   /** VMs holding the project, primary first. */

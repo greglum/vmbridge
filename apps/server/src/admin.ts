@@ -22,6 +22,7 @@ import { fetchGitHubAccount, fetchGitHubRepos, GitHubRejected } from "./github.t
 import type { Clients } from "./auth/clients.ts";
 import { message, providerValues, type Fleet } from "./fleet.ts";
 import type { Hub } from "./gateway/hub.ts";
+import { keptIconHeaders, projectIcon } from "./gateway/icons.ts";
 import type { T3Gateway } from "./gateway/http.ts";
 import { githubName } from "./gateway/repos.ts";
 import { isWorking } from "./gateway/types.ts";
@@ -254,6 +255,12 @@ export class Admin {
     if (path === "/network/test" && method === "POST") {
       const { addresses } = await this.deps.network.info(request);
       return json(await Promise.all(addresses.map((address) => testAddress(address.url, settings.get("bridgeId")))));
+    }
+    if (section === "projects" && id && action === "icon" && method === "GET") {
+      const icon = hub.icons.get(id);
+      const file = icon && hub.icons.file(icon.revision);
+      if (!file) return json({ error: "This project has no logo." }, 404);
+      return new Response(file, { headers: keptIconHeaders(file.type) });
     }
     if (section === "network" && id && !action && method === "POST") {
       const changed = await this.deps.network.change(id, await body(request));
@@ -735,6 +742,7 @@ export class Admin {
       projects: projects.map((project) => ({
         id: project.id,
         title: project.title,
+        icon: projectIcon(project.id, project.title, hub.pickedIcon(project.id), hub.icons.get(project.id)),
         url: project.url,
         branch: project.branch,
         vmIds: project.vms.map((entry) => entry.vmId),
