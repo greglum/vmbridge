@@ -63,14 +63,15 @@ export function upgrader(gateway: T3Gateway): Upgrade {
       close: (code, reason) => server.close(code, reason),
     };
     let closed = false;
-    const close = () => {
+    // An error has no close frame: the connection dropped, which WebSocket calls 1006.
+    const close = (code = 1006, reason = "") => {
       if (closed) return;
       closed = true;
-      gateway.closed(socket);
+      gateway.closed(socket, code, reason);
     };
     server.addEventListener("message", (event) => gateway.received(socket, typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data as ArrayBuffer)));
-    server.addEventListener("close", close);
-    server.addEventListener("error", close);
+    server.addEventListener("close", (event) => close(event.code, event.reason));
+    server.addEventListener("error", () => close());
     gateway.opened(socket);
     const init: WorkersResponseInit = { status: 101, webSocket: client };
     return new Response(null, init);

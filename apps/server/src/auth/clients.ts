@@ -8,8 +8,14 @@ const ticketMs = 30_000;
 
 /** What a ticket opens: the RPC WebSocket, or a media stream such as a preview tab's. T3 asks for each separately. */
 export type TicketUse = "rpc" | "media";
-// How often a device in use writes its last-seen time and pushes its session forward.
+// How often a device in use writes its last-seen time and pushes its session forward, or its connected time.
 const touchEveryMs = 60_000;
+
+/** Why a credential was refused, and the device it belongs to when VM Bridge can tell. Never holds the credential. */
+export interface Refusal {
+  reason: string;
+  clientId?: string;
+}
 
 interface ClientRow {
   id: string;
@@ -17,6 +23,7 @@ interface ClientRow {
   created_at: number;
   expires_at: number;
   last_seen_at: number | null;
+  last_connected_at: number | null;
 }
 
 /**
@@ -26,6 +33,8 @@ interface ClientRow {
  */
 export class Clients {
   private readonly tickets = new Map<string, { clientId: string; use: TicketUse; expiresAt: number }>();
+  /** When each connected device last wrote its connected time. */
+  private readonly connectedWrites = new Map<string, number>();
 
   constructor(private readonly db: Sql) {}
 
@@ -75,10 +84,21 @@ export class Clients {
   /** The client behind a bearer token, if the session is live. Each use keeps the session alive for another 30 days. */
   authenticate(bearer: string): { id: string; name: string; expiresAt: number } | null {
     const row = this.db.one<ClientRow>(
-      "SELECT id, name, created_at, expires_at, last_seen_at FROM clients WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?",
+      "SELECT id, name, created_at, expires_at, last_seen_at, last_connected_at FROM clients WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?",
       hashToken(bearer), Date.now(),
     );
     return row ? { id: row.id, name: row.name, expiresAt: this.touch(row) } : null;
+  }
+
+  /** Why `authenticate` refused a bearer token. A removed or expired device is named, since it no longer shows in the list. */
+  refusal(bearer: string): Refusal {
+    const row = this.db.one<{ id: string; name: string; expires_at: number; revoked_at: number | null }>(
+      "SELECT id, name, expires_at, revoked_at FROM clients WHERE token_hash = ?",
+      hashToken(bearer),
+    );
+    if (!row) return { reason: "unknown token" };
+    if (row.revoked_at !== null) return { reason: `token of removed device "${row.name}"`, clientId: row.id };
+    return { reason: `session of "${row.name}" expired`, clientId: row.id };
   }
 
   valid(clientId: string): boolean {
@@ -98,7 +118,7 @@ export class Clients {
 
   list(connected: ReadonlySet<string>): ClientInfo[] {
     return this.db.all<ClientRow>(
-      "SELECT id, name, created_at, expires_at, last_seen_at FROM clients WHERE revoked_at IS NULL AND expires_at > ? ORDER BY created_at",
+      "SELECT id, name, created_at, expires_at, last_seen_at, last_connected_at FROM clients WHERE revoked_at IS NULL AND expires_at > ? ORDER BY created_at",
       Date.now(),
     )
       .map((row) => ({
@@ -107,6 +127,7 @@ export class Clients {
         createdAt: row.created_at,
         expiresAt: row.expires_at,
         lastSeenAt: row.last_seen_at,
+        lastConnectedAt: row.last_connected_at,
         connected: connected.has(row.id),
       }));
   }
@@ -124,11 +145,28 @@ export class Clients {
     return { ticket, expiresAt };
   }
 
-  /** Single use: a ticket is consumed whether or not it is still valid, and opens only what it was issued for. */
-  redeemTicket(ticket: string, use: TicketUse = "rpc"): string | null {
+  /**
+   * Single use: a ticket is consumed whether or not it is still valid, and opens only what it was issued for. A used
+   * ticket is gone, so it cannot be tied to its device.
+   */
+  redeemTicket(ticket: string, use: TicketUse = "rpc"): { clientId: string } | { refused: Refusal } {
+    if (!ticket) return { refused: { reason: "no ticket" } };
     const key = hashToken(ticket);
     const entry = this.tickets.get(key);
     this.tickets.delete(key);
-    return entry && entry.use === use && entry.expiresAt > Date.now() && this.valid(entry.clientId) ? entry.clientId : null;
+    if (!entry) return { refused: { reason: "unknown or used ticket" } };
+    const { clientId } = entry;
+    if (entry.use !== use) return { refused: { reason: `${entry.use} ticket used for ${use}`, clientId } };
+    if (entry.expiresAt <= Date.now()) return { refused: { reason: "expired ticket", clientId } };
+    if (!this.valid(clientId)) return { refused: { reason: "device removed or its session expired", clientId } };
+    return { clientId };
+  }
+
+  /** Records that the device's RPC WebSocket is open now. At most once a minute unless `now` is asked, as on open and close. */
+  markConnected(clientId: string, now = false): void {
+    const at = Date.now();
+    if (!now && at - (this.connectedWrites.get(clientId) ?? 0) < touchEveryMs) return;
+    this.connectedWrites.set(clientId, at);
+    this.db.run("UPDATE clients SET last_connected_at = ? WHERE id = ?", at, clientId);
   }
 }

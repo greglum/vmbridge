@@ -1,4 +1,4 @@
-import type { Clients } from "../auth/clients.ts";
+import type { Clients, Refusal } from "../auth/clients.ts";
 import { clientSessionMs } from "../auth/clients.ts";
 import { message } from "../fleet.ts";
 import type { Frame } from "../vm/backend.ts";
@@ -41,6 +41,34 @@ const tokenExchange = {
   requested: "urn:ietf:params:oauth:token-type:access_token",
 };
 
+/** What a request turned out to be, for the log: the device it came from, or why it was refused or failed. */
+interface Seen {
+  clientId?: string;
+  refusal?: Refusal;
+  failure?: string;
+}
+
+const knownPaths = new Set(["/ws", "/oauth/token", "/.well-known/t3/environment", "/api/auth/session", "/api/orchestration/shell", "/api/projects", previewStreamPath]);
+
+/**
+ * A path as the log shows it. Ids are folded, and an upload or asset URL's token, which is what lets anyone send or
+ * read the file, never shows. With `known`, a path VM Bridge does not serve is not shown at all: anyone can send one.
+ */
+export function logPath(path: string, known = false) {
+  if (path.startsWith(uploadPrefix)) return `${uploadPrefix}:token`;
+  if (bridgeAssetUrl.test(path)) return `${assetPrefix}:file`;
+  const shown = path.replace(/\/threads\/[^/]+/, "/threads/:id");
+  if (!known) return shown;
+  if (knownPaths.has(shown) || /^\/api\/auth\/websocket-ticket(?:\/(rpc|media))?$/.test(shown)) return shown;
+  return /^\/api\/orchestration\/threads\/:id(?:\/(bounded|history|transcript))?$/.test(shown) ? shown : "an unknown path";
+}
+
+/** A WebSocket close code in plain words, with the reason the closing side gave. */
+export function closeText(code: number, reason: string) {
+  const words: Record<number, string> = { 1000: "closed normally", 1001: "going away", 1005: "no reason given", 1006: "connection lost", 1011: "server error" };
+  return [`code ${code}`, reason || words[code]].filter(Boolean).join(", ");
+}
+
 /** Paths a T3 client uses. Everything else belongs to the dashboard. */
 export const isT3Path = (path: string) => path === "/ws" || path === "/oauth/token" || path.startsWith("/api/") || path.startsWith("/.well-known/t3/");
 
@@ -81,10 +109,11 @@ export class T3Gateway {
     const origin = request.headers.get("origin");
     const started = performance.now();
     const path = new URL(request.url).pathname;
-    const seen: { clientId?: string } = {};
-    const response = await this.route(request, upgrade, relay, seen).catch((error) =>
-      json({ error: "bridge_unavailable", message: message(error) }, 503),
-    );
+    const seen: Seen = {};
+    const response = await this.route(request, upgrade, relay, seen).catch((error) => {
+      seen.failure = message(error);
+      return json({ error: "bridge_unavailable", message: seen.failure }, 503);
+    });
     if (!response) return undefined;
     // T3's desktop app strips `Origin` from its requests but its renderer still checks the answer, so a request with no
     // `Origin` gets the wildcard, as T3's own server sends. Nothing here is sent with cookies, so `*` is enough.
@@ -93,22 +122,26 @@ export class T3Gateway {
     // Assets keep the caching T3 gives them: their URLs are signed anew for each new copy.
     if (!response.headers.has("cache-control")) response.headers.set("cache-control", "no-store");
     if (!seen.clientId) {
-      // Anyone can send these, so failures are only counted. Pairing logs itself; discovery and preflights are not worth a line.
-      if (!response.ok) this.hub.traffic.refused();
+      // Anyone can send these, so failures are only counted, by path and reason. Pairing logs itself; discovery and
+      // preflights are not worth a line. A session check with a bad token answers 200 but is still a refusal.
+      if (seen.refusal || !response.ok) {
+        const reason = seen.refusal?.reason ?? seen.failure ?? `HTTP ${response.status}`;
+        this.hub.traffic.refused({ path: logPath(path, true), reason, ...(seen.refusal?.clientId ? { clientId: seen.refusal.clientId } : {}) });
+      }
     } else if (path !== "/api/auth/session") {
       this.hub.traffic.record({
         kind: "http",
-        // An upload URL's token is what lets anyone send the file.
-        operation: `${request.method} ${path.replace(/\/threads\/[^/]+/, "/threads/:id").replace(/^\/api\/attachments\/upload\/.+/, `${uploadPrefix}:token`)}`,
+        operation: `${request.method} ${logPath(path)}`,
         clientId: seen.clientId,
         status: response.ok ? "ok" : "error",
+        ...(response.ok ? {} : { reason: seen.failure ?? `HTTP ${response.status}` }),
         durationMs: Math.round(performance.now() - started),
       });
     }
     return response;
   }
 
-  private async route(request: Request, upgrade: Upgrade, relay: WatchUpgrade, seen: { clientId?: string }): Promise<Response | undefined> {
+  private async route(request: Request, upgrade: Upgrade, relay: WatchUpgrade, seen: Seen): Promise<Response | undefined> {
     const url = new URL(request.url);
     const path = url.pathname;
     if (request.method === "OPTIONS") {
@@ -121,24 +154,35 @@ export class T3Gateway {
       });
     }
     if (path === "/.well-known/t3/environment" && request.method === "GET") return json(this.hub.descriptor());
-    if (path === "/oauth/token" && request.method === "POST") return this.exchange(request);
+    if (path === "/oauth/token" && request.method === "POST") return this.exchange(request, seen);
     if (path === "/ws") {
       if (url.searchParams.get("orchestrationProtocol") !== "2") {
+        seen.refusal = { reason: `T3 protocol ${url.searchParams.get("orchestrationProtocol") ?? "missing"}, not 2` };
         return json({ code: "orchestration_protocol_incompatible", orchestrationProtocolVersion: 2 }, 426);
       }
-      const clientId = this.clients.redeemTicket(url.searchParams.get("wsTicket") ?? "");
-      if (!clientId) return unauthenticated();
-      const upgraded = upgrade(request, { clientId, cancels: new Map() });
-      return upgraded === null ? json({ error: "websocket_required" }, 400) : upgraded;
+      const redeemed = this.clients.redeemTicket(url.searchParams.get("wsTicket") ?? "");
+      if ("refused" in redeemed) {
+        seen.refusal = redeemed.refused;
+        return unauthenticated();
+      }
+      const upgraded = upgrade(request, { clientId: redeemed.clientId, cancels: new Map() });
+      if (upgraded !== null) return upgraded;
+      seen.refusal = { reason: "not a WebSocket upgrade", clientId: redeemed.clientId };
+      return json({ error: "websocket_required" }, 400);
     }
-    if (path === previewStreamPath) return this.previewStream(request, url, relay);
+    if (path === previewStreamPath) return this.previewStream(request, url, relay, seen);
     // Signed URLs, as on T3: the token in the path is the credential, and clients send no bearer with them.
     if (path.startsWith(uploadPrefix) && request.method === "POST") return this.upload(request, path.slice(uploadPrefix.length), seen);
     const asset = bridgeAssetUrl.exec(path);
-    if (asset && (request.method === "GET" || request.method === "HEAD")) return this.asset(request, asset[1]!, asset[2]!, asset[3]!);
+    if (asset && (request.method === "GET" || request.method === "HEAD")) {
+      const response = await this.asset(request, asset[1]!, asset[2]!, asset[3]!);
+      if (response.status === 404) seen.refusal = { reason: "unknown or expired file link" };
+      return response;
+    }
 
     const bearer = request.headers.get("authorization")?.match(/^Bearer (.+)$/)?.[1];
     const client = bearer ? this.clients.authenticate(bearer) : null;
+    if (bearer && !client) seen.refusal = this.clients.refusal(bearer);
     if (path === "/api/auth/session") {
       return json({
         authenticated: Boolean(client),
@@ -153,7 +197,10 @@ export class T3Gateway {
           : {}),
       });
     }
-    if (!client) return unauthenticated();
+    if (!client) {
+      seen.refusal ??= { reason: "no token" };
+      return unauthenticated();
+    }
     seen.clientId = client.id;
 
     const ticketFor = /^\/api\/auth\/websocket-ticket(?:\/(rpc|media))?$/.exec(path);
@@ -168,6 +215,7 @@ export class T3Gateway {
     }
     const thread = /^\/api\/orchestration\/threads\/([^/]+)(?:\/(bounded|history|transcript))?$/.exec(path);
     if (thread && request.method === "GET") return this.thread(decodeURIComponent(thread[1]!), thread[2], url);
+    seen.failure = "not a route VM Bridge serves";
     return json({ error: "unsupported_bridge_route" }, 404);
   }
 
@@ -175,9 +223,13 @@ export class T3Gateway {
    * A preview tab's stream, relayed to the T3 server on the VM that owns the tab's thread and no other: a tab exists
    * only on its thread's VM. A VM that is not awake has no tabs, which the client hears as a closed tab.
    */
-  private previewStream(request: Request, url: URL, relay: WatchUpgrade) {
-    const clientId = this.clients.redeemTicket(url.searchParams.get("wsTicket") ?? "", "media");
-    if (!clientId) return unauthenticated();
+  private previewStream(request: Request, url: URL, relay: WatchUpgrade, seen: Seen) {
+    const redeemed = this.clients.redeemTicket(url.searchParams.get("wsTicket") ?? "", "media");
+    if ("refused" in redeemed) {
+      seen.refusal = redeemed.refused;
+      return unauthenticated();
+    }
+    const { clientId } = redeemed;
     const query = previewQuery(url);
     const stream = {
       clientId,
@@ -194,14 +246,20 @@ export class T3Gateway {
     const upgraded = relay(request, stream.viewer);
     if (upgraded !== null) return upgraded;
     this.streams.delete(stream);
+    seen.refusal = { reason: "not a WebSocket upgrade", clientId };
     return json({ error: "websocket_required" }, 400);
   }
 
-  private async upload(request: Request, token: string, seen: { clientId?: string }) {
+  private async upload(request: Request, token: string, seen: Seen) {
     const { status, clientId } = await this.hub.attachments.receive(token, request);
     if (clientId) seen.clientId = clientId;
     if (status === 204) return new Response(null, { status });
-    return status === 400 ? new Response("The upload is not the size it was announced as.", { status }) : notFound();
+    if (status === 400) {
+      seen.failure = "upload not the size announced";
+      return new Response("The upload is not the size it was announced as.", { status });
+    }
+    seen.refusal = { reason: "unknown or expired upload link" };
+    return notFound();
   }
 
   /**
@@ -233,17 +291,21 @@ export class T3Gateway {
     return relayedAsset(upstream);
   }
 
-  private async exchange(request: Request) {
+  private async exchange(request: Request, seen: Seen) {
     const body = new URLSearchParams(await request.text());
     if (
       body.get("grant_type") !== tokenExchange.grant ||
       body.get("subject_token_type") !== tokenExchange.subject ||
       body.get("requested_token_type") !== tokenExchange.requested
     ) {
+      seen.refusal = { reason: "unsupported pairing request" };
       return json({ error: "unsupported_grant_type" }, 400);
     }
     const access = this.clients.exchange(body.get("subject_token") ?? "");
-    if (!access) return json({ error: "invalid_grant" }, 400);
+    if (!access) {
+      seen.refusal = { reason: "unknown, used or expired pairing link" };
+      return json({ error: "invalid_grant" }, 400);
+    }
     this.hub.traffic.record({ kind: "system", operation: "Device paired" });
     // The dashboard's device list follows fleet changes.
     this.hub.fleet.emit("changed");
@@ -283,12 +345,14 @@ export class T3Gateway {
 
   opened(socket: ClientSocket) {
     this.sockets.add(socket);
+    this.clients.markConnected(socket.data.clientId, true);
     this.hub.traffic.record({ kind: "system", operation: "Device connected", clientId: socket.data.clientId });
     this.hub.fleet.emit("changed");
   }
 
   received(socket: ClientSocket, raw: string) {
     if (!this.clients.valid(socket.data.clientId)) return socket.close(1008, "Session expired");
+    this.clients.markConnected(socket.data.clientId);
     let decoded: unknown;
     try {
       decoded = JSON.parse(raw);
@@ -308,8 +372,11 @@ export class T3Gateway {
     }
   }
 
-  closed(socket: ClientSocket) {
+  /** `code` and `reason` are the WebSocket close frame's, or 1006 and nothing when the connection just dropped. */
+  closed(socket: ClientSocket, code: number, reason: string) {
     this.sockets.delete(socket);
+    this.clients.markConnected(socket.data.clientId, true);
+    this.hub.traffic.record({ kind: "system", operation: "Device disconnected", clientId: socket.data.clientId, reason: closeText(code, reason) });
     for (const cancel of socket.data.cancels.values()) cancel();
     socket.data.cancels.clear();
     this.hub.fleet.emit("changed");
@@ -317,7 +384,11 @@ export class T3Gateway {
 
   close() {
     clearInterval(this.expiry);
-    for (const socket of this.sockets) socket.close(1001, "VM Bridge stopped");
+    // Written now: the sockets' close events may not run before the process ends.
+    for (const socket of this.sockets) {
+      this.clients.markConnected(socket.data.clientId, true);
+      socket.close(1001, "VM Bridge stopped");
+    }
     for (const stream of this.streams) stream.end(1001, "VM Bridge stopped");
   }
 }

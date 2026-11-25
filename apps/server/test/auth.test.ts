@@ -373,12 +373,31 @@ describe("T3 pairing", () => {
     const access = clients.exchange(clients.createLink("Desk").token)!;
     const client = clients.authenticate(access)!;
     const { ticket } = clients.ticket(client.id);
-    expect(clients.redeemTicket(ticket)).toBe(client.id);
-    expect(clients.redeemTicket(ticket)).toBeNull();
+    expect(clients.redeemTicket(ticket)).toEqual({ clientId: client.id });
+    expect(clients.redeemTicket(ticket)).toEqual({ refused: { reason: "unknown or used ticket" } });
+    const media = clients.ticket(client.id, "media").ticket;
+    expect(clients.redeemTicket(media)).toEqual({ refused: { reason: "media ticket used for rpc", clientId: client.id } });
     const second = clients.ticket(client.id).ticket;
     clients.revoke(client.id);
-    expect(clients.redeemTicket(second)).toBeNull();
+    expect(clients.redeemTicket(second)).toEqual({ refused: { reason: "device removed or its session expired", clientId: client.id } });
     expect(clients.authenticate(access)).toBeNull();
+    // A removed device is named, since the dashboard no longer lists it. The token never shows.
+    expect(clients.refusal(access)).toEqual({ reason: 'token of removed device "Desk"', clientId: client.id });
+    expect(clients.refusal("not-a-token")).toEqual({ reason: "unknown token" });
+  });
+
+  test("an expired WebSocket ticket is tied to its device", () => {
+    const clients = new Clients(openDatabase(":memory:"));
+    const access = clients.exchange(clients.createLink("Desk").token)!;
+    const client = clients.authenticate(access)!;
+    const start = Date.now();
+    const { ticket } = clients.ticket(client.id);
+    try {
+      setSystemTime(start + 31_000);
+      expect(clients.redeemTicket(ticket)).toEqual({ refused: { reason: "expired ticket", clientId: client.id } });
+    } finally {
+      setSystemTime();
+    }
   });
 
   test("a device in use stays paired past 30 days, an unused one expires", () => {

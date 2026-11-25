@@ -9,8 +9,9 @@ import { Input } from "@/components/ui/input";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAction } from "@/hooks/use-action";
+import { missingDevices, sinceText } from "@/lib/devices";
 import { cn } from "@/lib/utils";
-import { api, onLoggedOut, useLive } from "./api.ts";
+import { api, onLoggedOut, useLive, useTick } from "./api.ts";
 import { Logo } from "./brand.tsx";
 import { Analytics } from "./Analytics.tsx";
 import { Canvas } from "./Canvas.tsx";
@@ -118,6 +119,8 @@ function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
   const view: View = chosen ?? (overview && !overview.setup.provider ? "setup" : "canvas");
   const setupDone = overview && overview.setup.provider && overview.setup.github && overview.setup.agents;
   const current = views.find((entry) => entry.id === view)!;
+  const now = useTick(30_000);
+  const missing = overview ? missingDevices(overview.clients, overview.bridge.startedAt, now) : [];
 
   return (
     <div className="flex h-full flex-col">
@@ -142,16 +145,32 @@ function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
           onLogOut={() => void api("/logout", { body: {} }).finally(onLoggedOut)}
         />
 
-        <main className="relative mx-2 min-h-0 flex-1 overflow-hidden rounded-xl border bg-background [view-transition-name:panel] sm:mr-3 sm:mb-3 sm:ml-0">
-          {overview && view === "canvas" && <Canvas overview={overview} traffic={traffic} onPair={() => go("devices")} />}
-          {overview && view === "logs" && <Logs overview={overview} traffic={traffic} />}
-          {overview && view === "costs" && <Costs overview={overview} />}
-          {overview && view === "analytics" && <Analytics overview={overview} />}
-          {overview && view === "setup" && <Setup overview={overview} />}
-          {overview && view === "skills" && <Skills overview={overview} />}
-          {overview && view === "devices" && <Devices overview={overview} />}
-          {overview && view === "settings" && <Settings overview={overview} onLoggedOut={onLoggedOut} />}
-        </main>
+        <div className="mx-2 flex min-h-0 min-w-0 flex-1 flex-col gap-2 sm:mr-3 sm:mb-3 sm:ml-0">
+          {missing.length > 0 && view !== "devices" && (
+            <div role="status" className="flex items-center gap-3 rounded-xl border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
+              <span className="min-w-0 flex-1">
+                {missing.map((client) => (
+                  <span key={client.id} className="block">
+                    {client.name} has not connected since {sinceText(client.since, now)}.
+                  </span>
+                ))}
+              </span>
+              <Button variant="outline" size="sm" onClick={() => go("devices")}>
+                Devices
+              </Button>
+            </div>
+          )}
+          <main className="relative min-h-0 flex-1 overflow-hidden rounded-xl border bg-background [view-transition-name:panel]">
+            {overview && view === "canvas" && <Canvas overview={overview} traffic={traffic} onPair={() => go("devices")} />}
+            {overview && view === "logs" && <Logs overview={overview} traffic={traffic} />}
+            {overview && view === "costs" && <Costs overview={overview} />}
+            {overview && view === "analytics" && <Analytics overview={overview} />}
+            {overview && view === "setup" && <Setup overview={overview} />}
+            {overview && view === "skills" && <Skills overview={overview} />}
+            {overview && view === "devices" && <Devices overview={overview} traffic={traffic} />}
+            {overview && view === "settings" && <Settings overview={overview} onLoggedOut={onLoggedOut} />}
+          </main>
+        </div>
       </div>
     </div>
   );

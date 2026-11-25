@@ -54,7 +54,7 @@ describe("background failures", () => {
 describe("request noise", () => {
   afterEach(() => jest.useRealTimers());
 
-  test("requests without a device session are logged as one entry per window, with no path", async () => {
+  test("requests without a device session are logged as one entry per window and reason, with no unknown path", async () => {
     jest.useFakeTimers();
     const traffic = new Traffic(openDatabase(":memory:"));
     const pushed: TrafficEvent[] = [];
@@ -66,8 +66,11 @@ describe("request noise", () => {
       await gateway.fetch(new Request("http://bridge/api/projects", { headers: { authorization: "Bearer wrong" } }), upgrade, upgrade);
       expect(pushed).toEqual([]);
       jest.advanceTimersByTime(refusedWindowMs);
-      expect(pushed.map((event) => event.operation)).toEqual(["Refused 601 requests without a device session"]);
-      expect(traffic.recent).toHaveLength(1);
+      expect(pushed.map((event) => [event.operation, event.reason])).toEqual([
+        ["Refused 600 requests to an unknown path", "no token"],
+        ["Refused 1 request to /api/projects", "unknown token"],
+      ]);
+      expect(traffic.recent).toHaveLength(2);
     } finally {
       gateway.close();
     }
