@@ -10,6 +10,7 @@ import { bunMachine } from "../src/bun/machine.ts";
 import { openSocket } from "../src/bun/socket.ts";
 import { openDatabase } from "../src/bun/sqlite.ts";
 import { Fleet } from "../src/fleet.ts";
+import { FileTrees } from "../src/gateway/files.ts";
 import { Hub } from "../src/gateway/hub.ts";
 import { Rpc, type RpcClient } from "../src/gateway/rpc.ts";
 import { threadStamp } from "../src/gateway/saved.ts";
@@ -684,6 +685,40 @@ describe("idle sleep", () => {
     await hub.sweep(later());
     expect(events).toEqual(["create", "wake", "sleep"]);
     expect(await hub.localBranches("p1", vm.id)).toEqual(new Set(["main", "hand-made"]));
+  });
+
+  test("lists each worktree's files as it goes to sleep, and a VM that does not answer cannot hold the sleep up", async () => {
+    const context = setup();
+    const { fleet, store, box, t3, events } = context;
+    const trees = new FileTrees(store.db, () => undefined, { branches: async () => ({ names: [], defaultBranch: "main", at: 0 }) }, 50);
+    const hub = new Hub(store, context.settings, fleet, context.traffic, unmeasured, undefined, trees);
+    fleet.onConnect = async () => {};
+    const vm = await fleet.create();
+    store.insertProject({ id: "p1", url: "https://git.example.com/acme/app.git", branch: null, title: "app", createdAt: 0 });
+    store.addProjectVm("p1", vm.id);
+    store.setCheckout("p1", vm.id, "/workspace/app");
+    t3.state.shell = { threads: [{ id: "t1", status: "idle", projectId: "p1", worktreePath: "/workspace/wt/one" }], archivedThreads: [], projects: [] };
+    const run = box.run.bind(box);
+    let listing: "answer" | "hang" = "answer";
+    box.run = (async (command: string, options?: { stdin?: string }) => {
+      const path = /^git -C '(.+)' ls-files/.exec(command)?.[1];
+      if (!path) return run(command, options);
+      if (listing === "hang") return new Promise(() => {});
+      return ok(`${path === "/workspace/app" ? "untracked.md" : "unpushed.ts"}\0`);
+    }) as typeof box.run;
+    const search = (path: string) => trees.search(store.project("p1")!, null, "", { query: "", limit: 10 }, { vmId: vm.id, path });
+
+    await fleet.ensure(vm.id);
+    await hub.sweep(later());
+    expect(events).toEqual(["create", "wake", "sleep"]);
+    expect((await search("/workspace/app"))?.entries).toEqual([{ path: "untracked.md", kind: "file" }]);
+    expect((await search("/workspace/wt/one"))?.entries).toEqual([{ path: "unpushed.ts", kind: "file" }]);
+
+    listing = "hang";
+    await fleet.ensure(vm.id);
+    await hub.sweep(later());
+    expect(events).toEqual(["create", "wake", "sleep", "wake", "sleep"]);
+    expect((await search("/workspace/app"))?.entries).toEqual([{ path: "untracked.md", kind: "file" }]);
   });
 
   test("a request arriving once the VM is going to sleep waits for it, then wakes the VM", async () => {

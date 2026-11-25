@@ -14,6 +14,7 @@ import { T3Rejected, type Backend, type Frame } from "../vm/backend.ts";
 import type { Stats } from "../vm/stats.ts";
 import { defaultAgents, pendingAgent, presentAgent, type AgentReport } from "./agents.ts";
 import { Attachments, maxUploadBytes } from "./attachments.ts";
+import type { FileTrees, Worktree } from "./files.ts";
 import { applyHeldCommand, nextTurnCommandTypes } from "./held.ts";
 import { isPathKey, projectForPath, projectRoot, translate, vmForPath, within, type Environments } from "./paths.ts";
 import { repositoryIdentity } from "./repos.ts";
@@ -148,6 +149,8 @@ export class Hub extends EventEmitter<HubEvents> {
     readonly traffic: Traffic,
     private readonly stats: Pick<Stats, "get" | "lastDisk">,
     private readonly budget?: Pick<Budget, "allowsEarlyWake" | "notice" | "refusal">,
+    /** Where each worktree's files are kept as its VM goes to sleep, for the "@" menu. */
+    private readonly files?: Pick<FileTrees, "capture">,
   ) {
     super();
     this.setMaxListeners(0);
@@ -877,19 +880,21 @@ export class Hub extends EventEmitter<HubEvents> {
   /**
    * The project, branch and folder in it (relative, "" for the top) that a client path points into on a VM, from what
    * the VM last reported: the project's checkout, at the project's branch, or a thread's worktree, at the thread's.
+   * `path` is that checkout's or worktree's path on the VM, when known.
    */
-  checkoutAt(cwd: string, vmId: string): { project: ProjectRow; branch: string | null; folder: string } | undefined {
+  checkoutAt(cwd: string, vmId: string): { project: ProjectRow; branch: string | null; folder: string; path: string | null } | undefined {
     const projects = this.projects();
     const project = projectForPath(cwd, projects);
     if (project) {
       const root = projectRoot(project);
-      return within(cwd, root) ? { project, branch: project.branch, folder: cwd.slice(root.length + 1) } : undefined;
+      const path = project.vms.find((entry) => entry.vmId === vmId)?.checkoutPath ?? null;
+      return within(cwd, root) ? { project, branch: project.branch, folder: cwd.slice(root.length + 1), path } : undefined;
     }
     const path = this.into({ cwd }, vmId).cwd;
     for (const thread of threadsOf(this.shells.get(vmId))) {
       const worktree = str(thread.worktreePath);
       const owner = projects.find((entry) => entry.id === thread.projectId);
-      if (worktree && owner && within(path, worktree)) return { project: owner, branch: str(thread.branch) ?? null, folder: path.slice(worktree.length + 1) };
+      if (worktree && owner && within(path, worktree)) return { project: owner, branch: str(thread.branch) ?? null, folder: path.slice(worktree.length + 1), path: worktree };
     }
     return undefined;
   }
@@ -1354,11 +1359,14 @@ export class Hub extends EventEmitter<HubEvents> {
     if (!shell || hasLiveWork(shell) || this.fleet.leased(vmId)) return;
     await this.fleet
       .sleep(vmId, async (live) => {
+        // Alongside the transcripts.
+        const listing = this.keepFiles(vmId, shell);
         await this.saveThreads(vmId, live, this.owned(vmId, shell), this.sleepSaveMs);
         // Its branches too, so the project's branch list and placement still know them while it sleeps.
         for (const project of this.store.projects()) {
           if (project.vms.some((entry) => entry.vmId === vmId)) await this.readBranches(live, project.id, vmId);
         }
+        await listing;
         // Caching took a while: work may have started on the VM meanwhile.
         const latest = await live.json<Shell>("/api/orchestration/shell");
         if (hasLiveWork(latest)) return false;
@@ -1372,6 +1380,27 @@ export class Hub extends EventEmitter<HubEvents> {
       .catch(() => {});
     this.bump();
     this.emit("shell");
+  }
+
+  /** Keeps the files of each worktree on an awake VM for the "@" menu while it sleeps. Bounded, so it never holds a sleep up. */
+  async keepFiles(vmId: string, shell = this.shells.get(vmId)) {
+    const box = this.fleet.box(vmId);
+    if (box && shell) await this.files?.capture(vmId, box, this.worktrees(vmId, shell));
+  }
+
+  /** Each project's checkout on a VM, and the worktree of each of its open threads there. */
+  private worktrees(vmId: string, shell: Shell): Worktree[] {
+    const found = new Map<string, Worktree>();
+    for (const project of this.store.projects()) {
+      const path = project.vms.find((entry) => entry.vmId === vmId)?.checkoutPath;
+      if (path) found.set(path, { projectId: project.id, path });
+    }
+    for (const thread of this.owned(vmId, shell).threads ?? []) {
+      const path = str(thread.worktreePath);
+      const projectId = str(thread.projectId);
+      if (path && projectId && this.store.project(projectId)?.vms.some((entry) => entry.vmId === vmId)) found.set(path, { projectId, path });
+    }
+    return [...found.values()];
   }
 
   private setBusy(vmId: string, busy: boolean) {

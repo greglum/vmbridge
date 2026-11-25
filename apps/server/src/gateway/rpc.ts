@@ -857,11 +857,12 @@ export class Rpc {
     return payload.type === "provider-session.detach" && vmId !== null && !this.hub.fleet.backend(vmId);
   }
 
-  /** The composer's file search on a sleeping VM, from the files its repository has on GitHub. */
+  /** The composer's file search on a sleeping VM, from the files the VM listed as it went to sleep, or GitHub's. */
   private async searchAsleep(payload: Wire, vmId: string) {
     const cwd = str(payload.cwd);
     const checkout = cwd ? this.hub.checkoutAt(cwd, vmId) : undefined;
-    return checkout && this.files?.search(checkout.project, checkout.branch, checkout.folder, payload);
+    const worktree = checkout?.path ? { vmId, path: checkout.path } : undefined;
+    return checkout && this.files?.search(checkout.project, checkout.branch, checkout.folder, payload, worktree);
   }
 
   /** Routes a request to its VM, waking the VM only for requests that change something. */

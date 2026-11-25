@@ -303,6 +303,20 @@ export const migrations = [
     PRIMARY KEY (thread_id, seq)
   );
   `,
+  // The files each checkout and worktree on a VM had as it went to sleep, untracked and unpushed ones too (see
+  // gateway/files.ts), keyed by the path on the VM and split over rows like file_trees.
+  `
+  CREATE TABLE vm_file_lists (
+    project_id TEXT NOT NULL,
+    vm_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    paths TEXT NOT NULL,
+    captured_at INTEGER NOT NULL,
+    PRIMARY KEY (vm_id, path, seq),
+    FOREIGN KEY (project_id, vm_id) REFERENCES project_vms(project_id, vm_id) ON DELETE CASCADE
+  );
+  `,
 ];
 
 /**
