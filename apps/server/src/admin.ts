@@ -25,7 +25,8 @@ import type { Hub } from "./gateway/hub.ts";
 import { keptIconHeaders, projectIcon } from "./gateway/icons.ts";
 import type { T3Gateway } from "./gateway/http.ts";
 import { githubName } from "./gateway/repos.ts";
-import { isWorking } from "./gateway/types.ts";
+import { agentKind, agentName } from "./gateway/agents.ts";
+import { isWorking, str } from "./gateway/types.ts";
 import { hasScreen, providers } from "./providers/index.ts";
 import { envVars, machineName, saveEnvVars, type Secrets, type Settings } from "./settings.ts";
 import { InstructionsError, isInstructionName } from "./instructions.ts";
@@ -674,6 +675,8 @@ export class Admin {
     const skills = this.deps.skills.state();
     const screenSkills = this.deps.skills.state(true);
     const problems = this.deps.traffic.problems();
+    // What T3 lists for each agent, from the VMs' last reports: its name and its models' names.
+    const agentReports = new Map(hub.agents().map((report) => [report.instanceId, report]));
     const vms = store
       .vms()
       .filter((vm) => vm.state !== "gone")
@@ -696,13 +699,18 @@ export class Admin {
           sleepsAt: idle ? (vm.lastActivityAt ?? vm.createdAt) + idleMs : null,
           projects: projects.filter((project) => project.vms.some((entry) => entry.vmId === vm.id)).map((project) => project.id),
           sessions: hub.vmThreads(vm.id).map((thread) => {
-            const model = thread.modelSelection as { model?: unknown } | undefined;
+            const selection = thread.modelSelection as { model?: unknown; provider?: unknown } | undefined;
+            const instance = str(thread.providerInstanceId) ?? str(selection?.provider);
+            const report = instance ? agentReports.get(instance) : undefined;
+            const driver = report?.driver ?? instance;
+            const slug = str(selection?.model) ?? null;
+            const listed = (report?.models as { slug?: unknown; name?: unknown }[] | undefined)?.find((model) => model.slug === slug);
             return {
               threadId: thread.id,
               title: String(thread.title ?? "Untitled"),
               projectId: typeof thread.projectId === "string" ? thread.projectId : null,
-              model: typeof model?.model === "string" ? model.model : null,
-              provider: typeof thread.providerInstanceId === "string" ? thread.providerInstanceId : null,
+              model: str(listed?.name) ?? slug,
+              agent: driver ? { kind: agentKind(driver), name: report?.displayName ?? agentName(driver) } : null,
               status: String(thread.status ?? "idle"),
               working: isWorking(thread),
               updatedAt: typeof thread.updatedAt === "string" ? thread.updatedAt : null,

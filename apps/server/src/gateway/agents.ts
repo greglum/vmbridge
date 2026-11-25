@@ -1,3 +1,4 @@
+import type { AgentKind } from "@vmbridge/contracts";
 import type { ProviderPreference } from "../settings.ts";
 import type { ProviderEntry, Wire } from "./types.ts";
 
@@ -5,6 +6,11 @@ const names: Record<string, string> = { codex: "Codex", claudeAgent: "Claude", o
 
 /** An agent's display name from its T3 driver or instance ID. */
 export const agentName = (id: string) => names[id] ?? id;
+
+const kinds: Record<string, AgentKind> = { codex: "codex", claudeAgent: "claude", opencode: "opencode" };
+
+/** Which of the agents VM Bridge has a logo for a T3 driver is, if any. */
+export const agentKind = (driver: string): AgentKind | null => kinds[driver] ?? null;
 
 /** Agents every VM gets installed, so T3 lists them before any VM has reported. */
 export const defaultAgents = ["codex", "claudeAgent"];
