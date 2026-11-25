@@ -167,12 +167,19 @@ export interface ClientInfo {
 
 export type VmState = "provisioning" | "starting" | "ready" | "busy" | "sleeping" | "error" | "gone";
 
+/** The agent running a session: the name T3 shows, and which logo it has, when VM Bridge knows it. */
+export interface SessionAgent {
+  kind: AgentKind | null;
+  name: string;
+}
+
 export interface VmSession {
   threadId: string;
   title: string;
   projectId: string | null;
+  /** The model's name as its agent lists it, such as "Claude Opus 5.5", or its ID when the agent does not list it. */
   model: string | null;
-  provider: string | null;
+  agent: SessionAgent | null;
   status: string;
   /** A turn is running, queued, or waiting on an approval. */
   working: boolean;

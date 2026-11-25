@@ -17,7 +17,7 @@ import {
 } from "@xyflow/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Add01Icon, Alert02Icon, Cancel01Icon, CenterFocusIcon, Delete02Icon, InformationCircleIcon, LaptopIcon, Message01Icon, Moon02Icon, PowerIcon, ZoomInIcon, ZoomOutIcon } from "@hugeicons/core-free-icons";
-import { vmSizes, type BridgeUpdate, type ClientInfo, type Overview, type ProjectInfo, type ProviderId, type TrafficEvent, type Usage, type VmInfo, type VmSize, type VmState, type VmStats } from "@vmbridge/contracts";
+import { vmSizes, type BridgeUpdate, type ClientInfo, type Overview, type ProjectInfo, type ProviderId, type SessionAgent, type TrafficEvent, type Usage, type VmInfo, type VmSize, type VmState, type VmStats } from "@vmbridge/contracts";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -54,7 +54,7 @@ import { useAction } from "@/hooks/use-action";
 import { sinceText } from "@/lib/devices";
 import { cn } from "@/lib/utils";
 import { ago, api, useTick } from "./api.ts";
-import { Logo, ProjectIcon, ProviderLogo } from "./brand.tsx";
+import { AgentLogo, Logo, ProjectIcon, ProviderLogo } from "./brand.tsx";
 import { CopyButton } from "./CopyButton.tsx";
 
 /** A connection animates while it carried a request this recently. */
@@ -223,6 +223,25 @@ function CloudflareUpdate({ version }: { version: string }) {
   );
 }
 
+/** An agent's logo, or its first letter when VM Bridge has no logo for it. */
+function AgentAvatar({ agent, className }: { agent: SessionAgent; className?: string }) {
+  if (agent.kind) return <AgentLogo agent={agent.kind} className={cn("rounded-[25%]", className)} />;
+  return <span className={cn("grid shrink-0 place-items-center rounded-[25%] bg-muted text-[10px] font-medium text-muted-foreground", className)}>{agent.name.slice(0, 1).toUpperCase()}</span>;
+}
+
+/** Every agent with a session on a VM, once each, overlapping like avatars. */
+function AgentStack({ agents }: { agents: SessionAgent[] }) {
+  const unique = [...new Map(agents.map((agent) => [agent.kind ?? agent.name, agent])).values()];
+  if (!unique.length) return null;
+  return (
+    <span className="flex -space-x-1" title={unique.map((agent) => agent.name).join(", ")}>
+      {unique.map((agent) => (
+        <AgentAvatar key={agent.kind ?? agent.name} agent={agent} className="size-6 ring-2 ring-card" />
+      ))}
+    </span>
+  );
+}
+
 function VmCard({ data }: NodeProps<VmNode>) {
   const { vm, projects, selected } = data;
   const state = vmStates[vm.state];
@@ -245,9 +264,12 @@ function VmCard({ data }: NodeProps<VmNode>) {
           <div className="truncate text-xs text-muted-foreground">{vm.sizeLabel}</div>
         </div>
         {vm.sessions.length > 0 && (
-          <span className="flex shrink-0 items-center gap-1.5 self-start text-xs text-muted-foreground" title={`${vm.sessions.length} ${vm.sessions.length === 1 ? "session" : "sessions"}`}>
-            <HugeiconsIcon icon={Message01Icon} className="size-3.5 text-faint" strokeWidth={1.75} />
-            {vm.sessions.length}
+          <span className="flex shrink-0 items-center gap-2.5 self-start text-xs text-muted-foreground">
+            <AgentStack agents={vm.sessions.flatMap((session) => (session.agent ? [session.agent] : []))} />
+            <span className="flex items-center gap-1.5" title={`${vm.sessions.length} ${vm.sessions.length === 1 ? "session" : "sessions"}`}>
+              <HugeiconsIcon icon={Message01Icon} className="size-3.5 text-faint" strokeWidth={1.75} />
+              {vm.sessions.length}
+            </span>
           </span>
         )}
       </div>
@@ -845,7 +867,10 @@ function VmDetails({ vm, overview, now, onClose }: { vm: VmInfo; overview: Overv
                       <span className="truncate">{session.title}</span>
                       <Badge variant={session.working ? "default" : "secondary"}>{session.status}</Badge>
                     </ItemTitle>
-                    <ItemDescription className="font-mono text-xs">{[session.provider, session.model].filter(Boolean).join(" · ") || "No model"}</ItemDescription>
+                    <ItemDescription className="flex min-w-0 items-center gap-1.5 text-xs">
+                      {session.agent && <AgentAvatar agent={session.agent} className="size-4" />}
+                      <span className="truncate">{[session.agent?.name, session.model].filter(Boolean).join(" · ") || "No model"}</span>
+                    </ItemDescription>
                   </ItemContent>
                 </Item>
               );
