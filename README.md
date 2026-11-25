@@ -258,7 +258,8 @@ vmbridge password                                 Set a new dashboard password
 ```
 
 Starting VM Bridge while another one is running stops the old one first, so a restart never leaves
-old code serving.
+old code serving. The background service is the exception: `vmbridge` then shows its addresses and
+leaves it running, so closing the terminal never stops VM Bridge.
 
 Your data lives in `~/.vmbridge`. Set `VMBRIDGE_HOME` to keep it somewhere else. On a machine with
 no terminal, set `VMBRIDGE_PASSWORD` for the first start, or run `vmbridge password`.
