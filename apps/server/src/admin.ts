@@ -334,7 +334,7 @@ export class Admin {
       if (!action && method === "DELETE") {
         const remaining = settings.get("providers").filter((entry) => entry !== id);
         settings.set("providers", remaining);
-        // Its base snapshots are billed until deleted, so a failure stays on the provider in Setup.
+        // Its base snapshots are billed until deleted, so a failure stays on the provider in Accounts.
         void fleet.bases.drop(id).catch((error) =>
           this.deps.traffic.record({ kind: "provider", operation: "remove provider", provider: id, status: "error", reason: message(error) }),
         );

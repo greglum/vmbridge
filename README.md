@@ -69,8 +69,8 @@ gh attestation verify "${VMBRIDGE_INSTALL_DIR:-$HOME/.local/bin}/vmbridge" --rep
 
 1. Run `vmbridge` and open one of the setup links it prints.
 2. Choose a dashboard password, add a provider, sign in your agents and choose whether to bring your
-   skills and instructions. GitHub is under **Setup** in the dashboard.
-3. Under **Devices**, create a pairing link and paste it into T3 Code as a remote environment.
+   skills and instructions. GitHub is under **Accounts** in the dashboard.
+3. Under **Settings**, **Devices**, create a pairing link and paste it into T3 Code as a remote environment.
 
 Start a thread in T3 Code and VM Bridge brings up a VM for it.
 

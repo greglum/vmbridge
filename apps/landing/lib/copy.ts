@@ -55,7 +55,7 @@ export const copy = {
       },
       {
         title: "Pair T3 Code",
-        body: "Create a single-use pairing link under Devices and paste it into T3 Code as a remote environment. Each device gets its own token.",
+        body: "Create a single-use pairing link under Settings, Devices and paste it into T3 Code as a remote environment. Each device gets its own token.",
       },
       {
         title: "Open a project",

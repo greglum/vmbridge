@@ -34,7 +34,7 @@ export const steps: Step[] = [
   },
   {
     title: "Pair T3 Code",
-    body: "Create a link under Devices and paste it into T3 Code as a remote environment. Pair as many devices as you like.",
+    body: "Create a link under Settings, Devices and paste it into T3 Code as a remote environment. Pair as many devices as you like.",
     links: [true, false],
     paired: true,
     vm: "none",

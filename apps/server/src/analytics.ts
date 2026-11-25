@@ -68,7 +68,7 @@ const add = (a: Estimate, b: Estimate): Estimate => ({ amount: a.amount + b.amou
 
 /**
  * VM time, spend, lifecycle, turns and errors from `from` to `until` (which ends at `now` at the latest), by day in
- * `timeZone` where it helps. Time and spend come from `usage`, so they match the Costs page.
+ * `timeZone` where it helps. Time and spend come from `usage`, so they match the Costs tab.
  */
 export function analyticsReport(store: Store, usage: Usage, from: number, until: number, timeZone: string, now = Date.now()): AnalyticsReport {
   const to = Math.min(until, now);

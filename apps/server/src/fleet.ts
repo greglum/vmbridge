@@ -248,7 +248,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
   async create(choice: { provider?: ProviderId; size?: VmSize; discardOnError?: boolean } = {}): Promise<VmRow> {
     this.refuse();
     const provider = choice.provider ?? this.available();
-    if (!this.settings.get("providers").includes(provider)) throw new Error(`Add ${providers[provider].label} in Setup first.`);
+    if (!this.settings.get("providers").includes(provider)) throw new Error(`Add ${providers[provider].label} in Accounts first.`);
     if (this.settingUp(provider)) throw new SettingUp(provider);
     const driver = this.driver(provider);
     const id = shortId();
@@ -942,7 +942,7 @@ fi`,
         )
         .finally(() => {
           this.reconciling.delete(provider);
-          // The provider's flag in Setup comes with the overview.
+          // The provider's flag in Accounts comes with the overview.
           this.emit("changed");
         });
       this.reconciling.set(provider, flight);
