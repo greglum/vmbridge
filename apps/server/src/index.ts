@@ -141,7 +141,9 @@ export async function start(options: StartOptions = {}) {
       },
       fetch(request, server) {
         const { pathname: path, search } = new URL(request.url);
-        if (request.body && !path.startsWith(uploadPrefix) && !(Number(request.headers.get("content-length")) <= 2 * 1024 * 1024)) {
+        // A body without a length (chunked) could otherwise grow to the upload limit.
+        const length = request.headers.get("content-length");
+        if (request.body && !path.startsWith(uploadPrefix) && (length === null || !(Number(length) <= 2 * 1024 * 1024))) {
           return new Response("Request body too large", { status: 413 });
         }
         // Routes match exactly, so /dashboard/ would miss. The browser keeps the fragment (onboarding's #code=) across the redirect.
