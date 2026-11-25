@@ -19,6 +19,7 @@ test("reads export lines as separate variables", () => {
     ]),
     invalidNames: [],
     badLines: [],
+    assignments: 4,
   });
 });
 
@@ -27,9 +28,18 @@ test("handles spacing, CRLF, semicolons, comments and YAML style", () => {
   expect(vars(text)).toEqual({ A: "1", B: "two words", C: "3", D: "four", URL: "http://host/#top", EMPTY: "", E: "5" });
 });
 
+test("a blank value with a comment is empty", () => {
+  expect(vars('A= # intentionally empty\nB=" # kept"\nURL=http://host/#top')).toEqual({ A: "", B: " # kept", URL: "http://host/#top" });
+});
+
 test("unquotes values", () => {
   const text = [`A="say \\"hi\\"\\nbye" # note`, `B='$HOME \\n # kept'`, `C="a#b";`].join("\n");
   expect(vars(text)).toEqual({ A: 'say "hi"\nbye', B: "$HOME \\n # kept", C: "a#b" });
+});
+
+test("double quotes decode escapes like dotenv and keep unknown ones", () => {
+  const text = [String.raw`REGEX="^\d+$"`, String.raw`LINES="a\nb"`, String.raw`QUOTE="say \"hi\""`, String.raw`SLASH="C:\\tmp"`].join("\n");
+  expect(vars(text)).toEqual({ REGEX: String.raw`^\d+$`, LINES: "a\nb", QUOTE: 'say "hi"', SLASH: String.raw`C:\tmp` });
 });
 
 test("keeps a quoted value that runs over several lines", () => {
@@ -46,6 +56,11 @@ test("reports invalid names and other lines without saving them", () => {
 
 test("the last value wins for a repeated name", () => {
   expect(vars("A=1\nB=2\nA=3")).toEqual({ A: "3", B: "2" });
+});
+
+test("counts every assignment, so a repeated name still reads as a list", () => {
+  expect(parseEnvPaste("TOKEN=first\nTOKEN=second")?.assignments).toBe(2);
+  expect(parseEnvPaste("TOKEN=second")?.assignments).toBe(1);
 });
 
 test("leaves text with no assignment to paste as usual", () => {
