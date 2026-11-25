@@ -205,7 +205,7 @@ describe("Codex sign-in", () => {
     const [profile] = auth.list();
     const saved = JSON.parse(testEncryption.open(stored(db, profile!.id).codexAuth!, `auths/${profile!.id}/auth.json`));
     expect(Object.keys(saved).sort()).toEqual(["OPENAI_API_KEY", "auth_mode", "last_refresh", "tokens"]);
-    expect(saved).toMatchObject({ auth_mode: "chatgpt", OPENAI_API_KEY: null, tokens: { refresh_token: "from-vm" } });
+    expect(saved).toEqual({ auth_mode: "chatgpt", OPENAI_API_KEY: null, tokens: planted.tokens, last_refresh: planted.last_refresh });
   });
 
   test("ignores a VM's file with a made-up date, expiry or refresh token without asking ChatGPT", async () => {
