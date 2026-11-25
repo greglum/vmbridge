@@ -12,7 +12,8 @@ import { openDatabase } from "../src/bun/sqlite.ts";
 import { Fleet } from "../src/fleet.ts";
 import { Hub } from "../src/gateway/hub.ts";
 import { Rpc, type RpcClient } from "../src/gateway/rpc.ts";
-import type { Shell, Wire } from "../src/gateway/types.ts";
+import { threadStamp } from "../src/gateway/saved.ts";
+import type { Projection, Shell, Wire } from "../src/gateway/types.ts";
 import type { SandboxInfo } from "@opencoredev/sandbox-sdk/provider";
 import type { Box, Driver } from "../src/providers/index.ts";
 import { saveEnvVars, Secrets, Settings } from "../src/settings.ts";
@@ -39,6 +40,9 @@ function fakeT3() {
     sockets,
     shell: { threads: [{ id: "t1", status: "idle" }], archivedThreads: [], projects: [] } as Shell,
     answer: (tag: string, _payload: Wire): unknown => (tag.toLowerCase().includes("subscribe") ? open : null),
+    /** A thread's whole history, as `GET /api/orchestration/threads/:threadId` answers it. */
+    thread: async (threadId: string): Promise<Response> =>
+      Response.json({ snapshotSequence: 1, projection: { thread: { id: threadId }, updatedAt: "2026-01-01T00:00:00.000Z", turnItems: [], visibleTurnItems: [] } }),
   };
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -47,6 +51,8 @@ function fakeT3() {
       const path = new URL(request.url).pathname;
       if (path === "/api/auth/websocket-ticket/rpc") return Response.json({ ticket: "ticket" });
       if (path === "/api/orchestration/shell") return Response.json(state.shell);
+      const thread = /^\/api\/orchestration\/threads\/([^/]+)$/.exec(path);
+      if (thread) return state.thread(decodeURIComponent(thread[1]!));
       if (path === "/api/projects") return Response.json({ projects: [] });
       if (path === "/api/projects/mutate") return Response.json({});
       if (path === "/ws" && server.upgrade(request, { data: undefined })) return undefined;
@@ -594,9 +600,10 @@ describe("idle sleep", () => {
     const vm = await fleet.create();
     await fleet.ensure(vm.id);
     let release = () => {};
-    t3.state.answer = (tag) => {
-      if (tag === "orchestration.getThreadProjection") release = fleet.lease(vm.id);
-      return null;
+    const read = t3.state.thread;
+    t3.state.thread = (threadId) => {
+      release = fleet.lease(vm.id);
+      return read(threadId);
     };
 
     await hub.sweep(later());
@@ -609,14 +616,60 @@ describe("idle sleep", () => {
     const { fleet, hub, t3, events } = idleFleet();
     const vm = await fleet.create();
     await fleet.ensure(vm.id);
-    t3.state.answer = (tag) => {
-      if (tag === "orchestration.getThreadProjection") t3.state.shell = { threads: [{ id: "t1", status: "running" }] };
-      return null;
+    const read = t3.state.thread;
+    t3.state.thread = (threadId) => {
+      t3.state.shell = { threads: [{ id: "t1", status: "running" }] };
+      return read(threadId);
     };
 
     await hub.sweep(later());
     expect(events).toEqual(["create", "wake"]);
     expect(fleet.backend(vm.id)).toBeDefined();
+  });
+
+  test("first saves the whole history of each thread with no copy, or one its row has moved past, and no other", async () => {
+    const { fleet, hub, store, t3, events } = idleFleet();
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    const row = (id: string, updatedAt: string) => ({ id, status: "idle", updatedAt, itemCount: 2 });
+    t3.state.shell = { threads: [row("new", "2026-01-02"), row("same", "2026-01-02"), row("moved", "2026-01-03")] };
+    for (const id of ["same", "moved"]) store.setThreadVm(id, vm.id);
+    const old = { thread: { id: "same" }, updatedAt: "2026-01-02", visibleTurnItems: [] };
+    store.saveProjection("same", vm.id, old.updatedAt, threadStamp(row("same", "2026-01-02")), old);
+    store.saveProjection("moved", vm.id, old.updatedAt, threadStamp(row("moved", "2026-01-02")), { ...old, thread: { id: "moved" } });
+    // Longer than the newest turns `orchestration.getThreadProjection` would give.
+    const rows = Array.from({ length: 300 }, (_, position) => ({ position, sourceItemId: `i${position}` }));
+    const reads: string[] = [];
+    t3.state.thread = async (threadId) => {
+      reads.push(threadId);
+      return Response.json({ snapshotSequence: 9, projection: { thread: { id: threadId }, updatedAt: "2026-01-03", visibleTurnItems: rows } });
+    };
+
+    await hub.sweep(later());
+    expect(reads.sort()).toEqual(["moved", "new"]);
+    expect(events).toEqual(["create", "wake", "sleep"]);
+    expect(store.projection<Projection>("new", vm.id)?.visibleTurnItems).toHaveLength(300);
+    expect(store.projection<Projection>("moved", vm.id)?.visibleTurnItems).toHaveLength(300);
+    expect(store.projection<Projection>("same", vm.id)).toEqual(old);
+  });
+
+  test("a save that fails or never answers keeps the thread's last copy and does not keep the VM awake", async () => {
+    const { fleet, hub, store, t3, events } = idleFleet();
+    hub.sleepSaveMs = 100;
+    const vm = await fleet.create();
+    await fleet.ensure(vm.id);
+    t3.state.shell = { threads: [{ id: "failing", status: "idle" }, { id: "stuck", status: "idle" }] };
+    store.setThreadVm("failing", vm.id);
+    const old = { thread: { id: "failing" }, updatedAt: "2026-01-01", visibleTurnItems: [{ position: 0 }] };
+    store.saveProjection("failing", vm.id, old.updatedAt, null, old);
+    t3.state.thread = (threadId) => (threadId === "failing" ? Promise.resolve(new Response(null, { status: 500 })) : new Promise(() => {}));
+
+    const started = Date.now();
+    await hub.sweep(later());
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(events).toEqual(["create", "wake", "sleep"]);
+    expect(store.projection<Projection>("failing", vm.id)).toEqual(old);
+    expect(store.projection("stuck", vm.id)).toBeNull();
   });
 
   test("keeps each project's local branches, so they are still known while the VM sleeps", async () => {

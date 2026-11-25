@@ -568,6 +568,7 @@ export class Admin {
       // A fresh reading for an open details panel. It never wakes the VM.
       if (action === "stats" && method === "GET") return json(await this.deps.stats.sample(id));
       if (action === "sleep" && method === "POST") {
+        await hub.saveBeforeSleep(id);
         await fleet.sleep(id);
         return json({ ok: true });
       }
