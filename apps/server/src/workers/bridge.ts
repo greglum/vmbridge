@@ -85,7 +85,7 @@ export class BridgeObject extends DurableObject<Env> {
         if (!migrated) markMigrated();
       },
     });
-    const { secrets, encryption, auth, hub, fleet, stats, usage, traffic, gateway, watch } = bridge;
+    const { secrets, encryption, auth, hub, fleet, stats, usage, budget, traffic, gateway, watch } = bridge;
 
     // The password is a Worker secret. Its hash is made again only when it changes, which also ends every session.
     const password = env.VMBRIDGE_PASSWORD ?? "";
@@ -96,7 +96,7 @@ export class BridgeObject extends DurableObject<Env> {
     }
 
     const admin = new Admin({ ...bridge, version: packageJson.version, startedAt: Date.now(), network: workerNetwork, passwordSource: `the Worker's ${passwordVariable} secret` });
-    const jobs = new AlarmJobs(this.ctx.storage, bridgeJobs({ hub, fleet, stats, usage, traffic, watch }));
+    const jobs = new AlarmJobs(this.ctx.storage, bridgeJobs({ hub, fleet, stats, usage, budget, traffic, watch }));
     // A recreated Durable Object already knows its address; without this, links would read as off until the next alarm.
     await watch.refresh();
     void fleet.resume();

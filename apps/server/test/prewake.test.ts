@@ -19,7 +19,7 @@ const unmeasured = { get: () => null, lastDisk: () => null };
  * is on no VM yet. `ensure` never resolves, as a real wake is still running when the call that started it is answered.
  * `files` stands in for the GitHub file lists a sleeping VM's @ search is answered from.
  */
-function setup(files?: FileTrees) {
+function setup(files?: FileTrees, budget?: ConstructorParameters<typeof Hub>[5]) {
   const store = new Store(openDatabase(":memory:"), testEncryption);
   store.insertVm({ id: "vm1", provider: "boxd", name: "vm1", size: "medium", state: "sleeping", createdAt: 0 });
   store.insertVm({ id: "vm2", provider: "boxd", name: "vm2", size: "medium", state: "ready", createdAt: 0 });
@@ -45,7 +45,7 @@ function setup(files?: FileTrees) {
     },
   }) as unknown as Fleet;
   const traffic = { record: () => {} } as unknown as Traffic;
-  const hub = new Hub(store, new Settings(store.db), fleet, traffic, unmeasured);
+  const hub = new Hub(store, new Settings(store.db), fleet, traffic, unmeasured, budget);
   const rpc = new Rpc(hub, {} as never, {} as never, traffic, () => false, files);
   const client = (clientId = "c1") => {
     const sent: { exit?: { _tag: string } }[] = [];
@@ -59,7 +59,7 @@ function setup(files?: FileTrees) {
       call("orchestration.dispatchCommand", { type: "thread.visit", commandId: crypto.randomUUID(), threadId, visitedAt: new Date().toISOString(), ...(opened && { opened }) });
     return { call, visit };
   };
-  return { woken, client };
+  return { woken, client, hub };
 }
 
 const upload = { type: "file", name: "notes.txt", mimeType: "text/plain", sizeBytes: 3 };
@@ -107,6 +107,26 @@ describe("waking a thread's VM before its message", () => {
     const { woken, client } = setup();
     expect(await client().call("projects.searchEntries", { cwd: "/projects/p1/app", query: "src", limit: 20 })).toBe("Failure");
     expect(woken).toEqual(["vm1"]);
+  });
+
+  test("with the month's budget spent, opening a thread wakes nothing early", async () => {
+    const { woken, client } = setup(undefined, { allowsEarlyWake: () => false, notice: () => null, refusal: () => null });
+    expect(await client().visit("t1", true)).toBe("Success");
+    expect(woken).toEqual([]);
+  });
+
+  test("a wake past 80% of the budget tells the thread once a month", () => {
+    const notices = ["VM Bridge: 85% of this month's $50.00 budget is used.", null];
+    const { hub } = setup(undefined, { allowsEarlyWake: () => true, notice: () => notices.shift() ?? null, refusal: () => null });
+    hub.store.saveProjection("t1", "vm1", null, { thread: { id: "t1" }, turnItems: [], visibleTurnItems: [] });
+    const message = (threadId: string) => {
+      const done = hub.beginWake(threadId, "vm1");
+      const item = hub.sleepingProjection(threadId, "vm1")?.turnItems?.at(-1);
+      done();
+      return item?.message;
+    };
+    expect(message("t1")).toBe("Waking the boxd VM... VM Bridge: 85% of this month's $50.00 budget is used.");
+    expect(message("t1")).toBe("Waking the boxd VM...");
   });
 
   test("attaching a file wakes the VM of the thread that device last visited, and no other device's", async () => {

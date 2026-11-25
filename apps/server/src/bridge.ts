@@ -1,6 +1,7 @@
 // VM Bridge's parts, wired together the same way on every runtime. Bun's entry is index.ts, a Worker's is workers/.
 import type { Address } from "@vmbridge/contracts";
 import { AgentAuth } from "./agent-auth/profiles.ts";
+import { Budget } from "./budget.ts";
 import { Clients } from "./auth/clients.ts";
 import { DashboardAuth } from "./auth/dashboard.ts";
 import type { Passwords } from "./auth/password.ts";
@@ -60,7 +61,9 @@ export function openBridge(runtime: BridgeRuntime) {
   const stats = new Stats(fleet);
   const usage = new Usage(store, () => fleet.connected());
   for (const event of ["changed", "awake", "offline"] as const) fleet.on(event, () => usage.sync());
-  const hub = new Hub(store, settings, fleet, traffic, stats);
+  const budget = new Budget(settings, usage);
+  fleet.refusal = () => budget.refusal();
+  const hub = new Hub(store, settings, fleet, traffic, stats, budget);
   agents.onChange = () => {
     fleet.emit("changed");
     void hub.credentialsChanged().catch(() => {});
@@ -85,7 +88,7 @@ export function openBridge(runtime: BridgeRuntime) {
     addresses: runtime.addresses,
     page: runtime.watchPage,
   });
-  return { settings, encryption, key, secrets, store, traffic, agents, skills, fleet, stats, usage, hub, gateway, clients, auth, watch };
+  return { settings, encryption, key, secrets, store, traffic, agents, skills, fleet, stats, usage, budget, hub, gateway, clients, auth, watch };
 }
 
 export type Bridge = ReturnType<typeof openBridge>;

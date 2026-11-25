@@ -14,6 +14,7 @@ import { api, onLoggedOut, useLive } from "./api.ts";
 import { Logo } from "./brand.tsx";
 import { Analytics } from "./Analytics.tsx";
 import { Canvas } from "./Canvas.tsx";
+import { BudgetBanner } from "./Budget.tsx";
 import { Costs } from "./Costs.tsx";
 import { Devices } from "./Devices.tsx";
 import { Logs } from "./Logs.tsx";
@@ -131,6 +132,7 @@ function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
           {online ? "Live" : "Reconnecting"}
         </div>
       </header>
+      {overview && <BudgetBanner budget={overview.budget} onView={() => go("costs")} />}
 
       <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
         <Sidebar

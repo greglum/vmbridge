@@ -31,6 +31,7 @@ import { SkillError, type Skills } from "./skills.ts";
 import type { Store, VmRow } from "./store.ts";
 import type { Traffic } from "./traffic.ts";
 import type { Usage } from "./usage.ts";
+import type { Budget } from "./budget.ts";
 import { envNameProblem, envValueProblem } from "./vm/runtime.ts";
 import type { SkillsState } from "./vm/skills.ts";
 import type { Stats } from "./vm/stats.ts";
@@ -74,6 +75,7 @@ export interface AdminDeps {
   stats: Stats;
   skills: Skills;
   usage: Usage;
+  budget: Budget;
   watch: Watch;
 }
 
@@ -196,6 +198,19 @@ export class Admin {
     if (path === "/usage" && method === "GET") {
       const { from, to } = timeRange(request);
       return json(this.deps.usage.report(from, to));
+    }
+    if (path === "/budget" && method === "PUT") {
+      const input = await body(request);
+      const current = settings.get("budget");
+      let monthlyUsd = current.monthlyUsd;
+      if (input.monthlyUsd !== undefined) {
+        monthlyUsd = input.monthlyUsd === null ? null : Number(input.monthlyUsd);
+        if (monthlyUsd !== null && !(Number.isFinite(monthlyUsd) && monthlyUsd > 0 && monthlyUsd <= 1_000_000)) throw new BadRequest("Enter a budget above $0, or leave it empty for none.");
+      }
+      if (input.stopAtLimit !== undefined && typeof input.stopAtLimit !== "boolean") throw new BadRequest("Say whether to stop at the budget.");
+      settings.set("budget", { monthlyUsd, stopAtLimit: input.stopAtLimit ?? current.stopAtLimit });
+      fleet.emit("changed");
+      return json(this.deps.budget.status());
     }
     if (path === "/analytics" && method === "GET") {
       const { from, to } = timeRange(request);
@@ -697,6 +712,7 @@ export class Admin {
       savedInstructions: this.deps.skills.instructions.savedNames(),
       machine: this.deps.skills.hasMachine,
       passwordSource: this.deps.passwordSource,
+      budget: this.deps.budget.status(),
     };
   }
 

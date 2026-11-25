@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import type { AgentFeedbackMode } from "@vmbridge/contracts";
 import { median } from "../analytics.ts";
+import type { Budget } from "../budget.ts";
 import { providers } from "../providers/index.ts";
 import { mayBeAwake, message, type Fleet } from "../fleet.ts";
 import { labelVcpus, type VmLoad } from "../placement.ts";
@@ -140,6 +141,7 @@ export class Hub extends EventEmitter<HubEvents> {
     readonly fleet: Fleet,
     readonly traffic: Traffic,
     private readonly stats: Pick<Stats, "get" | "lastDisk">,
+    private readonly budget?: Pick<Budget, "allowsEarlyWake" | "notice" | "refusal">,
   ) {
     super();
     this.setMaxListeners(0);
@@ -914,7 +916,8 @@ export class Hub extends EventEmitter<HubEvents> {
             progress: report,
           });
           vmId = placed.vmId;
-          if (placed.notice) this.busyNotices.set(threadId, placed.notice);
+          const notice = placed.notice ?? this.budget?.notice();
+          if (notice) this.busyNotices.set(threadId, notice);
         } else vmId = await this.fleet.place(project.id, report);
       } finally {
         this.off("placement", listener);
@@ -1094,6 +1097,7 @@ export class Hub extends EventEmitter<HubEvents> {
   prewake(vmId: string, reason: string) {
     // Only asleep: an awake VM needs nothing, a waking one is already on its way, and a failed one waits for a message.
     if (this.store.vm(vmId)?.state !== "sleeping") return;
+    if (this.budget && !this.budget.allowsEarlyWake()) return;
     this.traffic.record({ kind: "system", operation: `Waking VM early: ${reason}`, vmId });
     void this.fleet.ensure(vmId).catch(() => {});
   }
@@ -1114,6 +1118,9 @@ export class Hub extends EventEmitter<HubEvents> {
     if (fromSleep) {
       const typical = median(this.store.recentWakeMs(vm.provider));
       message = typical === null ? `Waking the ${label} VM...` : `Waking the ${label} VM, about ${roughly(typical)}`;
+      // Once a month past 80% of the budget, the wake also says how much of it is used.
+      const budgetNotice = this.budget?.notice();
+      if (budgetNotice) message = `${message} ${budgetNotice}`;
     }
     this.wakeNotices.set(vmId, { id: crypto.randomUUID(), startedAt: new Date().toISOString(), message, fromSleep, failedAt: null });
     this.emit("wake", vmId);
@@ -1217,7 +1224,7 @@ export class Hub extends EventEmitter<HubEvents> {
       // Automations need their VM awake to run. One that came due since the VM slept, as while VM Bridge was stopped,
       // also wakes it: T3 then runs it or moves it on.
       const next = this.nextRun(vm.id);
-      if (vm.state === "sleeping" && next !== null && now >= next - scheduleLeadMs && (vm.lastSleptAt ?? 0) < next) {
+      if (vm.state === "sleeping" && next !== null && now >= next - scheduleLeadMs && (vm.lastSleptAt ?? 0) < next && !this.budget?.refusal()) {
         this.traffic.record({ kind: "system", operation: "Waking VM for an automation", vmId: vm.id });
         void this.fleet.ensure(vm.id).catch(() => {});
       }

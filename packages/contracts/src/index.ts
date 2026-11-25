@@ -433,6 +433,20 @@ export interface Overview {
   machine: boolean;
   /** Where the password is changed instead of the dashboard, such as a Worker's secret. Null when the dashboard changes it. */
   passwordSource: string | null;
+  budget: BudgetStatus;
+}
+
+/** The monthly budget and this month's estimated spend against it. */
+export interface BudgetStatus {
+  /** In US dollars. Null: no budget. */
+  monthlyUsd: number | null;
+  /** Refuse new VMs and wakes once the month's estimate reaches the budget. */
+  stopAtLimit: boolean;
+  /** Since the start of `monthStart`'s month, in VM Bridge's time zone (UTC on Workers). */
+  spent: Estimate;
+  monthStart: number;
+  /** "warning" from 80% of the budget, "over" from 100%. Always "ok" without a budget. */
+  level: "ok" | "warning" | "over";
 }
 
 export type Currency = "USD" | "EUR";

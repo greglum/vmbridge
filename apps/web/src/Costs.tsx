@@ -10,6 +10,7 @@ import { FieldError } from "@/components/ui/field";
 import { cn } from "@/lib/utils";
 import { api, useTick } from "./api.ts";
 import { ProviderLogo } from "./brand.tsx";
+import { BudgetSection } from "./Budget.tsx";
 import { Page, Section } from "./Page.tsx";
 
 export const ranges = [
@@ -60,6 +61,7 @@ export function Costs({ overview }: { overview: Overview }) {
         </ButtonGroup>
       }
     >
+      <BudgetSection budget={overview.budget} />
       {error && <FieldError>{error}</FieldError>}
       {report && <Report report={report} added={added} />}
     </Page>

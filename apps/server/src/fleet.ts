@@ -3,6 +3,7 @@ import { SandboxError, type Preview } from "@opencoredev/sandbox-sdk";
 import type { ProviderId, ProviderSetup, VmSize, VmState } from "@vmbridge/contracts";
 import { hasScreen, providers, type Box, type Driver } from "./providers/index.ts";
 import type { CreateVm } from "./providers/types.ts";
+import { BudgetReached } from "./budget.ts";
 import { envVars, type Settings, type Secrets } from "./settings.ts";
 import { busyNotice, choose, maxVmsPerProject, overflowRetryMs, type VmLoad } from "./placement.ts";
 import { primaryVm, type ProjectRow, type Store, type VmRow } from "./store.ts";
@@ -126,6 +127,14 @@ export class Fleet extends EventEmitter<FleetEvents> {
   /** Runs once a VM's backend is connected, before anyone else can use it. */
   onConnect: (vmId: string, backend: Backend) => Promise<void> = async () => {};
 
+  /** Why new VMs and wakes are refused now, such as a spent budget (see `Budget.refusal`). Null: they are not. */
+  refusal: () => string | null = () => null;
+
+  private refuse() {
+    const reason = this.refusal();
+    if (reason) throw new BudgetReached(reason);
+  }
+
   constructor(
     private readonly store: Store,
     private readonly settings: Settings,
@@ -237,6 +246,7 @@ export class Fleet extends EventEmitter<FleetEvents> {
 
   /** Creates a VM, on the default provider and size unless told otherwise. It is not started or connected yet. */
   async create(choice: { provider?: ProviderId; size?: VmSize; discardOnError?: boolean } = {}): Promise<VmRow> {
+    this.refuse();
     const provider = choice.provider ?? this.available();
     if (!this.settings.get("providers").includes(provider)) throw new Error(`Add ${providers[provider].label} in Setup first.`);
     if (this.settingUp(provider)) throw new SettingUp(provider);
@@ -358,6 +368,8 @@ export class Fleet extends EventEmitter<FleetEvents> {
     if (!vm.sandboxId) throw new Error(`VM ${vmId} was never created at the provider.`);
     // Asleep (or never started) until now, so nothing runs there that restarting T3, or putting it back to sleep, could interrupt.
     const wasAsleep = (vm.lastSleptAt ?? 0) >= (vm.lastConnectedAt ?? 0);
+    // Only a wake is refused: a VM that may still run, such as one reconnecting mid-turn, always gets its connection back.
+    if (wasAsleep) this.refuse();
     this.setState(vmId, "starting");
     this.emit("waking", vmId, wasAsleep);
     const started = performance.now();
@@ -801,8 +813,8 @@ export class Fleet extends EventEmitter<FleetEvents> {
           try {
             await this.setUp(vmId, projectId, progress);
           } catch (error) {
-            // Nothing to fall back to from the primary: fail the launch as before.
-            if (vmId === primary) throw error;
+            // Nothing to fall back to from the primary: fail the launch as before. A spent budget refuses every wake.
+            if (vmId === primary || error instanceof BudgetReached) throw error;
             failed.add(vmId);
             continue;
           }
