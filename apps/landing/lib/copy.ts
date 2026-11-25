@@ -27,6 +27,9 @@ export const copy = {
     hint: "Click a VM to sleep or wake it",
   },
 
+  /** The button that copies lib/prompt.ts, beside every install command. 30 each. */
+  agentPrompt: { copy: "Copy prompt for your agent", copied: "Copied, paste it in" },
+
   /** Labels on the diagram of devices, VM Bridge and VMs. 16 each. */
   diagram: {
     devices: "Devices",

@@ -4,7 +4,8 @@ import Link from "next/link";
 import { copy } from "@/lib/copy";
 import { github, install } from "@/lib/data";
 import { primaryButton, secondaryButton } from "@/lib/styles";
-import { Command } from "./CopyButton";
+import { agentPrompt } from "@/lib/prompt";
+import { Command, CopyPrompt } from "./CopyButton";
 import { Section } from "./Section";
 
 /** The closing install block: heading and body left, the full-width command and buttons right. */
@@ -17,6 +18,7 @@ export function Install() {
           {copy.install.docs}
           <HugeiconsIcon icon={ArrowRight01Icon} size={15} className="transition-transform duration-150 group-hover:translate-x-0.5" />
         </Link>
+        <CopyPrompt prompt={agentPrompt} />
         <a href={github} className={secondaryButton}>
           <HugeiconsIcon icon={GithubIcon} size={15} />
           {copy.nav.github}

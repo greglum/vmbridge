@@ -4,7 +4,8 @@ import Link from "next/link";
 import { copy } from "@/lib/copy";
 import { deployToCloudflare, github, install } from "@/lib/data";
 import { cloudflareButton, innerPad, primaryButton, secondaryButton } from "@/lib/styles";
-import { Command } from "./CopyButton";
+import { agentPrompt } from "@/lib/prompt";
+import { Command, CopyPrompt } from "./CopyButton";
 import { Topology } from "./Topology";
 
 /**
@@ -46,6 +47,7 @@ export function Hero() {
                 className="transition-transform duration-150 group-hover:translate-x-0.5"
               />
             </Link>
+            <CopyPrompt prompt={agentPrompt} />
             <a href={github} className={secondaryButton}>
               <HugeiconsIcon icon={GithubIcon} size={15} />
               {copy.nav.github}
