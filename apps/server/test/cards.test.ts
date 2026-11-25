@@ -252,3 +252,68 @@ describe("feedback card answers", () => {
     hub.close();
   });
 });
+
+describe("feedback card setting", () => {
+  /** A VM's T3 server in agent feedback `mode`, without the setting when not `capable`, recording settings it is sent. */
+  function settingsVm(mode = "off", capable = true) {
+    const updates: unknown[] = [];
+    const capabilities = capable ? { agentFeedback: true } : {};
+    const config = { environment: { orchestrationProtocolVersion: 2, capabilities }, settings: { agentFeedback: { mode } }, providers: [] };
+    const backend = {
+      call: async (tag: string, payload: Wire) => {
+        if (tag === "server.getConfig") return config;
+        if (tag === "server.updateSettings") updates.push(payload.patch);
+        return null;
+      },
+      request: () => () => {},
+    } as unknown as Backend;
+    return { backend, updates };
+  }
+
+  const feedbackMode = (mode: string) => ({ agentFeedback: { mode } });
+
+  test("goes to every awake VM whose T3 has it, at once and without a restart", async () => {
+    const vm1 = settingsVm();
+    const older = settingsVm("off", false);
+    const { hub } = setup({ vm1: vm1.backend, vm2: older.backend });
+    await hub.fleet.onConnect("vm1", vm1.backend);
+    await hub.fleet.onConnect("vm2", older.backend);
+    for (const mode of ["on-request", "auto", "off"] as const) hub.setAgentFeedback(mode);
+    await settle();
+    expect(vm1.updates).toEqual([feedbackMode("on-request"), feedbackMode("auto"), feedbackMode("off")]);
+    // Its T3 has no such setting, and would refuse it.
+    expect(older.updates).toEqual([]);
+    expect(hub.settings.get("agentFeedback")).toBe("off");
+    hub.close();
+  });
+
+  test("reaches a sleeping or new VM as it connects, before it counts as awake, and only when it differs", async () => {
+    const vm1 = settingsVm();
+    const vm3 = settingsVm();
+    const already = settingsVm("auto");
+    const { hub } = setup({ vm1: vm1.backend });
+    hub.setAgentFeedback("auto");
+    await hub.fleet.onConnect("vm3", vm3.backend);
+    expect(vm3.updates).toEqual([feedbackMode("auto")]);
+    await hub.fleet.onConnect("vm2", already.backend);
+    expect(already.updates).toEqual([]);
+    hub.close();
+  });
+
+  test("a VM refusing it still connects", async () => {
+    const vm1 = settingsVm();
+    const backend = {
+      ...vm1.backend,
+      call: async (tag: string, payload: Wire) => {
+        if (tag === "server.updateSettings") throw new Error("refused");
+        return vm1.backend.call(tag, payload);
+      },
+    } as unknown as Backend;
+    const { hub } = setup({ vm1: backend });
+    hub.setAgentFeedback("auto");
+    await settle();
+    await hub.fleet.onConnect("vm1", backend);
+    expect(hub.hasConfig()).toBe(true);
+    hub.close();
+  });
+});

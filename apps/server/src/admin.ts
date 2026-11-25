@@ -1,4 +1,5 @@
 import {
+  agentFeedbackModes,
   agentKinds,
   machineNameMaxLength,
   providerIds,
@@ -446,6 +447,11 @@ export class Admin {
         if (version && !/^\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(version)) throw new BadRequest("Use an exact version, such as 0.1.11.");
         settings.set("t3Version", version || null);
       }
+      if (input.agentFeedback !== undefined) {
+        const mode = agentFeedbackModes.find((entry) => entry === input.agentFeedback);
+        if (!mode) throw new BadRequest("Pick off, on-request or auto.");
+        if (mode !== settings.get("agentFeedback")) hub.setAgentFeedback(mode);
+      }
       if (input.machineName !== undefined) {
         const name = machineName(text(input.machineName, "The machine name"));
         if (!name) throw new BadRequest(`Keep the machine name to ${machineNameMaxLength} characters.`);
@@ -668,6 +674,7 @@ export class Admin {
         vmSize: settings.get("vmSize"),
         idleMinutes: settings.get("idleMinutes"),
         t3Version: settings.get("t3Version"),
+        agentFeedback: settings.get("agentFeedback"),
       },
       clients: clients.list(gateway.connected()),
       vms,

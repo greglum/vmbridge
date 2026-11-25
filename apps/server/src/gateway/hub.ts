@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { EventEmitter, once } from "node:events";
+import type { AgentFeedbackMode } from "@vmbridge/contracts";
 import { providers } from "../providers/index.ts";
 import { mayBeAwake, message, type Fleet } from "../fleet.ts";
 import { labelVcpus, type VmLoad } from "../placement.ts";
@@ -182,6 +183,8 @@ export class Hub extends EventEmitter<HubEvents> {
     }
     this.configs.set(vmId, config);
     this.store.saveSnapshot(vmId, "config", config);
+    // Before the VM counts as awake, so the turns that woke it already use the mode.
+    if ((config.settings?.agentFeedback as Wire | undefined)?.mode !== this.settings.get("agentFeedback")) await this.applyAgentFeedback(vmId, backend);
 
     backend.request(
       "subscribeServerConfig",
@@ -612,6 +615,28 @@ export class Hub extends EventEmitter<HubEvents> {
     this.settings.set("agentPreferences", preferences);
     this.emit("config");
     return this.config().settings as Wire;
+  }
+
+  /**
+   * Keeps T3's agent feedback mode and sets it on every awake VM, where T3 uses it from the next turn without
+   * restarting. Sleeping and new VMs get it as they connect.
+   */
+  setAgentFeedback(mode: AgentFeedbackMode) {
+    this.settings.set("agentFeedback", mode);
+    for (const vmId of this.fleet.connected()) {
+      const backend = this.fleet.backend(vmId);
+      if (backend) void this.applyAgentFeedback(vmId, backend);
+    }
+  }
+
+  /** Sets VM Bridge's agent feedback mode in a VM's T3, unless that T3 has no such setting. Never throws. */
+  private async applyAgentFeedback(vmId: string, backend: Backend) {
+    const capabilities = this.configs.get(vmId)?.environment?.capabilities as Wire | undefined;
+    if (capabilities?.agentFeedback !== true) return;
+    const mode = this.settings.get("agentFeedback");
+    await backend.call("server.updateSettings", { patch: { agentFeedback: { mode } } }, 15_000).catch((error) => {
+      console.warn(`[hub] could not set agent feedback to ${mode} on VM ${vmId}: ${message(error)}`);
+    });
   }
 
   scheduledTasks(): Wire {
