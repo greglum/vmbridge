@@ -92,6 +92,11 @@ const cards: Record<string, Card> = {
  */
 export class Rpc {
   private readonly local: Record<string, (call: Call) => unknown>;
+  /**
+   * The thread each device session (`clientId`) last sent a `thread.visit` for, which its uploads most likely go to.
+   * By session, not socket: the gateway gives every frame its own `RpcClient`.
+   */
+  private readonly visitedThreads = new Map<string, string>();
 
   constructor(
     private readonly hub: Hub,
@@ -193,7 +198,12 @@ export class Rpc {
       // The client's own browser profiles, for tabs it hosts. Tabs on a VM use the VM's browser, so this is dropped.
       "preview.reportProfiles": (call) => this.reply(call, null),
       // T3 asks for an upload URL without naming a thread, so VM Bridge takes the upload. See `Attachments`.
-      "attachments.createUploadUrl": (call) => this.reply(call, hub.attachments.mint(call.payload, call.client.clientId)),
+      "attachments.createUploadUrl": (call) => {
+        this.reply(call, hub.attachments.mint(call.payload, call.client.clientId));
+        // A file goes in before the message that sends it, most likely to the thread this device last visited.
+        const threadId = this.visitedThreads.get(call.client.clientId);
+        if (threadId) hub.prewakeThread(threadId, "file attached");
+      },
       "attachments.delete": (call) => {
         hub.attachments.remove(String(call.payload.attachmentId));
         this.reply(call, null);
@@ -868,7 +878,13 @@ export class Rpc {
       throw new Error("Webhook automations need a directly reachable T3 server.");
     }
     if (tag === "orchestration.dispatchCommand" && (isHeldCommand(payload) || this.detachesAway(payload))) {
-      return this.reply(call, { sequence: this.hub.holdCommand(payload) });
+      this.reply(call, { sequence: this.hub.holdCommand(payload) });
+      // T3 only sends visits while the user is looking at the thread. Only the open (`opened`, sent once per thread
+      // every 10 minutes) wakes its VM, not the visits it repeats while they read it.
+      const visited = payload.type === "thread.visit" ? str(payload.threadId) : undefined;
+      if (visited) this.visitedThreads.set(client.clientId, visited);
+      if (visited && payload.opened === true) this.hub.prewakeThread(visited, "thread opened");
+      return;
     }
     const mutating = scheduled || tag === "orchestration.launchThread" || tag === "orchestration.dispatchCommand" || mutation.test(tag);
     const launching = tag === "orchestration.launchThread" ? str(payload.threadId) : undefined;
@@ -882,6 +898,8 @@ export class Rpc {
 
     const awake = Boolean(this.hub.fleet.backend(vmId));
     if (!mutating && !awake) {
+      // The composer's @ file search: a message to this VM is likely next.
+      if (tag === "projects.searchEntries") this.hub.prewake(vmId, "@ file search");
       const cached = tag === "orchestration.getThreadProjection" ? this.hub.store.projection(String(payload.threadId), vmId) : null;
       if (cached) return this.reply(call, this.hub.out(cached, vmId));
       const found = tag === "projects.searchEntries" ? await this.searchAsleep(payload, vmId) : undefined;

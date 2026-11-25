@@ -11,7 +11,8 @@ Website and docs: [vmbridge.ordinity.com](https://vmbridge.ordinity.com)
 
 - Use several providers at once: boxd, Instabox, Daytona, Boat, Railway, E2B, Freestyle,
   Superserve and Kubi. New VMs go to your default provider, or to the one you pick for a repository.
-- A VM sleeps when it sits idle and wakes when you send a message.
+- A VM sleeps when it sits idle and wakes when you send a message. Opening a thread, typing in it,
+  searching files with @ or attaching a file starts waking its VM, so it is up by the time you send.
 - Small VMs by default. When a project runs more threads than its VM can take, new threads go to
   another VM for that project.
 - One dashboard, behind a password, for providers, GitHub, agent sign-ins, pairing devices and a
@@ -25,7 +26,7 @@ Website and docs: [vmbridge.ordinity.com](https://vmbridge.ordinity.com)
   to the thread's VM.
 - Thread search and the pull requests list work across your VMs, without waking sleeping ones.
 - Opening, renaming, settling, snoozing, pinning, archiving and deleting a thread show at once, and
-  so do the model and access pickers. A sleeping VM is not woken for them: it gets them when it next
+  so do the model and access pickers. None of them waits for a sleeping VM: it gets them when it next
   wakes.
 - Answer an agent's cards in T3 Code: a request for a secret, or an offer to send feedback to the T3
   team. Feedback cards are off until you turn them on under **Settings**, **VMs**.

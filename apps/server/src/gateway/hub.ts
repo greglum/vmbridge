@@ -633,11 +633,15 @@ export class Hub extends EventEmitter<HubEvents> {
   /** Refreshes agent status on one VM (the request's, or any connected one) and returns the catalog. */
   async refreshAgents(input: Wire) {
     const cwd = str(input.cwd);
-    const vmId = (cwd && this.routeOrNull({ cwd })) || this.fleet.connected()[0];
+    const routed = cwd ? this.routeOrNull({ cwd }) : null;
+    // T3 asks with a `cwd` when a key is typed in a thread's composer and its 5-minute snapshot is stale, so that VM
+    // is about to get a message.
+    if (routed) this.prewake(routed, "typing in a thread");
+    const vmId = routed ?? this.fleet.connected()[0];
     const backend = vmId ? this.fleet.backend(vmId) : undefined;
     if (vmId && backend) {
       const request = this.into({ ...input }, vmId);
-      if (!this.routeOrNull({ cwd })) delete request.cwd;
+      if (!routed) delete request.cwd;
       const result = await backend
         .call<{ providers?: ProviderEntry[] }>("server.refreshProviders", { ...request, omitProviders: false, providerCatalogsOnDemand: false })
         .catch(() => null);
@@ -1064,6 +1068,26 @@ export class Hub extends EventEmitter<HubEvents> {
   }
 
   // Sleeping threads
+
+  /**
+   * Starts waking a sleeping VM in the background because a client looks about to use it: a thread opened, a key
+   * typed in a composer, a file attached. The message that follows then finds it awake or shares the wake already
+   * running (`Fleet.ensure`). It holds no lease: the wake marks the VM active, so the idle sweep puts it back to sleep
+   * after the usual idle minutes when no message comes. Never throws; a failed wake is logged by the fleet.
+   */
+  prewake(vmId: string, reason: string) {
+    // Only asleep: an awake VM needs nothing, a waking one is already on its way, and a failed one waits for a message.
+    if (this.store.vm(vmId)?.state !== "sleeping") return;
+    this.traffic.record({ kind: "system", operation: `Waking VM early: ${reason}`, vmId });
+    void this.fleet.ensure(vmId).catch(() => {});
+  }
+
+  /** `prewake` for the VM a thread is on. Not for a thread no VM holds yet, nor an archived one. */
+  prewakeThread(threadId: string, reason: string) {
+    const vmId = this.store.threadVm(threadId);
+    if (!vmId || this.shells.get(vmId)?.archivedThreads?.some((row) => row.id === threadId)) return;
+    this.prewake(vmId, reason);
+  }
 
   /** Shows a "waking" notice in a sleeping thread until the VM answers. Call the result when done. */
   beginWake(threadId: string, vmId: string): () => void {
