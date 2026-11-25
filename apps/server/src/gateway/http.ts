@@ -317,6 +317,10 @@ export class T3Gateway {
         },
       });
     }
+    // The link is unauthenticated and the VM is asked with VM Bridge's own token, so it must name a file under
+    // /api/assets/ and nothing else: a token or name of `..` (or `%2e%2e`) would otherwise reach any T3 route.
+    const upstreamPath = `${assetPrefix}${token}/${name}`;
+    if (new URL(upstreamPath, "http://vm").pathname !== upstreamPath) return notFound();
     const backend = this.hub.store.vm(owner) ? this.hub.fleet.backend(owner) : undefined;
     if (!backend) return notFound();
     const headers = new Headers();
@@ -324,7 +328,7 @@ export class T3Gateway {
       const value = request.headers.get(header);
       if (value !== null) headers.set(header, value);
     }
-    const upstream = await backend.http(`${assetPrefix}${token}/${name}`, { method: request.method, headers, signal: AbortSignal.timeout(10 * 60_000) });
+    const upstream = await backend.http(upstreamPath, { method: request.method, headers, signal: AbortSignal.timeout(10 * 60_000) });
     return relayedAsset(upstream);
   }
 

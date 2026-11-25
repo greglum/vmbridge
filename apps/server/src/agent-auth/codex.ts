@@ -38,16 +38,27 @@ export function codexAccount(file: CodexAuthFile) {
   };
 }
 
-/** Parses a Codex auth.json, or returns null when it is not a ChatGPT sign-in. */
+/**
+ * Parses a Codex auth.json, or returns null when it is not a ChatGPT sign-in. Only the sign-in's own fields are kept:
+ * a VM writes this file, and anything else in it (an `OPENAI_API_KEY`, another `auth_mode`) would reach every VM.
+ */
 export function parseCodexAuth(text: string): CodexAuthFile | null {
+  let file: { tokens?: Record<string, unknown>; last_refresh?: unknown };
   try {
-    const file = JSON.parse(text) as Partial<CodexAuthFile>;
-    const tokens = file.tokens;
-    if (!tokens?.id_token || !tokens.access_token || !tokens.refresh_token || !file.last_refresh) return null;
-    return file as CodexAuthFile;
+    file = JSON.parse(text);
   } catch {
     return null;
   }
+  const { id_token, access_token, refresh_token, account_id } = file?.tokens ?? {};
+  const { last_refresh } = file ?? {};
+  if (typeof id_token !== "string" || typeof access_token !== "string" || typeof refresh_token !== "string") return null;
+  if (!id_token || !access_token || !refresh_token || typeof last_refresh !== "string" || !last_refresh) return null;
+  return {
+    auth_mode: "chatgpt",
+    OPENAI_API_KEY: null,
+    tokens: { id_token, access_token, refresh_token, account_id: typeof account_id === "string" ? account_id : null },
+    last_refresh,
+  };
 }
 
 function authFile(tokens: { id_token: string; access_token: string; refresh_token: string }): CodexAuthFile {
