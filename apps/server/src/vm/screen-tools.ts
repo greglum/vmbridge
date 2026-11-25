@@ -225,6 +225,21 @@ const tools = [
 
 const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\\n");
 
+/** Runs a tool and, after an action, waits for the screen to settle so the next call sees its result. Never rejects. */
+async function act(tool, args) {
+  try {
+    const content = await tool.run(args);
+    if (!content) await settle();
+    return { content: content || done };
+  } catch (error) {
+    return { content: [{ type: "text", text: error.message }], isError: true };
+  }
+}
+
+// Tool calls run one at a time, in the order they came. Agents may send several at once, and they share one mouse,
+// keyboard and screen: run together, a drag could release in the middle of typed text.
+let turn = Promise.resolve();
+
 async function handle(line) {
   let message;
   try {
@@ -253,13 +268,9 @@ async function handle(line) {
   if (method === "tools/call") {
     const tool = tools.find((entry) => entry.name === (params && params.name));
     if (!tool) return send({ id, error: { code: -32602, message: "Unknown tool" } });
-    try {
-      const content = await tool.run((params && params.arguments) || {});
-      if (!content) await settle();
-      return send({ id, result: { content: content || done } });
-    } catch (error) {
-      return send({ id, result: { content: [{ type: "text", text: error.message }], isError: true } });
-    }
+    const call = turn.then(() => act(tool, (params && params.arguments) || {}));
+    turn = call;
+    return send({ id, result: await call });
   }
   send({ id, error: { code: -32601, message: "Method not found" } });
 }
