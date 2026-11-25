@@ -684,6 +684,12 @@ export class Rpc {
         release();
         throw error;
       }
+      // Handing files over can take minutes too.
+      if (!client.open()) {
+        release();
+        if (launching) this.hub.reportSetup(launching, "The launch was interrupted.", "failed");
+        return;
+      }
     }
 
     const started = performance.now();
