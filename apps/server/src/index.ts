@@ -20,6 +20,7 @@ import { BunNetwork } from "./bun/bridge-network.ts";
 import { localKey } from "./bun/key.ts";
 import { bridgeJobs } from "./jobs.ts";
 import { fetchGitHubAccount } from "./github.ts";
+import { maxUploadBytes, uploadPrefix } from "./gateway/attachments.ts";
 import { isT3Path, type SocketData } from "./gateway/http.ts";
 import { Listeners } from "./bun/listeners.ts";
 import { networkInfo, wantedHosts } from "./bun/network.ts";
@@ -129,7 +130,8 @@ export async function start(options: StartOptions = {}) {
     Bun.serve<Socket>({
       hostname,
       port,
-      maxRequestBodySize: 2 * 1024 * 1024,
+      // Attachment uploads are the one large body: T3 takes files of up to 50 MB. Every other body is held to 2 MB below.
+      maxRequestBodySize: maxUploadBytes + 1024 * 1024,
       // Long enough for the dashboard's event stream between heartbeats.
       idleTimeout: 60,
       development,
@@ -139,6 +141,9 @@ export async function start(options: StartOptions = {}) {
       },
       fetch(request, server) {
         const { pathname: path, search } = new URL(request.url);
+        if (request.body && !path.startsWith(uploadPrefix) && !(Number(request.headers.get("content-length")) <= 2 * 1024 * 1024)) {
+          return new Response("Request body too large", { status: 413 });
+        }
         // Routes match exactly, so /dashboard/ would miss. The browser keeps the fragment (onboarding's #code=) across the redirect.
         if (path.startsWith("/dashboard/") && path.endsWith("/")) {
           return new Response(null, { status: 302, headers: { location: `${path.replace(/\/+$/, "")}${search}` } });

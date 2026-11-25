@@ -2,6 +2,7 @@ import type { Traffic } from "../traffic.ts";
 import { message, NoProvider } from "../fleet.ts";
 import { primaryVm } from "../store.ts";
 import type { Frame } from "../vm/backend.ts";
+import { heldAssetUrl, relayedAssetUrl } from "./attachments.ts";
 import type { Clones } from "./clones.ts";
 import { heldCommandTypes } from "./held.ts";
 import type { Hub } from "./hub.ts";
@@ -147,6 +148,10 @@ export class Rpc {
       "preview.close": (call) => this.previewTabs(call),
       // The client's own browser profiles, for tabs it hosts. Tabs on a VM use the VM's browser, so this is dropped.
       "preview.reportProfiles": (call) => this.reply(call, undefined),
+      // T3 asks for an upload URL without naming a thread, so VM Bridge takes the upload. See `Attachments`.
+      "attachments.createUploadUrl": (call) => this.reply(call, hub.attachments.mint(call.payload, call.client.clientId)),
+      "attachments.delete": (call) => this.reply(call, hub.attachments.remove(String(call.payload.attachmentId))),
+      "assets.createUrl": (call) => this.assetUrl(call),
     };
   }
 
@@ -582,6 +587,33 @@ export class Rpc {
     for (const vmId of this.hub.fleet.connected()) attach(vmId);
   }
 
+  /**
+   * An asset URL from the VM that has the asset, made to point at VM Bridge, which relays it. Like other reads, it does
+   * not wake a sleeping VM. An upload VM Bridge still holds is its own to answer for.
+   */
+  private async assetUrl(call: Call) {
+    const resource = (call.payload.resource ?? {}) as Wire;
+    const attachmentId = resource._tag === "attachment" ? str(resource.attachmentId) : undefined;
+    const held = attachmentId ? this.hub.attachments.held(attachmentId) : undefined;
+    if (held) return this.reply(call, { relativeUrl: heldAssetUrl(held), expiresAt: Date.now() + 60 * 60_000 });
+    const vmId = attachmentId ? this.hub.attachmentVm(attachmentId) : this.hub.route(call.payload);
+    // The client tells this error apart: a pending upload it cannot find is one to upload again.
+    if (!vmId) return call.client.send(tagged(call.id, { _tag: "AssetAttachmentNotFoundError", resource }));
+    const backend = this.hub.fleet.backend(vmId);
+    if (!backend) throw new Error("This VM is asleep. Sending a message wakes it.");
+    const exit = await new Promise<Frame>((resolve, reject) => {
+      try {
+        backend.request(call.tag, this.hub.into(call.payload, vmId), (frame) => frame._tag === "Exit" && resolve(frame));
+      } catch (error) {
+        reject(error);
+      }
+    });
+    const result = exit.exit as Wire | undefined;
+    if (result?._tag !== "Success") return call.client.send({ ...(this.hub.out(exit, vmId) as Wire), requestId: call.id });
+    const value = this.hub.out(result.value, vmId) as Wire;
+    this.reply(call, { ...value, relativeUrl: relayedAssetUrl(vmId, value.relativeUrl) });
+  }
+
   /** A thread's preview tabs live on its VM. One that is not awake has none: its list is empty, and closing is done. */
   private previewTabs(call: Call) {
     const vmId = this.hub.store.threadVm(String(call.payload.threadId));
@@ -644,12 +676,21 @@ export class Rpc {
       return;
     }
     progress("Preparing the workspace");
+    let outgoing = routed.payload;
+    if (mutating) {
+      try {
+        outgoing = await this.hub.attachments.handOver(routed.payload, vmId, backend);
+      } catch (error) {
+        release();
+        throw error;
+      }
+    }
 
     const started = performance.now();
     let done = false;
     let stop: () => void;
     try {
-      stop = backend.request(tag, routed.payload, (frame) => {
+      stop = backend.request(tag, outgoing, (frame) => {
         client.send({ ...(this.hub.out(frame, vmId) as Wire), requestId: call.id });
         if (frame._tag !== "Exit") return;
         done = true;

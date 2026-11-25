@@ -10,6 +10,7 @@ import type { Traffic } from "../traffic.ts";
 import { T3Rejected, type Backend, type Frame } from "../vm/backend.ts";
 import type { Stats } from "../vm/stats.ts";
 import { defaultAgents, pendingAgent, presentAgent, type AgentReport } from "./agents.ts";
+import { Attachments, maxUploadBytes } from "./attachments.ts";
 import { applyHeldCommand } from "./held.ts";
 import { isPathKey, projectForPath, projectRoot, translate, vmForPath, type Environments } from "./paths.ts";
 import { repositoryIdentity } from "./repos.ts";
@@ -73,6 +74,19 @@ const unseenThreadWaitMs = 5_000;
 /** A VM with an automation sleeps like any other, and wakes this long before the automation runs. */
 const scheduleLeadMs = 2 * 60_000;
 
+/** A stored attachment's ID (T3's `ATTACHMENT_ID_PATTERN`): its thread's segment, a UUID, and maybe an extension. */
+const attachmentSegment = /^([a-z0-9_]+(?:-[a-z0-9_]+)*)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:-[a-z0-9]{1,10})?$/i;
+
+const attachmentThreadSegment = (threadId: string) =>
+  threadId
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "")
+    .slice(0, 80)
+    .replace(/[-_]+$/g, "");
+
 /** The local branch a launch starts its worktree from. One taken from origin is on every VM. */
 function launchBranch(strategy: unknown): string | undefined {
   const value = (strategy ?? {}) as Wire;
@@ -103,6 +117,8 @@ export class Hub extends EventEmitter<HubEvents> {
   /** Threads a VM reported that belong to another VM, logged once each. */
   private readonly refusedClaims = new Set<string>();
   private sequence: number;
+  /** Uploads waiting for the message that sends them. */
+  readonly attachments: Attachments;
 
   constructor(
     readonly store: Store,
@@ -113,6 +129,7 @@ export class Hub extends EventEmitter<HubEvents> {
   ) {
     super();
     this.setMaxListeners(0);
+    this.attachments = new Attachments(store.db);
     this.shells = new Map([...store.snapshots<Shell>("shell")].map(([vmId, shell]) => [vmId, this.owned(vmId, shell)]));
     this.configs = store.snapshots<ServerConfig>("config");
     const fallback = settings.get("fallbackConfig");
@@ -390,6 +407,8 @@ export class Hub extends EventEmitter<HubEvents> {
 
   descriptor(): Wire {
     const native = [...this.configs.values()][0]?.environment;
+    const nativeCapabilities = (native?.capabilities ?? {}) as Wire;
+    const fileAttachments = nativeCapabilities.fileAttachments as { maxUploadBytes?: number } | undefined;
     return {
       environmentId: this.settings.get("bridgeId"),
       label: this.settings.get("machineName"),
@@ -402,7 +421,13 @@ export class Hub extends EventEmitter<HubEvents> {
         inlineMessageContext: true,
         vcsBranchStatus: true,
         // Agents' browser tabs run on the VMs' T3 servers, which VM Bridge relays.
-        serverBrowser: (native?.capabilities as { serverBrowser?: boolean } | undefined)?.serverBrowser === true,
+        serverBrowser: nativeCapabilities.serverBrowser === true,
+        // Uploads go to VM Bridge, which hands them to the thread's VM. See `Attachments`.
+        attachmentUploads: nativeCapabilities.attachmentUploads === true,
+        ...(nativeCapabilities.questionAttachments === true ? { questionAttachments: true } : {}),
+        ...(typeof fileAttachments?.maxUploadBytes === "number"
+          ? { fileAttachments: { maxUploadBytes: Math.min(fileAttachments.maxUploadBytes, maxUploadBytes) } }
+          : {}),
       },
     };
   }
@@ -696,6 +721,20 @@ export class Hub extends EventEmitter<HubEvents> {
       await once(this, "shell", { signal: AbortSignal.timeout(remaining) }).catch(() => {});
     }
     return this.route(payload);
+  }
+
+  /**
+   * The VM that has an attachment T3 stored for a thread. T3 names it after the thread
+   * (`toSafeThreadAttachmentSegment`): the thread ID, lowercased, with other characters than letters, digits, `_`
+   * and `-` made `-`, at most 80 characters.
+   */
+  attachmentVm(attachmentId: string): string | null {
+    const segment = attachmentSegment.exec(attachmentId)?.[1]?.toLowerCase();
+    if (!segment) return null;
+    const direct = this.store.threadVm(segment);
+    if (direct) return direct;
+    const vms = new Set(this.store.threads().filter((thread) => attachmentThreadSegment(thread.id) === segment).map((thread) => thread.vmId));
+    return vms.size === 1 ? [...vms][0]! : null;
   }
 
   routeOrNull(payload: unknown) {

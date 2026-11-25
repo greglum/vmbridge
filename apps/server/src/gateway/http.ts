@@ -3,6 +3,7 @@ import { clientSessionMs } from "../auth/clients.ts";
 import { message } from "../fleet.ts";
 import type { Frame } from "../vm/backend.ts";
 import type { WatchUpgrade } from "../watch/watch.ts";
+import { assetPrefix, bridgeAssetUrl, heldOwner, relayedAsset, uploadPrefix } from "./attachments.ts";
 import { bridgeAuth, bridgeScopes, type Hub } from "./hub.ts";
 import { previewQuery, previewRelay, previewStreamPath } from "./preview.ts";
 import type { Rpc, RpcClient } from "./rpc.ts";
@@ -31,6 +32,7 @@ export type Upgrade = (request: Request, data: SocketData) => Response | undefin
 const open = 1;
 
 const json = (value: unknown, status = 200) => Response.json(value, { status });
+const notFound = () => new Response("Not Found", { status: 404 });
 const unauthenticated = () => json({ code: "auth_invalid", reason: "invalid_credential", traceId: crypto.randomUUID() }, 401);
 
 const tokenExchange = {
@@ -88,14 +90,16 @@ export class T3Gateway {
       response.headers.set("access-control-allow-origin", origin);
       response.headers.set("vary", "Origin");
     }
-    response.headers.set("cache-control", "no-store");
+    // Assets keep the caching T3 gives them: their URLs are signed anew for each new copy.
+    if (!response.headers.has("cache-control")) response.headers.set("cache-control", "no-store");
     if (!seen.clientId) {
       // Anyone can send these, so failures are only counted. Pairing logs itself; discovery and preflights are not worth a line.
       if (!response.ok) this.hub.traffic.refused();
     } else if (path !== "/api/auth/session") {
       this.hub.traffic.record({
         kind: "http",
-        operation: `${request.method} ${path.replace(/\/threads\/[^/]+/, "/threads/:id")}`,
+        // An upload URL's token is what lets anyone send the file.
+        operation: `${request.method} ${path.replace(/\/threads\/[^/]+/, "/threads/:id").replace(/^\/api\/attachments\/upload\/.+/, `${uploadPrefix}:token`)}`,
         clientId: seen.clientId,
         status: response.ok ? "ok" : "error",
         durationMs: Math.round(performance.now() - started),
@@ -128,6 +132,10 @@ export class T3Gateway {
       return upgraded === null ? json({ error: "websocket_required" }, 400) : upgraded;
     }
     if (path === previewStreamPath) return this.previewStream(request, url, relay);
+    // Signed URLs, as on T3: the token in the path is the credential, and clients send no bearer with them.
+    if (path.startsWith(uploadPrefix) && request.method === "POST") return this.upload(request, path.slice(uploadPrefix.length), seen);
+    const asset = bridgeAssetUrl.exec(path);
+    if (asset && (request.method === "GET" || request.method === "HEAD")) return this.asset(request, asset[1]!, asset[2]!, asset[3]!);
 
     const bearer = request.headers.get("authorization")?.match(/^Bearer (.+)$/)?.[1];
     const client = bearer ? this.clients.authenticate(bearer) : null;
@@ -187,6 +195,42 @@ export class T3Gateway {
     if (upgraded !== null) return upgraded;
     this.streams.delete(stream);
     return json({ error: "websocket_required" }, 400);
+  }
+
+  private async upload(request: Request, token: string, seen: { clientId?: string }) {
+    const { status, clientId } = await this.hub.attachments.receive(token, request);
+    if (clientId) seen.clientId = clientId;
+    if (status === 204) return new Response(null, { status });
+    return status === 400 ? new Response("The upload is not the size it was announced as.", { status }) : notFound();
+  }
+
+  /**
+   * An asset, from the VM that signed its URL. A VM that is not awake is not woken for it, and the client shows the
+   * asset as missing. An upload VM Bridge still holds is served from here, as a download unless it is an image.
+   */
+  private async asset(request: Request, owner: string, token: string, name: string) {
+    if (owner === heldOwner) {
+      const file = this.hub.attachments.file(token);
+      if (!file) return notFound();
+      const image = /^image\/(?:png|jpeg|gif|webp)$/i.test(file.upload.mimeType);
+      return new Response(request.method === "HEAD" ? null : file.body, {
+        headers: {
+          "content-type": image ? file.upload.mimeType : "application/octet-stream",
+          ...(image ? {} : { "content-disposition": "attachment" }),
+          "content-security-policy": "default-src 'none'; sandbox",
+          "x-content-type-options": "nosniff",
+        },
+      });
+    }
+    const backend = this.hub.store.vm(owner) ? this.hub.fleet.backend(owner) : undefined;
+    if (!backend) return notFound();
+    const headers = new Headers();
+    for (const header of ["range", "if-range"]) {
+      const value = request.headers.get(header);
+      if (value !== null) headers.set(header, value);
+    }
+    const upstream = await backend.http(`${assetPrefix}${token}/${name}`, { method: request.method, headers, signal: AbortSignal.timeout(10 * 60_000) });
+    return relayedAsset(upstream);
   }
 
   private async exchange(request: Request) {

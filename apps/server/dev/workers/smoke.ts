@@ -1,6 +1,7 @@
 /**
  * Checks a running VM Bridge Worker the way the dashboard and a T3 client use it: logs in, pairs a device, opens the
- * T3 WebSocket and asks for the server config, and opens a preview stream. Prints no secret. Used by run.ts and against a real deploy:
+ * T3 WebSocket and asks for the server config, opens a preview stream and uploads a file. Prints no secret. Used by
+ * run.ts and against a real deploy:
  *
  *   VMBRIDGE_PASSWORD=... bun apps/server/dev/workers/smoke.ts https://vmbridge.example.workers.dev
  */
@@ -96,6 +97,25 @@ export async function previewStream(base: string, device: Paired) {
   check(code === 4404, "a preview stream for a tab no VM has closes as a gone tab");
 }
 
+/** Uploads a file larger than one stored chunk and reads it back, as a client checks an upload it holds. */
+export async function upload(base: string, device: Paired) {
+  const file = Uint8Array.from({ length: 2.5 * 1024 * 1024 }, (_, index) => index % 251);
+  const exitValue = (reply: Record<string, unknown> | undefined) => (reply?.exit as { value?: Record<string, string> } | undefined)?.value;
+  const [minted] = await rpc(base, device, [
+    { _tag: "Request", id: "1", tag: "attachments.createUploadUrl", payload: { type: "file", name: "big.bin", mimeType: "application/octet-stream", sizeBytes: file.byteLength } },
+  ]);
+  const slot = exitValue(minted);
+  check(Boolean(slot?.relativeUrl?.startsWith("/api/attachments/upload/")), "an upload URL points at the Worker");
+  const sent = await fetch(new URL(slot!.relativeUrl!, base), { method: "POST", body: file, headers: { "content-type": "application/octet-stream" } });
+  check(sent.status === 204, "the Worker takes the upload");
+  const [asset] = await rpc(base, device, [
+    { _tag: "Request", id: "1", tag: "assets.createUrl", payload: { resource: { _tag: "attachment", attachmentId: slot!.attachmentId } } },
+  ]);
+  const read = await fetch(new URL(exitValue(asset)!.relativeUrl!, base));
+  const back = new Uint8Array(await read.arrayBuffer());
+  check(read.ok && back.byteLength === file.byteLength && back.every((byte, index) => byte === file[index]), "the upload reads back whole");
+}
+
 export async function smoke(base: string, password: string) {
   const cookie = await login(base, password);
   const device = await pair(base, cookie);
@@ -103,6 +123,7 @@ export async function smoke(base: string, password: string) {
   check(replies.some((reply) => reply._tag === "Pong"), "the T3 socket answers a ping");
   check(replies.some((reply) => reply._tag === "Exit" && reply.requestId === "1"), "the T3 socket answers an RPC request");
   await previewStream(base, device);
+  await upload(base, device);
   return { cookie, device };
 }
 
