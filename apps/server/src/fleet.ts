@@ -700,12 +700,31 @@ export class Fleet extends EventEmitter<FleetEvents> {
     return this.exclusive(vmId, async () => {
       const vm = this.store.vm(vmId);
       if (!vm) return;
-      this.backends.get(vmId)?.close();
+      const backend = this.backends.get(vmId);
       this.backends.delete(vmId);
       this.boxes.delete(vmId);
-      if (vm.sandboxId && vm.state !== "gone") await this.driver(vm.provider).destroy(vm.sandboxId);
+      await backend?.close();
+      try {
+        if (vm.sandboxId && vm.state !== "gone") await this.driver(vm.provider).destroy(vm.sandboxId);
+      } catch (error) {
+        const state = vm.state === "sleeping" || vm.state === "gone" ? vm.state : "error";
+        this.setState(vmId, state, message(error));
+        this.failed("delete VM", error, { vmId, provider: vm.provider });
+        if (backend) this.emit("offline", vmId);
+        throw error;
+      }
       // A VM asleep as a checkpoint has no sandbox left, only the checkpoint.
-      if (vm.checkpoint) await this.driver(vm.provider).deleteCheckpoint(vm.checkpoint);
+      if (vm.checkpoint) {
+        try {
+          await this.driver(vm.provider).deleteCheckpoint(vm.checkpoint);
+        } catch (error) {
+          // On record, so the next sweep deletes it instead of it being billed forever.
+          this.store.retireSnapshot(vm.provider, vm.checkpoint);
+          this.failed("delete snapshot", error, { vmId, provider: vm.provider });
+        }
+      }
+      this.unrestartable.delete(vmId);
+      this.leases.delete(vmId);
       this.store.deleteVm(vmId);
       this.store.recordVmEvent(vm, "delete");
       this.traffic.record({ kind: "provider", operation: "delete VM", vmId, status: "ok" });
