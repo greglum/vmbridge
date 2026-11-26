@@ -149,9 +149,9 @@ export class T3Gateway {
       seen.failure = message(error);
       return json({ error: "bridge_unavailable", message: seen.failure }, 503);
     });
-    if (!response) return undefined;
-    // T3's desktop app strips `Origin` from its requests but its renderer still checks the answer, so a request with no
-    // `Origin` gets the wildcard, as T3's own server sends. Nothing here is sent with cookies, so `*` is enough.
+    // WebSocket upgrades (Bun undefined, Workers 101) bypass CORS/refusal handling untouched.
+    if (!response || response.status === 101) return response;
+    // Desktop T3 omits `Origin` yet checks CORS, so fall back to `*` (bearer auth only, no cookies).
     response.headers.set("access-control-allow-origin", origin ?? "*");
     response.headers.set("vary", "Origin");
     // Assets keep the caching T3 gives them: their URLs are signed anew for each new copy.
