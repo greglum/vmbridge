@@ -38,40 +38,65 @@ export function previewRelay(open: () => Promise<WebSocket | null>, ended: () =>
   const early: (string | Uint8Array)[] = [];
   let earlyBytes = 0;
   let done = false;
+  let closeCode = 1000;
+  let closeReason = "";
   const end = (code: number, reason: string) => {
     if (done) return;
     done = true;
+    closeCode = code;
+    closeReason = reason;
+    early.length = 0;
+    const activeVm = vm;
+    const activeClient = client;
+    vm = undefined;
+    client = undefined;
     ended();
-    vm?.close();
-    client?.close(code, reason);
+    activeVm?.close();
+    activeClient?.close(code, reason);
   };
 
   const viewer: Viewer = {
     opened: (socket) => {
+      if (done) return socket.close(closeCode, closeReason);
       client = socket;
-      open().then(
+      let opening: Promise<WebSocket | null>;
+      try {
+        opening = open();
+      } catch {
+        return end(1011, "Unavailable");
+      }
+      opening.then(
         (opened) => {
           if (!opened) return end(goneCode, "tab closed");
           if (done) return opened.close();
           vm = opened;
           // Listeners, not onmessage and onclose, which Workers' WebSocket lacks.
           opened.addEventListener("message", (event: MessageEvent<unknown>) => {
+            if (done) return;
             const data = payload(event.data);
             if (data !== null) client?.send(data);
           });
           opened.addEventListener("close", (event: CloseEvent) => end(sendable(event.code) ? event.code : 1011, event.reason));
           opened.addEventListener("error", () => end(1011, "Ended"));
-          for (const data of early.splice(0)) opened.send(data);
+          try {
+            for (const data of early.splice(0)) {
+              if (done) break;
+              opened.send(data);
+            }
+          } catch {
+            end(1011, "Ended");
+          }
         },
         // The reason could name the VM's address.
         () => end(1011, "Unavailable"),
       );
     },
     received: (data) => {
+      if (done) return;
       const chunk = payload(data);
       if (chunk === null) return;
       if (vm) return vm.send(chunk);
-      earlyBytes += typeof chunk === "string" ? chunk.length : chunk.byteLength;
+      earlyBytes += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
       if (earlyBytes > earlyLimit) return end(1008, "Too much before the stream opened");
       early.push(chunk);
     },

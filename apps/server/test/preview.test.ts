@@ -7,13 +7,14 @@ import { openDatabase } from "../src/bun/sqlite.ts";
 import type { Fleet } from "../src/fleet.ts";
 import { T3Gateway, type SocketData } from "../src/gateway/http.ts";
 import { bridgeScopes, Hub } from "../src/gateway/hub.ts";
+import { previewRelay } from "../src/gateway/preview.ts";
 import { Rpc, type RpcClient } from "../src/gateway/rpc.ts";
 import type { Wire } from "../src/gateway/types.ts";
 import { Settings } from "../src/settings.ts";
 import { Store } from "../src/store.ts";
 import type { Traffic } from "../src/traffic.ts";
 import { Backend } from "../src/vm/backend.ts";
-import type { Viewer } from "../src/watch/watch.ts";
+import type { Viewer, ViewerSocket } from "../src/watch/watch.ts";
 import { testEncryption } from "./key.ts";
 
 const traffic = { record: () => {}, refused: () => {} } as unknown as Traffic;
@@ -289,5 +290,76 @@ describe("preview stream relay", () => {
     } finally {
       stop();
     }
+  });
+
+  test("fences pre-open end() so revoked streams never open upstream and ignore later input", () => {
+    let openCalls = 0;
+    let endedCalls = 0;
+    const closed: { code?: number; reason?: string }[] = [];
+    const socket: ViewerSocket = {
+      send: () => {},
+      close: (code, reason) => closed.push({ code, reason }),
+    };
+
+    const { viewer, end } = previewRelay(
+      async () => {
+        openCalls++;
+        return null;
+      },
+      () => endedCalls++,
+    );
+
+    end(1008, "Device removed");
+    expect(endedCalls).toBe(1);
+
+    viewer.opened(socket);
+    expect(openCalls).toBe(0);
+    expect(closed).toEqual([{ code: 1008, reason: "Device removed" }]);
+
+    viewer.received("hello");
+    viewer.received("€".repeat(30_000));
+    viewer.closed();
+    expect(openCalls).toBe(0);
+    expect(endedCalls).toBe(1);
+    expect(closed).toEqual([{ code: 1008, reason: "Device removed" }]);
+  });
+
+  test("counts multibyte UTF-8 early messages in bytes and closes late upstream sockets after end()", async () => {
+    let resolveOpen!: (socket: WebSocket | null) => void;
+    let endedCalls = 0;
+    const clientClosed: { code?: number; reason?: string }[] = [];
+    const clientSocket: ViewerSocket = {
+      send: () => {},
+      close: (code, reason) => clientClosed.push({ code, reason }),
+    };
+
+    const { viewer } = previewRelay(
+      () => new Promise<WebSocket | null>((resolve) => (resolveOpen = resolve)),
+      () => endedCalls++,
+    );
+
+    viewer.opened(clientSocket);
+
+    // 22,000 3-byte UTF-8 characters: .length is 22,000 (<= 65,536), UTF-8 size is 66,000 bytes (> 65,536).
+    const multibyte = "€".repeat(22_000);
+    expect(multibyte.length).toBeLessThanOrEqual(64 * 1024);
+    expect(Buffer.byteLength(multibyte)).toBeGreaterThan(64 * 1024);
+    viewer.received(multibyte);
+
+    expect(endedCalls).toBe(1);
+    expect(clientClosed).toEqual([{ code: 1008, reason: "Too much before the stream opened" }]);
+
+    // Even if open() resolves later, the upstream socket must be closed without receiving buffered data.
+    let upstreamClosed = 0;
+    const upstreamSent: unknown[] = [];
+    resolveOpen({
+      close: () => upstreamClosed++,
+      send: (data: unknown) => upstreamSent.push(data),
+    } as unknown as WebSocket);
+    await Bun.sleep(0);
+
+    expect(upstreamClosed).toBe(1);
+    expect(upstreamSent).toEqual([]);
+    expect(endedCalls).toBe(1);
   });
 });
