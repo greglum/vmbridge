@@ -87,4 +87,31 @@ describe("monthly budget", () => {
     expect(budget.notice(later)).toBe("VM Bridge: 86% of this month's $1.00 budget is used.");
     expect(budget.notice(later + hour)).toBeNull();
   });
+
+  test("enforcement, early wake, and notice each compute fresh spend within the 60s status cache window, and invalidate clears cached status", () => {
+    const at = october + 30 * 24 * hour;
+    const soon = at + 10_000;
+
+    // Each method gets its own fixture so none can warm the cache for the next.
+    const forRefusal = setup(hoursFor(0.99), { monthlyUsd: 1, stopAtLimit: true });
+    expect(forRefusal.budget.status(at).level).toBe("warning");
+    forRefusal.awakeFor(at - 2 * hour, hoursFor(0.05));
+    expect(forRefusal.budget.refusal(soon)).toContain("budget of $1.00");
+
+    const forEarlyWake = setup(hoursFor(0.99), { monthlyUsd: 1, stopAtLimit: false });
+    expect(forEarlyWake.budget.status(at).level).toBe("warning");
+    forEarlyWake.awakeFor(at - 2 * hour, hoursFor(0.05));
+    expect(forEarlyWake.budget.allowsEarlyWake(soon)).toBe(false);
+
+    const forNotice = setup(hoursFor(0.99), { monthlyUsd: 1, stopAtLimit: false });
+    expect(forNotice.budget.status(at).level).toBe("warning");
+    forNotice.awakeFor(at - 2 * hour, hoursFor(0.05));
+    expect(forNotice.budget.notice(soon)).toContain("budget is used up");
+
+    const forInvalidate = setup(hoursFor(0.99), { monthlyUsd: 1, stopAtLimit: false });
+    expect(forInvalidate.budget.status(at).level).toBe("warning");
+    forInvalidate.awakeFor(at - 2 * hour, hoursFor(0.05));
+    forInvalidate.budget.invalidate();
+    expect(forInvalidate.budget.status(soon).level).toBe("over");
+  });
 });

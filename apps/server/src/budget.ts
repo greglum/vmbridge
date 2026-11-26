@@ -31,39 +31,44 @@ export class Budget {
     private readonly usage: Pick<Usage, "report">,
   ) {}
 
-  status(now = Date.now()): BudgetStatus {
+  status(now = Date.now(), options?: { fresh?: boolean }): BudgetStatus {
     const { monthlyUsd, stopAtLimit } = this.settings.get("budget");
     const from = monthStart(now);
-    const spent = this.spent(from, now);
+    const spent = this.spent(from, now, options?.fresh === true);
     let level: BudgetStatus["level"] = "ok";
     if (monthlyUsd !== null && spent.amount >= monthlyUsd) level = "over";
     else if (monthlyUsd !== null && spent.amount >= monthlyUsd * warnAt) level = "warning";
     return { monthlyUsd, stopAtLimit, spent, monthStart: from, level };
   }
 
-  private spent(from: number, now: number): Estimate {
+  /** Drops the cached monthly spend estimate, e.g. after VM usage intervals change. */
+  invalidate(): void {
+    this.cached = null;
+  }
+
+  private spent(from: number, now: number, fresh: boolean): Estimate {
     const cached = this.cached;
-    if (cached && cached.from === from && now >= cached.at && now - cached.at < spendTtlMs) return cached.spent;
+    if (!fresh && cached && cached.from === from && now >= cached.at && now - cached.at < spendTtlMs) return cached.spent;
     const spent = this.usage.report(from, now, now).total;
     this.cached = { at: now, from, spent };
     return spent;
   }
 
-  /** Why new VMs and wakes are refused now, or null when they are not. */
+  /** Why new VMs and wakes are refused now, or null when they are not. Always computes fresh spend before enforcing. */
   refusal(now = Date.now()): string | null {
-    const status = this.status(now);
+    const status = this.status(now, { fresh: true });
     if (status.level !== "over" || !status.stopAtLimit || status.monthlyUsd === null) return null;
     return `VM Bridge reached this month's budget of ${dollars(status.monthlyUsd)}, so it is not starting or waking VMs. Raise the budget on the Usage page of the VM Bridge dashboard.`;
   }
 
   /** Early wakes are only a guess that a message follows, so they stop at the limit even without `stopAtLimit`. */
   allowsEarlyWake(now = Date.now()) {
-    return this.status(now).level !== "over";
+    return this.status(now, { fresh: true }).level !== "over";
   }
 
   /** A short notice for T3 the first time it is asked in a month past 80% of the budget. Null otherwise. */
   notice(now = Date.now()): string | null {
-    const status = this.status(now);
+    const status = this.status(now, { fresh: true });
     if (status.level === "ok" || status.monthlyUsd === null || this.settings.get("budgetNoticeMonth") === status.monthStart) return null;
     this.settings.set("budgetNoticeMonth", status.monthStart);
     const budget = dollars(status.monthlyUsd);

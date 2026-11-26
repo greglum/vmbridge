@@ -60,10 +60,15 @@ export function openBridge(runtime: BridgeRuntime) {
   });
   const stats = new Stats(fleet);
   const usage = new Usage(store, () => fleet.connected());
-  for (const event of ["changed", "awake", "offline"] as const) fleet.on(event, () => usage.sync());
   const branches = new RemoteBranches(() => secrets.get("github.token"), runtime.resolve);
   const files = new FileTrees(db, () => secrets.get("github.token"), branches);
   const budget = new Budget(settings, usage);
+  for (const event of ["changed", "awake", "offline"] as const) {
+    fleet.on(event, () => {
+      usage.sync();
+      budget.invalidate();
+    });
+  }
   fleet.refusal = () => budget.refusal();
   const hub = new Hub(store, settings, fleet, traffic, stats, budget, files);
   agents.onChange = () => {

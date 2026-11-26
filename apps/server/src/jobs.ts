@@ -33,9 +33,10 @@ export function bridgeJobs(deps: { hub: Hub; fleet: Fleet; stats: Stats; usage: 
       name: "usage heartbeat",
       everyMs: heartbeatMs,
       run: async () => {
-        usage.sync(Date.now(), true);
+        const now = Date.now();
+        usage.sync(now, true);
         // Spend grows while VMs are awake with nothing else changing, so the dashboard's budget banner needs a nudge.
-        const level = budget.status().level;
+        const level = budget.status(now, { fresh: true }).level;
         if (level === budgetLevel) return;
         budgetLevel = level;
         fleet.emit("changed");
