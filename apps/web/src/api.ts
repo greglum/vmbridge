@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { LiveMessage, Overview, TrafficEvent } from "@vmbridge/contracts";
+import type { Overview, TrafficEvent } from "@vmbridge/contracts";
+import { startLiveStream } from "./lib/live-stream.ts";
 
 export class ApiError extends Error {
   constructor(
@@ -25,8 +26,8 @@ export async function api<T>(path: string, options: { method?: string; body?: un
   });
   const value = (await response.json().catch(() => ({}))) as T & { error?: string };
   if (!response.ok) {
-    // A wrong password or setup link is not a lost session.
-    if (response.status === 401 && path !== "/login" && path !== "/setup") for (const listener of loggedOut) listener();
+    // A wrong password, setup link, or /auth probe itself should not trigger a logout refresh loop.
+    if (response.status === 401 && path !== "/login" && path !== "/setup" && path !== "/auth") for (const listener of loggedOut) listener();
     throw new ApiError(value.error ?? `Request failed (${response.status}).`, response.status);
   }
   return value;
@@ -62,43 +63,20 @@ export function useLive() {
   }, [version]);
 
   useEffect(() => {
-    let cancelled = false;
-    let streaming = false;
     // Cloudflare's quick tunnels hold event streams back, so until the stream delivers, read the same data every few seconds.
-    const loadTraffic = (onlyWhileWaiting: boolean) =>
-      void api<TrafficEvent[]>("/traffic").then((recent) => !cancelled && !(onlyWhileWaiting && streaming) && setTraffic(trimTraffic(recent)), () => {});
-    const loadOverview = () => void api<Overview>("/overview").then((next) => !cancelled && !streaming && setOverview(next), () => {});
-    loadTraffic(false);
-    loadOverview();
-    const polling = setInterval(() => {
-      loadTraffic(true);
-      loadOverview();
-    }, 5_000);
-    const source = new EventSource("/admin/api/events");
-    source.onopen = () => setOnline(true);
-    source.onerror = () => {
-      setOnline(false);
-      // A closed stream after a failed reconnect usually means the session ended, such as after a password change elsewhere.
-      if (source.readyState !== EventSource.CLOSED) return;
-      void api<{ authenticated: boolean }>("/auth").then(
-        (auth) => {
-          if (!auth.authenticated) for (const listener of loggedOut) listener();
-        },
-        () => {},
-      );
-    };
-    source.onmessage = (event) => {
-      streaming = true;
-      clearInterval(polling);
-      const live = JSON.parse(event.data as string) as LiveMessage;
-      if (live.type === "overview") setOverview(live.overview);
-      else setTraffic((current) => trimTraffic([...current, live.event]));
-    };
-    return () => {
-      cancelled = true;
-      clearInterval(polling);
-      source.close();
-    };
+    return startLiveStream({
+      createEventSource: () => new EventSource("/admin/api/events"),
+      fetchAuth: () => api<{ authenticated: boolean }>("/auth"),
+      fetchOverview: () => api<Overview>("/overview"),
+      fetchTraffic: () => api<TrafficEvent[]>("/traffic"),
+      onOverview: setOverview,
+      onTrafficSnapshot: (recent) => setTraffic(trimTraffic(recent)),
+      onTrafficEvent: (event) => setTraffic((current) => (current.some((existing) => existing.id === event.id) ? current : trimTraffic([...current, event]))),
+      onOnline: setOnline,
+      onLoggedOut: () => {
+        for (const listener of loggedOut) listener();
+      },
+    });
   }, []);
 
   return { overview, traffic, online };
