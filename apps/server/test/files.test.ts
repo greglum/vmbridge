@@ -268,4 +268,82 @@ describe("file search while a VM sleeps", () => {
     await trees.refresh(store.projects());
     expect(asked.toSorted()).toEqual(["feature/login", "feature/login", "main", "main"]);
   });
+
+  test("a stale timed-out capture cannot overwrite a newer list, resurrect a pruned worktree, or cache after VM removal", async () => {
+    const { store } = setup();
+    const trees = new FileTrees(store.db, () => "token", branches, 10);
+    // Seed both worktrees first so capture #2 exercises pruning an existing persisted worktree list.
+    await trees.capture("vm1", vm({ [app]: ["seed.ts"], [local]: ["old-local.ts"] }).box, [
+      { projectId: "p1", path: app },
+      { projectId: "p1", path: local },
+    ]);
+
+    let releaseStale!: () => void;
+    const staleGate = new Promise<void>((resolve) => {
+      releaseStale = resolve;
+    });
+    const slowBox = {
+      run: async (command: string) => {
+        await staleGate;
+        if (command.includes(local)) return { ok: true, exitCode: 0, stdout: "zombie.ts\0", stderr: "", output: "" };
+        return { ok: true, exitCode: 0, stdout: "stale.ts\0", stderr: "", output: "" };
+      },
+    } as unknown as Box;
+
+    // Capture #1 times out after 10ms while both worktree commands are still running.
+    await trees.capture("vm1", slowBox, [
+      { projectId: "p1", path: app },
+      { projectId: "p1", path: local },
+    ]);
+
+    // Capture #2 runs later with only `app` (pruning `local`) and finishes with fresh files.
+    await trees.capture("vm1", vm({ [app]: ["fresh.ts"] }).box, [{ projectId: "p1", path: app }]);
+
+    // Now Capture #1's late responses arrive.
+    releaseStale();
+    await Bun.sleep(0);
+    await Bun.sleep(0);
+
+    const project = store.project("p1")!;
+    expect((await trees.search(project, null, "", { query: "", kind: "file", limit: 10 }, { vmId: "vm1", path: app }))?.entries).toEqual([
+      { path: "fresh.ts", kind: "file" },
+    ]);
+    expect(store.db.all("SELECT path FROM vm_file_lists WHERE vm_id = 'vm1'")).toEqual([{ path: app }]);
+
+    // An empty capture prunes remaining entries and fences any prior timed-out capture too.
+    let releaseEmptyRace!: () => void;
+    const emptyGate = new Promise<void>((resolve) => {
+      releaseEmptyRace = resolve;
+    });
+    await trees.capture(
+      "vm1",
+      { run: async () => (await emptyGate, { ok: true, exitCode: 0, stdout: "late.ts\0", stderr: "", output: "" }) } as unknown as Box,
+      [{ projectId: "p1", path: app }],
+    );
+    await trees.capture("vm1", vm({}).box, []);
+    releaseEmptyRace();
+    await Bun.sleep(0);
+    await Bun.sleep(0);
+    expect(store.db.all("SELECT path FROM vm_file_lists WHERE vm_id = 'vm1'")).toEqual([]);
+
+    // Removing the VM while a capture is in flight prevents late results from populating SQLite or memory.
+    github({ main: ["from-github.ts"] });
+    let releaseRemoved!: () => void;
+    const removedGate = new Promise<void>((resolve) => {
+      releaseRemoved = resolve;
+    });
+    await trees.capture(
+      "vm1",
+      { run: async () => (await removedGate, { ok: true, exitCode: 0, stdout: "ghost.ts\0", stderr: "", output: "" }) } as unknown as Box,
+      [{ projectId: "p1", path: app }],
+    );
+    store.deleteVm("vm1");
+    releaseRemoved();
+    await Bun.sleep(0);
+    await Bun.sleep(0);
+    expect(store.db.all("SELECT path FROM vm_file_lists WHERE vm_id = 'vm1'")).toEqual([]);
+    expect((await trees.search(project, null, "", { query: "", kind: "file", limit: 10 }, { vmId: "vm1", path: app }))?.entries).toEqual([
+      { path: "from-github.ts", kind: "file" },
+    ]);
+  });
 });

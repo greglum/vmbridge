@@ -192,6 +192,9 @@ export class FileTrees {
   /** GitHub's trees by `<projectId> <ref>` and VMs' lists by `listedKey`, least recently searched first. */
   private readonly trees = new Map<string, Tree>();
   private readonly pending = new Map<string, Promise<Tree>>();
+  /** Active capture token per VM so timed-out captures cannot overwrite newer lists or resurrect pruned worktrees. */
+  private nextCapture = 0;
+  private readonly activeCaptures = new Map<string, number>();
 
   constructor(
     private readonly db: Sql,
@@ -220,26 +223,37 @@ export class FileTrees {
    * keeps its last list. Lists of the VM's worktrees not named here are dropped, as their threads are gone.
    */
   async capture(vmId: string, box: Pick<Box, "run">, worktrees: readonly Worktree[]) {
-    const named = new Set(worktrees.map((worktree) => worktree.path));
-    for (const { path } of this.db.all<{ path: string }>("SELECT DISTINCT path FROM vm_file_lists WHERE vm_id = ?", vmId)) {
-      if (named.has(path)) continue;
-      this.db.run("DELETE FROM vm_file_lists WHERE vm_id = ? AND path = ?", vmId, path);
-      this.trees.delete(listedKey(vmId, path));
+    const generation = ++this.nextCapture;
+    this.activeCaptures.set(vmId, generation);
+    try {
+      const named = new Set(worktrees.map((worktree) => worktree.path));
+      for (const { path } of this.db.all<{ path: string }>("SELECT DISTINCT path FROM vm_file_lists WHERE vm_id = ?", vmId)) {
+        if (named.has(path)) continue;
+        this.db.run("DELETE FROM vm_file_lists WHERE vm_id = ? AND path = ?", vmId, path);
+        this.trees.delete(listedKey(vmId, path));
+      }
+      const vmPrefix = `vm\0${vmId}\0`;
+      for (const key of [...this.trees.keys()]) {
+        if (key.startsWith(vmPrefix) && !named.has(key.slice(vmPrefix.length))) this.trees.delete(key);
+      }
+      const listing = Promise.all(
+        worktrees.map(async ({ projectId, path }) => {
+          const command = `git -C ${quote(path)} ls-files -z --cached --others --exclude-standard`;
+          const result = await box.run(command, { timeoutMs: this.captureMs, maxOutputBytes: maxListingBytes }).catch(() => null);
+          // A list cut short has lost its start, so it is not kept: the "@" menu falls back to GitHub's for this one.
+          if (!result?.ok || result.truncated) return;
+          // A timed-out or superseded capture must not write late results.
+          if (this.activeCaptures.get(vmId) !== generation) return;
+          // Unmerged files are listed once per side. A name with a line break cannot be kept, as for GitHub's.
+          const files = [...new Set(result.stdout.split("\0"))].filter((file) => file && !file.includes("\n"));
+          const tree = { entries: indexTree(files), truncated: false, fetchedAt: Date.now() };
+          if (this.saveListed(projectId, vmId, path, files, tree.fetchedAt)) this.keep(listedKey(vmId, path), tree);
+        }),
+      );
+      await Promise.race([listing, sleep(this.captureMs)]);
+    } finally {
+      if (this.activeCaptures.get(vmId) === generation) this.activeCaptures.delete(vmId);
     }
-    const listing = Promise.all(
-      worktrees.map(async ({ projectId, path }) => {
-        const command = `git -C ${quote(path)} ls-files -z --cached --others --exclude-standard`;
-        const result = await box.run(command, { timeoutMs: this.captureMs, maxOutputBytes: maxListingBytes }).catch(() => null);
-        // A list cut short has lost its start, so it is not kept: the "@" menu falls back to GitHub's for this one.
-        if (!result?.ok || result.truncated) return;
-        // Unmerged files are listed once per side. A name with a line break cannot be kept, as for GitHub's.
-        const files = [...new Set(result.stdout.split("\0"))].filter((file) => file && !file.includes("\n"));
-        const tree = { entries: indexTree(files), truncated: false, fetchedAt: Date.now() };
-        this.keep(listedKey(vmId, path), tree);
-        this.saveListed(projectId, vmId, path, files, tree.fetchedAt);
-      }),
-    );
-    await Promise.race([listing, sleep(this.captureMs)]);
   }
 
   /** Fetches again every tree kept for these projects, or each one's default tree when none is, as when their VM goes to sleep. */
@@ -373,7 +387,7 @@ export class FileTrees {
     }
   }
 
-  private saveListed(projectId: string, vmId: string, path: string, files: readonly string[], capturedAt: number) {
+  private saveListed(projectId: string, vmId: string, path: string, files: readonly string[], capturedAt: number): boolean {
     try {
       this.db.transaction(() => {
         this.db.run("DELETE FROM vm_file_lists WHERE vm_id = ? AND path = ?", vmId, path);
@@ -389,8 +403,10 @@ export class FileTrees {
           );
         });
       });
+      return true;
     } catch {
-      // The project left the VM while it was listed. Memory still answers until it is dropped.
+      // The project or VM left while it was listed, so do not keep or cache stale entries for it.
+      return false;
     }
   }
 }
