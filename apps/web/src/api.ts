@@ -25,8 +25,8 @@ export async function api<T>(path: string, options: { method?: string; body?: un
   });
   const value = (await response.json().catch(() => ({}))) as T & { error?: string };
   if (!response.ok) {
-    // A wrong password or setup link is not a lost session.
-    if (response.status === 401 && path !== "/login" && path !== "/setup") for (const listener of loggedOut) listener();
+    // A wrong password, setup link, or failed /auth check is not a lost session (re-fetching /auth on 401 would loop).
+    if (response.status === 401 && path !== "/login" && path !== "/setup" && path !== "/auth") for (const listener of loggedOut) listener();
     throw new ApiError(value.error ?? `Request failed (${response.status}).`, response.status);
   }
   return value;

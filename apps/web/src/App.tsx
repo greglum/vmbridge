@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { parseAsString, parseAsStringLiteral, useQueryStates } from "nuqs";
+import { toast } from "sonner";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { Analytics01Icon, File01Icon, FlowConnectionIcon, Logout01Icon, MagicWand01Icon, Settings01Icon, UserAccountIcon } from "@hugeicons/core-free-icons";
 import { Button } from "@/components/ui/button";
@@ -9,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAction } from "@/hooks/use-action";
+import { authScreen, createAuthLoader, initialAuthLoadState, type AuthLoader, type AuthState } from "@/lib/auth-load";
 import { failingDevices, sinceText } from "@/lib/devices";
 import { cn } from "@/lib/utils";
 import { api, onLoggedOut, useLive, useTick } from "./api.ts";
@@ -51,25 +53,34 @@ function useView() {
   return [view, tab, (next: Place) => void setUrl({ view: next.view, tab: next.tab ?? null })] as const;
 }
 
-interface AuthState {
-  authenticated: boolean;
-  hasPassword: boolean;
-  onboarded: boolean;
-}
-
 const onboardingPath = "/dashboard/onboarding";
 
 export function App() {
-  const [auth, setAuth] = useState<AuthState | null>(null);
-  // Committed synchronously, so a view transition around it (finishing onboarding) captures the new screen.
-  const refresh = () => api<AuthState>("/auth").then((next) => flushSync(() => setAuth(next)));
+  const [authState, setAuthState] = useState(initialAuthLoadState);
+  const loader = useRef<AuthLoader | null>(null);
   useEffect(() => {
-    void refresh();
-    return onLoggedOut(() => void refresh());
+    const current = createAuthLoader(
+      () => api<AuthState>("/auth"),
+      (next, commitSync) => {
+        if (commitSync) flushSync(() => setAuthState(next));
+        else setAuthState(next);
+      },
+      (message) => toast.error(message),
+    );
+    loader.current = current;
+    void current.refresh();
+    const stopListening = onLoggedOut(() => void current.refresh());
+    return () => {
+      stopListening();
+      current.dispose();
+      if (loader.current === current) loader.current = null;
+    };
   }, []);
+  const refresh = () => loader.current?.refresh() ?? Promise.resolve();
 
   // A fresh bridge, or a logged in one that never finished onboarding, goes there. Once finished, onboarding goes to the dashboard.
-  const screen = !auth ? null : !auth.hasPassword || (auth.authenticated && !auth.onboarded) ? "onboarding" : auth.authenticated ? "dashboard" : "login";
+  const { auth, error, loading } = authState;
+  const screen = authScreen(authState);
   useEffect(() => {
     if (screen === "onboarding" && location.pathname !== onboardingPath) history.replaceState(null, "", onboardingPath);
     if (screen === "dashboard" && location.pathname === onboardingPath) history.replaceState(null, "", "/dashboard");
@@ -77,11 +88,29 @@ export function App() {
 
   return (
     <TooltipProvider delayDuration={300}>
+      {screen === "error" && error && <AuthError message={error} retrying={loading} onRetry={() => void refresh()} />}
       {auth && screen === "onboarding" && <Onboarding hasPassword={auth.hasPassword} onChanged={refresh} />}
       {screen === "dashboard" && <Dashboard onLoggedOut={() => void refresh()} />}
       {screen === "login" && <Login onLoggedIn={() => void refresh()} />}
       <Toaster position="bottom-right" />
     </TooltipProvider>
+  );
+}
+
+function AuthError({ message, retrying, onRetry }: { message: string; retrying: boolean; onRetry: () => void }) {
+  return (
+    <main className="grid min-h-full place-items-center px-4">
+      <div role="alert" className="flex w-full max-w-sm flex-col items-center gap-6 text-center">
+        <div className="flex flex-col items-center gap-4">
+          <Logo className="size-12" />
+          <h1 className="text-xl font-semibold tracking-tight">Could not reach VM Bridge</h1>
+        </div>
+        <p className="text-sm text-muted-foreground">{message}</p>
+        <Button type="button" size="lg" className="h-10 w-full" disabled={retrying} onClick={onRetry}>
+          {retrying ? "Retrying…" : "Try again"}
+        </Button>
+      </div>
+    </main>
   );
 }
 
@@ -151,7 +180,7 @@ function Dashboard({ onLoggedOut }: { onLoggedOut: () => void }) {
           view={overview ? view : undefined}
           setupPending={Boolean(overview && !setupDone)}
           onView={(next) => go({ view: next })}
-          onLogOut={() => void api("/logout", { body: {} }).finally(onLoggedOut)}
+          onLogOut={() => void api("/logout", { body: {} }).then(onLoggedOut, onLoggedOut)}
         />
 
         <div className="mx-2 flex min-h-0 min-w-0 flex-1 flex-col gap-2 sm:mr-3 sm:mb-3 sm:ml-0">
