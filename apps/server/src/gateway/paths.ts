@@ -10,8 +10,43 @@ const pathKeys = new Set(["cwd", "path", "paths", "directory", "root", "baseDir"
 export const isPathKey = (key: string) =>
   pathKeys.has(key) || /(?:Path|Paths|Root|Roots|Directory|Directories|Dir)$/.test(key);
 
-export const repoName = (url: string) =>
-  URL.parse(url)?.pathname.split("/").filter(Boolean).pop()?.replace(/\.git$/, "") || "repository";
+export const validSegment = (segment: string) => /^[\w.-]+$/.test(segment) && segment !== "." && segment !== "..";
+export const validRepoName = (name: string) => validSegment(name) && !/^\.git$/i.test(name);
+
+/** Parses a plain HTTPS remote URL whose path has no dot-segments (raw or encoded) or empty/dot/`.git` repo name. */
+export function parseHttpsRemote(reference: string): { url: URL; segments: string[]; name: string } | null {
+  const raw = reference.trim();
+  if (/[\u0000-\u001f\u007f\\]/.test(raw)) return null;
+  const rawPath = /^https:\/\/[^/?#]+(\/[^?#]*)$/i.exec(raw)?.[1];
+  if (!rawPath) return null;
+  if (rawPath.split("/").some((segment) => {
+    if (segment === "." || segment === "..") return true;
+    try {
+      const decoded = decodeURIComponent(segment);
+      return decoded === "." || decoded === "..";
+    } catch {
+      return true;
+    }
+  })) return null;
+  const url = URL.parse(raw);
+  if (!url || url.protocol !== "https:" || url.username || url.password || url.search || url.hash) return null;
+  const trimmed = url.pathname.replace(/^\/|\/+$/g, "");
+  if (!trimmed) return null;
+  const segments = trimmed.split("/");
+  const name = segments.at(-1)!.replace(/\.git$/, "");
+  return segments.every(validSegment) && validRepoName(name) ? { url, segments, name } : null;
+}
+
+export function repoName(url: string): string {
+  const raw = URL.parse(url)?.pathname.split("/").filter(Boolean).pop();
+  if (!raw) return "repository";
+  try {
+    const name = decodeURIComponent(raw).replace(/\.git$/, "");
+    return validRepoName(name) ? name : "repository";
+  } catch {
+    return "repository";
+  }
+}
 
 export const projectRoot = (project: Pick<ProjectRow, "id" | "url">) => `/projects/${project.id}/${repoName(project.url)}`;
 

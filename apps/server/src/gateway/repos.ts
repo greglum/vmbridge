@@ -1,13 +1,13 @@
 import type { ProjectRow } from "../store.ts";
+import { parseHttpsRemote, validRepoName, validSegment } from "./paths.ts";
 import type { Wire } from "./types.ts";
 
 /** `owner/name` for a github.com URL or shorthand (`owner/name`, `git@github.com:owner/name`). */
 export function githubName(reference: string): string | undefined {
-  const trimmed = reference.trim().replace(/^(?:git@github\.com:|ssh:\/\/git@github\.com\/)/i, "");
-  if (/^[\w.-]+\/[\w.-]+$/.test(trimmed)) return trimmed.replace(/\.git$/, "");
-  const url = URL.parse(trimmed);
-  const name = url?.pathname.replace(/^\/|\/+$/g, "").replace(/\.git$/, "");
-  if (url?.hostname === "github.com" && name && /^[\w.-]+\/[\w.-]+$/.test(name)) return name;
+  const https = parseHttpsRemote(reference);
+  if (https) return https.url.host === "github.com" && https.segments.length === 2 ? `${https.segments[0]}/${https.name}` : undefined;
+  const parts = reference.trim().replace(/^(?:git@github\.com:|ssh:\/\/git@github\.com(?::22)?\/)/i, "").replace(/\/+$/, "").replace(/\.git$/, "").split("/");
+  if (parts.length === 2 && validSegment(parts[0]!) && validRepoName(parts[1]!)) return `${parts[0]}/${parts[1]}`;
 }
 
 export const githubRepository = (name: string) => ({
@@ -20,15 +20,14 @@ export const githubRepository = (name: string) => ({
 export function repositoryIdentity(project: Pick<ProjectRow, "url">, workspaceRoot: string) {
   const url = new URL(project.url);
   const path = url.pathname.replace(/\/+$/, "").replace(/\.git$/, "");
-  const [owner, name] = path.slice(1).split("/");
-  const github = url.hostname === "github.com" && owner && name;
+  const [owner, name] = githubName(project.url)?.split("/") ?? [];
   return {
-    canonicalKey: url.host + (github ? path.toLowerCase() : path),
+    canonicalKey: url.host + (owner ? path.toLowerCase() : path),
     locator: { source: "git-remote", remoteName: "origin", remoteUrl: project.url },
     rootPath: workspaceRoot,
     webUrl: url.origin + path,
     displayName: path.slice(1),
-    ...(github ? { provider: "github", owner, name } : {}),
+    ...(owner && name ? { provider: "github", owner, name } : {}),
   };
 }
 
@@ -36,12 +35,10 @@ export function repositoryIdentity(project: Pick<ProjectRow, "url">, workspaceRo
 export function normalizeRemote(reference: string): string {
   const github = githubName(reference);
   if (github) return `https://github.com/${github}.git`;
-  const url = URL.parse(reference.trim());
-  if (!url || url.protocol !== "https:" || url.username || url.password || url.search || url.hash || !/^\/[\w./-]+$/.test(url.pathname)) {
-    throw new Error("Use an HTTPS repository URL, such as https://github.com/owner/repo.");
-  }
-  if (!publicHost(url.hostname)) throw notPublic();
-  return url.href;
+  const parsed = parseHttpsRemote(reference);
+  if (!parsed) throw new Error("Use an HTTPS repository URL, such as https://github.com/owner/repo.");
+  if (!publicHost(parsed.url.hostname)) throw notPublic();
+  return parsed.url.href;
 }
 
 const notPublic = () => new Error("VM Bridge reads repositories on public HTTPS hosts only.");

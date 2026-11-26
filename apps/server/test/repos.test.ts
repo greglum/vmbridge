@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { lsRemote, normalizeRemote, parseRefs, pktLines, RemoteBranches } from "../src/gateway/repos.ts";
+import { projectRoot, repoName } from "../src/gateway/paths.ts";
+import { githubName, lsRemote, normalizeRemote, parseRefs, pktLines, RemoteBranches } from "../src/gateway/repos.ts";
 
 const pkt = (line: string) => `${(Buffer.byteLength(line) + 4).toString(16).padStart(4, "0")}${line}`;
 const oid = "a".repeat(40);
@@ -271,5 +272,112 @@ describe("what a hostile git server cannot do", () => {
     const lists = await Promise.all(urls.map((url) => remote.branches(url)));
     expect(lists.every((list) => list.names[0] === "main")).toBe(true);
     expect(most).toBeLessThanOrEqual(4);
+  });
+
+  test("githubName and normalizeRemote reject dot-segments, traversal, and empty post-.git names", () => {
+    const badGithub = [
+      "../user",
+      "./user",
+      "owner/..",
+      "owner/.",
+      "owner/.git",
+      "owner/.git.git",
+      "owner/.GIT.git",
+      "owner/.GIT",
+      "owner/..git",
+      "owner/...git",
+      "git@github.com:../user",
+      "git@github.com:owner/.git",
+      "git@github.com:owner/.git.git",
+      "git@github.com:owner/...git",
+      "ssh://git@github.com/../user",
+      "ssh://git@github.com/owner/...git",
+      "ssh://git@github.com:22/../user",
+      "ssh://git@github.com:22/owner/...git",
+      "ssh://git@github.com:22/owner/.git.git",
+      "https://github.com/owner/...git",
+      "https://github.com/owner/..git",
+      "https://github.com/owner/.git",
+      "https://github.com/owner/.git.git",
+      "https://github.com/owner/..",
+      "https://github.com/a/b/../c",
+      "https:/github.com/a/b/../../own/repo",
+      "https://github.com/owner/%2e%2e",
+      "https://github.com/owner/.\n./repo",
+      "https://user:pass@github.com/acme/app",
+      "http://github.com/acme/app",
+    ];
+    for (const input of badGithub) {
+      expect(githubName(input)).toBeUndefined();
+      expect(() => normalizeRemote(input)).toThrow();
+    }
+
+    const badRemotes = [
+      "https://example.com/org/...git",
+      "https://example.com/org/..git",
+      "https://example.com/org/.git",
+      "https://example.com/org/.git.git",
+      "https://example.com/org/.GIT.git",
+      "https://example.com/org/.GIT",
+      "https://example.com/org/...git/",
+      "https://example.com/a/b/../c",
+      "https://example.com/a/./b",
+      "https:/example.com/a/../../etc/x",
+      "https:example.com/a/%2e%2e/b",
+      "https:/github.com/a/b/../../own/repo",
+      "https://example.com/org/%2e%2e/repo",
+      "https://example.com/org/%2e/repo",
+      "https://example.com/org/.\n./repo",
+      "https://example.com/org/a\\..\\b",
+      "https://example.com/",
+      "https://example.com///",
+      "https://example.com/org//repo",
+      "https:/github.com/acme/app",
+      "https:github.com/acme/app",
+    ];
+    for (const input of badRemotes) {
+      expect(() => normalizeRemote(input)).toThrow();
+    }
+
+    expect(githubName("acme/app")).toBe("acme/app");
+    expect(githubName("acme/app.git")).toBe("acme/app");
+    expect(githubName("acme/.dotfiles.git")).toBe("acme/.dotfiles");
+    expect(githubName("git@github.com:acme/my.repo.git")).toBe("acme/my.repo");
+    expect(githubName("ssh://git@github.com/acme/app.git")).toBe("acme/app");
+    expect(githubName("ssh://git@github.com:22/acme/app.git")).toBe("acme/app");
+    expect(normalizeRemote("ssh://git@github.com:22/acme/app.git")).toBe("https://github.com/acme/app.git");
+    expect(normalizeRemote("ssh://git@github.com:22/acme/app.git/")).toBe("https://github.com/acme/app.git");
+    expect(githubName("https://github.com/acme/app/")).toBe("acme/app");
+    expect(normalizeRemote("https://example.com/org/sub/my.repo.git")).toBe("https://example.com/org/sub/my.repo.git");
+    expect(normalizeRemote("https://example.com/org/.dotfiles.git")).toBe("https://example.com/org/.dotfiles.git");
+  });
+
+  test("repoName falls back to repository for empty, dot, or encoded-traversal segments", () => {
+    const unsafe = [
+      "https://example.com/org/...git",
+      "https://example.com/org/..git",
+      "https://example.com/org/.git",
+      "https://example.com/org/.git.git",
+      "https://example.com/org/.GIT.git",
+      "https://example.com/org/.GIT",
+      "https://example.com/org/...git/",
+      "https://example.com/org/%2e%2e%2egit",
+      "https://example.com/org/%2e%2e.git",
+      "https://example.com/org/%2e%2egit",
+      "https://example.com/org/%2e.git",
+      "https://example.com/org/%2egit",
+      "https://example.com/org/..%2fetc",
+      "https://example.com/org/foo%5cbar",
+      "https://example.com/org/%zz",
+      "https://example.com/",
+      "not-a-url",
+    ];
+    for (const url of unsafe) {
+      expect(repoName(url)).toBe("repository");
+    }
+    expect(projectRoot({ id: "p1", url: "https://example.com/org/...git" })).toBe("/projects/p1/repository");
+    expect(repoName("https://github.com/acme/app.git")).toBe("app");
+    expect(repoName("https://example.com/org/.dotfiles.git")).toBe(".dotfiles");
+    expect(repoName("https://example.com/org/my-repo_1.2.git")).toBe("my-repo_1.2");
   });
 });

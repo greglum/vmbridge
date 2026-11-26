@@ -11,6 +11,7 @@ import { sleep, type OpenSocket } from "./runtime.ts";
 import type { Traffic } from "./traffic.ts";
 import { Backend, TokenRejected } from "./vm/backend.ts";
 import type { AgentAuth } from "./agent-auth/profiles.ts";
+import { repoName } from "./gateway/paths.ts";
 import { githubName } from "./gateway/repos.ts";
 import { hasLiveWork, type Shell } from "./gateway/types.ts";
 import type { Skills } from "./skills.ts";
@@ -84,9 +85,6 @@ export function providerValues(settings: Settings, secrets: Secrets, id: Provide
   }
   return values;
 }
-
-const repoName = (url: string) =>
-  new URL(url).pathname.split("/").filter(Boolean).pop()?.replace(/\.git$/, "") || "repository";
 
 /** Where a new top-level thread went. `notice` is set when that VM had no room for it. */
 export interface ThreadPlacement {
