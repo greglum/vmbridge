@@ -113,6 +113,7 @@ export function startLiveStream(options: LiveStreamOptions): () => void {
   let appliedTrafficSeq = 0;
   const pendingTrafficRequests = new Map<number, TrafficEvent[]>();
   let connectedOnce = false;
+  let connectAttempts = 0;
 
   const loadTraffic = () => {
     const id = ++trafficRequestSeq;
@@ -123,6 +124,9 @@ export function startLiveStream(options: LiveStreamOptions): () => void {
         pendingTrafficRequests.delete(id);
         if (stopped || id <= appliedTrafficSeq) return;
         appliedTrafficSeq = id;
+        for (const pendingId of pendingTrafficRequests.keys()) {
+          if (pendingId <= id) pendingTrafficRequests.delete(pendingId);
+        }
         options.onTrafficSnapshot(mergeTrafficSnapshot(recent, buffered));
       },
       () => {
@@ -211,6 +215,7 @@ export function startLiveStream(options: LiveStreamOptions): () => void {
     if (stopped) return;
     clearRetry();
     source?.close();
+    connectAttempts++;
     const next = options.createEventSource();
     source = next;
 
@@ -218,7 +223,7 @@ export function startLiveStream(options: LiveStreamOptions): () => void {
       if (stopped || source !== next) return;
       retryDelayMs = initialRetryDelayMs;
       options.onOnline(true);
-      if (connectedOnce) loadTraffic();
+      if (connectedOnce || connectAttempts > 1) loadTraffic();
       connectedOnce = true;
     };
 
