@@ -1,5 +1,6 @@
 import type { Usage, VmStats } from "@vmbridge/contracts";
 import type { Fleet } from "../fleet.ts";
+import type { Box } from "../providers/types.ts";
 import { checkoutRoot } from "./runtime.ts";
 
 /**
@@ -124,11 +125,18 @@ export class Stats {
   private readonly latest = new Map<string, VmStats>();
   /** Disk survives sleep, so its last reading still tells whether a sleeping VM has room for more work. */
   private readonly disks = new Map<string, Usage>();
-  private readonly reading = new Map<string, Promise<VmStats | null>>();
+  private readonly reading = new Map<string, { box: Box; flight: Promise<VmStats | null> }>();
 
-  constructor(private readonly fleet: Fleet) {
+  constructor(
+    private readonly fleet: Fleet,
+    private readonly hasVm: (vmId: string) => boolean = () => true,
+  ) {
     fleet.on("awake", (vmId) => void this.sample(vmId));
-    fleet.on("offline", (vmId) => this.latest.delete(vmId));
+    fleet.on("offline", (vmId) => {
+      this.latest.delete(vmId);
+      this.reading.delete(vmId);
+      if (!this.hasVm(vmId)) this.disks.delete(vmId);
+    });
   }
 
   get(vmId: string) {
@@ -144,24 +152,31 @@ export class Stats {
   sample(vmId: string): Promise<VmStats | null> {
     const box = this.fleet.box(vmId);
     if (!box) return Promise.resolve(this.get(vmId));
-    let flight = this.reading.get(vmId);
-    if (!flight) {
-      flight = (async () => {
-        // The signal bounds the provider call itself, which `timeoutMs` (killing the command) does not.
-        const result = await box.run(statsCommand, { timeoutMs: 10_000, maxOutputBytes: 16_384, signal: AbortSignal.timeout(15_000) }).catch(() => null);
-        // Asleep or gone since the reading started: keep nothing.
-        if (!this.fleet.box(vmId)) return null;
-        // A killed or aborted command has no exit code, and its output may stop partway.
-        if (!result || result.exitCode === null || !result.stdout) return this.get(vmId);
-        const stats = parseStats(result.stdout, Date.now());
-        this.latest.set(vmId, stats);
-        if (stats.disk) this.disks.set(vmId, stats.disk);
-        this.fleet.emit("changed");
-        return stats;
-      })().finally(() => this.reading.delete(vmId));
-      this.reading.set(vmId, flight);
-    }
-    return flight;
+    const existing = this.reading.get(vmId);
+    if (existing && existing.box === box) return existing.flight;
+    const entry = { box, flight: null as unknown as Promise<VmStats | null> };
+    this.reading.set(vmId, entry);
+    entry.flight = (async () => {
+      // The signal bounds the provider call itself, which `timeoutMs` (killing the command) does not.
+      let result: Awaited<ReturnType<Box["run"]>> | null;
+      try {
+        result = await box.run(statsCommand, { timeoutMs: 10_000, maxOutputBytes: 16_384, signal: AbortSignal.timeout(15_000) });
+      } catch {
+        result = null;
+      }
+      // Asleep, disconnected, or replaced by a newer connection since this reading started: keep nothing.
+      if (this.reading.get(vmId) !== entry || this.fleet.box(vmId) !== box) return null;
+      // A killed or aborted command has no exit code, and its output may stop partway.
+      if (!result || result.exitCode === null || !result.stdout) return this.get(vmId);
+      const stats = parseStats(result.stdout, Date.now());
+      this.latest.set(vmId, stats);
+      if (stats.disk) this.disks.set(vmId, stats.disk);
+      this.fleet.emit("changed");
+      return stats;
+    })().finally(() => {
+      if (this.reading.get(vmId) === entry) this.reading.delete(vmId);
+    });
+    return entry.flight;
   }
 
   async sampleAll() {

@@ -58,7 +58,10 @@ export function openBridge(runtime: BridgeRuntime) {
     fleet.emit("changed");
     void fleet.shareSkills();
   });
-  const stats = new Stats(fleet);
+  const stats = new Stats(fleet, (vmId) => {
+    const vm = store.vm(vmId);
+    return Boolean(vm && vm.state !== "gone");
+  });
   const usage = new Usage(store, () => fleet.connected());
   for (const event of ["changed", "awake", "offline"] as const) fleet.on(event, () => usage.sync());
   const branches = new RemoteBranches(() => secrets.get("github.token"), runtime.resolve);

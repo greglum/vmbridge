@@ -1,5 +1,8 @@
+import { EventEmitter } from "node:events";
 import { describe, expect, test } from "bun:test";
-import { highMemory, parseStats } from "../src/vm/stats.ts";
+import type { Fleet } from "../src/fleet.ts";
+import type { Box } from "../src/providers/types.ts";
+import { highMemory, parseStats, Stats } from "../src/vm/stats.ts";
 
 const gib = 2 ** 30;
 
@@ -86,5 +89,162 @@ describe("highMemory", () => {
     expect(parseStats(full, 1).highMemory).toBe(true);
     const stalled = output({ psi: "some avg10=23.50 avg60=4.00 avg300=1.00 total=99\nfull avg10=12.00 avg60=2.00 avg300=0.50 total=50" });
     expect(parseStats(stalled, 1)).toMatchObject({ memoryPressure: 23.5, highMemory: true });
+  });
+});
+
+describe("Stats", () => {
+  function fakeFleet() {
+    const emitter = new EventEmitter();
+    const boxes = new Map<string, Box>();
+    const fleet = Object.assign(emitter, {
+      box: (vmId: string) => boxes.get(vmId),
+      connected: () => [...boxes.keys()],
+    }) as unknown as Fleet;
+    return { fleet, boxes };
+  }
+
+  test("ignores a stale reading from a previous connection without disturbing a pending replacement", async () => {
+    const { fleet, boxes } = fakeFleet();
+    const stats = new Stats(fleet);
+    let resolveOld!: (value: { exitCode: number; stdout: string; stderr: string }) => void;
+    let resolveNew!: (value: { exitCode: number; stdout: string; stderr: string }) => void;
+    const oldBox = {
+      run: () => new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve) => (resolveOld = resolve)),
+    } as unknown as Box;
+    const newBox = {
+      run: () => new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve) => (resolveNew = resolve)),
+    } as unknown as Box;
+
+    boxes.set("vm1", oldBox);
+    const oldReading = stats.sample("vm1");
+
+    // VM goes offline and reconnects with a fresh box while the old stats command is still running.
+    boxes.delete("vm1");
+    fleet.emit("offline", "vm1");
+    boxes.set("vm1", newBox);
+    const freshReading = stats.sample("vm1");
+
+    // Old reading settles while the replacement is still in flight; it must be discarded and must not clear the new flight.
+    let changed = 0;
+    fleet.on("changed", () => (changed += 1));
+    resolveOld({
+      exitCode: 0,
+      stdout: output({ meminfo: "MemTotal:        8155548 kB\nMemAvailable:     100000 kB" }),
+      stderr: "",
+    });
+    expect(await oldReading).toBeNull();
+    expect(changed).toBe(0);
+    expect(stats.sample("vm1")).toBe(freshReading);
+
+    resolveNew({
+      exitCode: 0,
+      stdout: output({ meminfo: "MemTotal:        8155548 kB\nMemAvailable:    7000000 kB" }),
+      stderr: "",
+    });
+    const resolvedFresh = await freshReading;
+    expect(resolvedFresh?.memory?.used).toBe((8155548 - 7000000) * 1024);
+    expect(changed).toBe(1);
+    expect(stats.get("vm1")?.memory?.used).toBe((8155548 - 7000000) * 1024);
+  });
+
+  test("replaces an in-flight reading when the box changes without an offline event", async () => {
+    const { fleet, boxes } = fakeFleet();
+    const stats = new Stats(fleet);
+    let resolveOld!: (value: { exitCode: number; stdout: string; stderr: string }) => void;
+    const oldBox = {
+      run: () => new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve) => (resolveOld = resolve)),
+    } as unknown as Box;
+    const newBox = {
+      run: async () => ({
+        exitCode: 0,
+        stdout: output({ meminfo: "MemTotal:        8155548 kB\nMemAvailable:    6500000 kB" }),
+        stderr: "",
+      }),
+    } as unknown as Box;
+
+    boxes.set("vm1", oldBox);
+    const oldReading = stats.sample("vm1");
+    boxes.set("vm1", newBox);
+    const freshReading = await stats.sample("vm1");
+    expect(freshReading?.memory?.used).toBe((8155548 - 6500000) * 1024);
+
+    resolveOld({
+      exitCode: 0,
+      stdout: output({ meminfo: "MemTotal:        8155548 kB\nMemAvailable:     100000 kB" }),
+      stderr: "",
+    });
+    expect(await oldReading).toBeNull();
+    expect(stats.get("vm1")?.memory?.used).toBe((8155548 - 6500000) * 1024);
+  });
+
+  test("clears in-flight tracking after both synchronous throws and async rejections so the next sample retries", async () => {
+    const { fleet, boxes } = fakeFleet();
+    const stats = new Stats(fleet);
+    let attempt = 0;
+    const flakyBox = {
+      run: () => {
+        attempt += 1;
+        if (attempt === 1) throw new Error("sync failure");
+        if (attempt === 2) return Promise.reject(new Error("async failure"));
+        return Promise.resolve({
+          exitCode: 0,
+          stdout: output({ meminfo: "MemTotal:        8155548 kB\nMemAvailable:    7200000 kB" }),
+          stderr: "",
+        });
+      },
+    } as unknown as Box;
+
+    boxes.set("vm1", flakyBox);
+    expect(await stats.sample("vm1")).toBeNull();
+    expect(await stats.sample("vm1")).toBeNull();
+    const ok = await stats.sample("vm1");
+    expect(ok?.memory?.used).toBe((8155548 - 7200000) * 1024);
+    expect(attempt).toBe(3);
+  });
+
+  test("drops an in-flight reading after offline even if the VM reconnects before a new sample starts", async () => {
+    const { fleet, boxes } = fakeFleet();
+    const stats = new Stats(fleet);
+    let resolveOld!: (value: { exitCode: number; stdout: string; stderr: string }) => void;
+    const sameBox = {
+      run: () => new Promise<{ exitCode: number; stdout: string; stderr: string }>((resolve) => (resolveOld = resolve)),
+    } as unknown as Box;
+
+    boxes.set("vm1", sameBox);
+    const oldReading = stats.sample("vm1");
+    fleet.emit("offline", "vm1");
+
+    resolveOld({
+      exitCode: 0,
+      stdout: output({ meminfo: "MemTotal:        8155548 kB\nMemAvailable:     200000 kB" }),
+      stderr: "",
+    });
+    expect(await oldReading).toBeNull();
+    expect(stats.get("vm1")).toBeNull();
+    expect(stats.lastDisk("vm1")).toBeNull();
+  });
+
+  test("preserves lastDisk across sleep/offline and evicts it once the VM is removed", async () => {
+    const { fleet, boxes } = fakeFleet();
+    let exists = true;
+    const stats = new Stats(fleet, () => exists);
+    const box = {
+      run: async () => ({ exitCode: 0, stdout: output(), stderr: "" }),
+    } as unknown as Box;
+
+    boxes.set("vm1", box);
+    await stats.sample("vm1");
+    expect(stats.lastDisk("vm1")).toEqual({ used: (20466256 - 16255296) * 1024, total: 20466256 * 1024 });
+
+    // Sleep/disconnect keeps lastDisk.
+    boxes.delete("vm1");
+    fleet.emit("offline", "vm1");
+    expect(stats.get("vm1")).toBeNull();
+    expect(stats.lastDisk("vm1")).toEqual({ used: (20466256 - 16255296) * 1024, total: 20466256 * 1024 });
+
+    // Permanent removal evicts lastDisk.
+    exists = false;
+    fleet.emit("offline", "vm1");
+    expect(stats.lastDisk("vm1")).toBeNull();
   });
 });
