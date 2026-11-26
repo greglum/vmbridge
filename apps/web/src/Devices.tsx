@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { LaptopIcon, Link01Icon } from "@hugeicons/core-free-icons";
 import type { ClientInfo, CreatedPairing, Overview, PairingLink, TrafficEvent } from "@vmbridge/contracts";
@@ -23,21 +23,57 @@ import { useAction } from "@/hooks/use-action";
 import { failingReason, sinceText } from "@/lib/devices";
 import { ago, api, useTick } from "./api.ts";
 import { CopyButton } from "./CopyButton.tsx";
+import { reconcileCreatedPairing } from "./lib/pairing.ts";
 import { Section } from "./Page.tsx";
 
 export function Devices({ overview, traffic }: { overview: Overview; traffic: TrafficEvent[] }) {
   const now = useTick(15_000);
   const [links, setLinks] = useState<PairingLink[]>([]);
+  const [created, setCreated] = useState<CreatedPairing | null>(null);
+  const refreshSeq = useRef(0);
   const manage = useAction();
 
-  const refresh = () => api<PairingLink[]>("/pairing").then(setLinks);
+  const refresh = () => {
+    const seq = ++refreshSeq.current;
+    return api<PairingLink[]>("/pairing").then((nextLinks) => {
+      if (seq !== refreshSeq.current) return;
+      setLinks(nextLinks);
+      setCreated((current) => reconcileCreatedPairing(current, nextLinks, Date.now()));
+    });
+  };
   useEffect(() => void refresh().catch(() => {}), [overview.clients.length]);
+  // Re-check active pairing links periodically and when returning to this tab (e.g. cancelled in another tab or failed prior refresh).
+  useEffect(() => {
+    if (!created) return;
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refresh().catch(() => {});
+    };
+    const msUntilExpiry = created.link.expiresAt - Date.now();
+    const expiryTimer = setTimeout(() => {
+      setCreated((current) => (current?.link.id === created.link.id ? null : current));
+    }, Math.max(0, msUntilExpiry));
+    const poll = setInterval(() => void refresh().catch(() => {}), 15_000);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearTimeout(expiryTimer);
+      clearInterval(poll);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [created]);
 
   const pending = links.filter((link) => !link.redeemedAt && link.expiresAt > now);
+  const activeCreated = created && created.link.expiresAt > now ? created : null;
 
   return (
     <>
-      <Pair onCreated={refresh} />
+      <Pair
+        created={activeCreated}
+        onCreated={(next) => {
+          setCreated(next);
+          setLinks((current) => [next.link, ...current.filter((item) => item.id !== next.link.id)]);
+          void refresh().catch(() => {});
+        }}
+      />
 
       <Section title="Paired devices" actions={overview.clients.length > 0 && <Badge variant="secondary">{overview.clients.length}</Badge>}>
         {overview.clients.length === 0 ? (
@@ -73,7 +109,18 @@ export function Devices({ overview, traffic }: { overview: Overview; traffic: Tr
                   <ItemDescription>Expires in {Math.max(1, Math.round((link.expiresAt - now) / 60_000))} min</ItemDescription>
                 </ItemContent>
                 <ItemActions>
-                  <Button variant="ghost" disabled={manage.busy} onClick={() => void manage.run(() => api(`/pairing/${link.id}`, { method: "DELETE" }).then(refresh))}>
+                  <Button
+                    variant="ghost"
+                    disabled={manage.busy}
+                    onClick={() =>
+                      void manage.run(async () => {
+                        await api(`/pairing/${link.id}`, { method: "DELETE" });
+                        setLinks((current) => current.filter((item) => item.id !== link.id));
+                        setCreated((current) => (current?.link.id === link.id ? null : current));
+                        void refresh().catch(() => {});
+                      })
+                    }
+                  >
                     Cancel
                   </Button>
                 </ItemActions>
@@ -86,9 +133,8 @@ export function Devices({ overview, traffic }: { overview: Overview; traffic: Tr
   );
 }
 
-function Pair({ onCreated }: { onCreated: () => Promise<void> }) {
+function Pair({ created, onCreated }: { created: CreatedPairing | null; onCreated: (created: CreatedPairing) => void }) {
   const [name, setName] = useState("");
-  const [created, setCreated] = useState<CreatedPairing | null>(null);
   const create = useAction();
   return (
     <Section title="Pair a device">
@@ -97,9 +143,9 @@ function Pair({ onCreated }: { onCreated: () => Promise<void> }) {
         onSubmit={(event) => {
           event.preventDefault();
           void create.run(async () => {
-            setCreated(await api<CreatedPairing>("/pairing", { body: { name } }));
+            const next = await api<CreatedPairing>("/pairing", { body: { name } });
             setName("");
-            await onCreated();
+            onCreated(next);
           });
         }}
       >
