@@ -6,8 +6,15 @@ import { AlarmJobs, tickMs } from "../src/workers/jobs.ts";
 import { DoSql, openDoDatabase, type SqlBackend } from "../src/workers/sql.ts";
 
 // The Worker entry exports the Durable Object class, which extends one from a module only workerd has.
-mock.module("cloudflare:workers", () => ({ DurableObject: class {} }));
-const { default: worker } = await import("../src/workers/index.ts");
+mock.module("cloudflare:workers", () => ({
+  DurableObject: class {
+    constructor(
+      protected readonly ctx: unknown,
+      protected readonly env: unknown,
+    ) {}
+  },
+}));
+const { BridgeObject, default: worker } = await import("../src/workers/index.ts");
 
 /** A Durable Object's SQL storage, played by bun:sqlite with the same rules: no BEGIN, foreign keys on. */
 function storage(): SqlBackend {
@@ -148,5 +155,55 @@ describe("Worker entry", () => {
     const response = await worker.fetch(new Request("http://bridge.example.com/dashboard?x=1"), env().env);
     expect(response.status).toBe(308);
     expect(response.headers.get("location")).toBe("https://bridge.example.com/dashboard?x=1");
+  });
+
+  test("refuses traffic and retries alarm startup when alarm scheduling fails initially", async () => {
+    let init: Promise<void> = Promise.resolve();
+    let failAlarm = true;
+    let scheduled: number | null = null;
+    const sqlStorage = storage();
+    const ctx = {
+      storage: {
+        ...sqlStorage,
+        getAlarm: async () => scheduled,
+        setAlarm: async (time: number) => {
+          if (failAlarm) throw new Error("alarm storage unavailable");
+          scheduled = time;
+        },
+      },
+      blockConcurrencyWhile: (fn: () => Promise<void>) => {
+        init = fn();
+        return init;
+      },
+    } as unknown as DurableObjectState;
+
+    const originalError = console.error;
+    const originalFetch = globalThis.fetch;
+    console.error = () => {};
+    globalThis.fetch = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+    let object: InstanceType<typeof BridgeObject> | undefined;
+    try {
+      object = new BridgeObject(ctx, env().env);
+      await init;
+      const failed = await object.fetch(new Request("https://bridge.example.com/admin/api/auth"));
+      expect(failed.status).toBe(503);
+      expect(await failed.text()).toContain("alarm storage unavailable");
+
+      // While alarm storage still fails, alarm() rejects so Cloudflare retries instead of dropping the chain.
+      await expect(object.alarm()).rejects.toThrow("alarm storage unavailable");
+
+      // Once storage recovers, alarm() initializes the bridge, schedules the next tick, and serves requests.
+      failAlarm = false;
+      await object.alarm();
+      expect(scheduled).not.toBeNull();
+      const recovered = await object.fetch(new Request("https://bridge.example.com/admin/api/auth"));
+      expect(recovered.status).toBe(200);
+    } finally {
+      const running = (object as unknown as { running?: { bridge: { gateway: { close(): void }; hub: { close(): void } } } | null })?.running;
+      running?.bridge.gateway.close();
+      running?.bridge.hub.close();
+      console.error = originalError;
+      globalThis.fetch = originalFetch;
+    }
   });
 });
