@@ -39,7 +39,10 @@ function toBase64(bytes: Uint8Array) {
 /** A script with a shebang, since a browser sees no file modes. */
 const hasShebang = (bytes: Uint8Array) => bytes[0] === 0x23 && bytes[1] === 0x21;
 
-const frontMatterName = (text: string) => /^---\r?\n[\s\S]*?^name:\s*["']?([^"'\r\n]+?)["']?\s*$/m.exec(text)?.[1];
+function frontMatterName(text: string) {
+  const front = /^---[ \t]*\r?\n(?:([\s\S]*?)\r?\n)??---[ \t]*(?:\r?\n|$)/.exec(text)?.[1];
+  return front ? /^name:[ \t]*["']?([^"'\s][^"'\r\n]*?)["']?[ \t]*\r?$/m.exec(front)?.[1] : undefined;
+}
 
 /**
  * Turns what was dropped into a skill. SKILL.md at the top: the skill is named after `root` (the folder or archive).
@@ -79,19 +82,24 @@ const u16 = (view: DataView, at: number) => view.getUint16(at, true);
 const u32 = (view: DataView, at: number) => view.getUint32(at, true);
 
 /** Inflates raw deflate data, stopping as soon as it grows past `size`, so a zip bomb cannot fill memory. */
-async function inflate(data: Uint8Array<ArrayBuffer>, size: number, path: string) {
+async function inflate(data: Uint8Array<ArrayBuffer>, size: number, path: string, label: string) {
   const out = new Uint8Array(size);
   let length = 0;
-  const reader = new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw")).getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (length + value.length > size) {
-      await reader.cancel();
-      throw new UploadError(`${path} in the archive is not the size it claims.`);
+  try {
+    const reader = new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw")).getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (length + value.length > size) {
+        await reader.cancel().catch(() => {});
+        throw new UploadError(`${path} in the archive is not the size it claims.`);
+      }
+      out.set(value, length);
+      length += value.length;
     }
-    out.set(value, length);
-    length += value.length;
+  } catch (error) {
+    if (error instanceof UploadError) throw error;
+    throw new UploadError(`${label} is damaged.`);
   }
   if (length !== size) throw new UploadError(`${path} in the archive is not the size it claims.`);
   return out;
@@ -113,11 +121,15 @@ export async function readZip(archive: Uint8Array<ArrayBuffer>, label: string): 
   }
   if (end < 0) throw new UploadError(`${label} is not a zip archive.`);
   const count = u16(view, end + 10);
-  let at = u32(view, end + 16);
+  const cdSize = u32(view, end + 12);
+  const cdOffset = u32(view, end + 16);
+  const cdEnd = cdOffset + cdSize;
+  if (cdOffset > end || cdSize > end - cdOffset) throw new UploadError(`${label} is damaged.`);
+  let at = cdOffset;
   const check = guard();
   const entries: Entry[] = [];
   for (let i = 0; i < count; i++) {
-    if (at + 46 > archive.length || u32(view, at) !== 0x02014b50) throw new UploadError(`${label} is damaged.`);
+    if (at + 46 > cdEnd || u32(view, at) !== 0x02014b50) throw new UploadError(`${label} is damaged.`);
     const madeBy = u16(view, at + 4) >> 8;
     const flags = u16(view, at + 8);
     const method = u16(view, at + 10);
@@ -128,8 +140,10 @@ export async function readZip(archive: Uint8Array<ArrayBuffer>, label: string): 
     const commentLength = u16(view, at + 32);
     const mode = u32(view, at + 38) >>> 16;
     const local = u32(view, at + 42);
+    const next = at + 46 + nameLength + extraLength + commentLength;
+    if (next > cdEnd) throw new UploadError(`${label} is damaged.`);
     const path = new TextDecoder().decode(archive.subarray(at + 46, at + 46 + nameLength));
-    at += 46 + nameLength + extraLength + commentLength;
+    at = next;
     if (path.endsWith("/") || isSkipped(path)) continue;
     // Made on Unix (3) or macOS (19), where the upper half of the attributes is the file's mode.
     const unixMode = madeBy === 3 || madeBy === 19 ? mode : 0;
@@ -138,11 +152,12 @@ export async function readZip(archive: Uint8Array<ArrayBuffer>, label: string): 
     if (method !== 0 && method !== 8) throw new UploadError(`${label} uses a compression VM Bridge can't read.`);
     if (size === 0xffffffff || compressed === 0xffffffff) throw new UploadError(`${label} is larger than 1 MB.`);
     check(path, size);
+    if (local + 30 > cdOffset || u32(view, local) !== 0x04034b50) throw new UploadError(`${label} is damaged.`);
     const start = local + 30 + u16(view, local + 26) + u16(view, local + 28);
-    if (u32(view, local) !== 0x04034b50 || start + compressed > archive.length) throw new UploadError(`${label} is damaged.`);
+    if (start + compressed > cdOffset) throw new UploadError(`${label} is damaged.`);
     const data = archive.subarray(start, start + compressed);
     if (method === 0 && compressed !== size) throw new UploadError(`${label} is damaged.`);
-    const bytes = method === 8 ? await inflate(data, size, path) : data;
+    const bytes = method === 8 ? await inflate(data, size, path, label) : data;
     entries.push({ path, bytes, executable: (unixMode & 0o111) !== 0 });
   }
   return entries;

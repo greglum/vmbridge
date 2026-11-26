@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { skillFromFile } from "./skill-upload.ts";
+import { skillFromFile, UploadError } from "./skill-upload.ts";
 
 /** A zip archive made on Unix, deflated unless `stored`. CRCs are left at 0: the reader does not check them. */
 async function zip(name: string, entries: { path: string; text: string; mode?: number; stored?: boolean }[]) {
@@ -88,8 +88,47 @@ test("refuses an entry that inflates past the size it claims", async () => {
   await expect(skillFromFile(new File([archive], "bomb.zip"))).rejects.toThrow("not the size it claims");
 });
 
+test("reports damaged archives instead of throwing raw stream or bounds errors", async () => {
+  const valid = new Uint8Array(await (await zip("bad.zip", [{ path: "SKILL.md", text: skillMd }])).arrayBuffer());
+  const eocd = valid.length - 22;
+  const central = eocd - 46 - "SKILL.md".length;
+
+  const badLocal = valid.slice();
+  new DataView(badLocal.buffer).setUint32(central + 42, 0xffffff, true);
+
+  const truncatedCentral = valid.slice();
+  new DataView(truncatedCentral.buffer).setUint16(central + 30, 0xffff, true);
+
+  const centralPastEnd = valid.slice();
+  new DataView(centralPastEnd.buffer).setUint32(eocd + 12, eocd - central + 1, true);
+
+  const entryPastCentral = valid.slice();
+  new DataView(entryPastCentral.buffer).setUint16(central + 32, 1, true);
+
+  const stored = new Uint8Array(await (await zip("bad.zip", [{ path: "SKILL.md", text: skillMd, stored: true }])).arrayBuffer());
+  const payloadOverlapsCentral = stored.slice();
+  new DataView(payloadOverlapsCentral.buffer).setUint16(28, 1, true);
+
+  const corruptDeflate = valid.slice();
+  corruptDeflate.fill(0xff, 30 + "SKILL.md".length, central);
+
+  for (const bytes of [badLocal, truncatedCentral, centralPastEnd, entryPastCentral, payloadOverlapsCentral, corruptDeflate]) {
+    const error = await skillFromFile(new File([bytes], "bad.zip")).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(UploadError);
+    expect((error as Error).message).toContain("is damaged");
+  }
+});
+
 test("a lone SKILL.md is named by its front matter", async () => {
   const skill = await skillFromFile(new File([skillMd], "SKILL.md"));
   expect(skill).toEqual({ name: "notes", files: [{ path: "SKILL.md", data: btoa(skillMd) }] });
+  const spacedFence = "--- \r\nname: notes\r\n---\t \r\nbody\r\n";
+  expect((await skillFromFile(new File([spacedFence], "SKILL.md"))).name).toBe("notes");
   await expect(skillFromFile(new File(["# Notes"], "SKILL.md"))).rejects.toThrow("no name in its front matter");
+  const bodyName = "---\ndescription: Takes notes.\n---\n\nname: example\n";
+  await expect(skillFromFile(new File([bodyName], "SKILL.md"))).rejects.toThrow("no name in its front matter");
+  const bodyAfterSpacedFence = "---\ndescription: Takes notes.\n--- \nname: evil\n---\n";
+  await expect(skillFromFile(new File([bodyAfterSpacedFence], "SKILL.md"))).rejects.toThrow("no name in its front matter");
+  const blankName = "---\nname:   \ndescription: Takes notes.\n---\n";
+  await expect(skillFromFile(new File([blankName], "SKILL.md"))).rejects.toThrow("no name in its front matter");
 });
