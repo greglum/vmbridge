@@ -29,6 +29,9 @@ const forwarded = [
 
 export type AgentReport = Wire & { instanceId: string; driver: string; displayName: string; enabled: boolean };
 
+/** Marks placeholders created by `pendingAgent` without adding any enumerable or JSON-serialized wire field. */
+const pendingMark = Symbol("pendingAgent");
+
 /**
  * How one VM agent appears to T3 clients. VM Bridge manages installs and sign-in, so the
  * client cannot run setup; it can only switch an agent off or rename it.
@@ -36,7 +39,8 @@ export type AgentReport = Wire & { instanceId: string; driver: string; displayNa
 export function presentAgent(provider: ProviderEntry, preference: ProviderPreference | undefined, badge: string): AgentReport {
   const enabled = provider.enabled === true && preference?.enabled !== false;
   const auth = (provider.auth ?? {}) as Wire;
-  const authenticated = auth.status === "authenticated";
+  const authStatus = auth.status ?? "unknown";
+  const authenticated = authStatus === "authenticated";
   const report: AgentReport = {
     instanceId: provider.instanceId,
     driver: provider.driver,
@@ -46,7 +50,7 @@ export function presentAgent(provider: ProviderEntry, preference: ProviderPrefer
     installed: provider.installed === true,
     version: provider.version ?? null,
     status: enabled ? (provider.status ?? "warning") : "disabled",
-    auth: { status: auth.status ?? "unknown", ...(authenticated ? { label: "VM Bridge" } : {}) },
+    auth: { status: authStatus, ...(authenticated ? { label: "VM Bridge" } : {}) },
     checkedAt: provider.checkedAt ?? new Date().toISOString(),
     availability: enabled ? provider.availability : "unavailable",
     models: enabled ? (provider.models ?? []) : [],
@@ -59,20 +63,25 @@ export function presentAgent(provider: ProviderEntry, preference: ProviderPrefer
   if (enabled) for (const field of forwarded) if (provider[field] !== undefined) report[field] = provider[field];
   if (preference?.enabled === false) report.message = "Switched off for new sessions in VM Bridge.";
   else if (!enabled) report.message = "This agent is not available on the VM.";
+  else if (pendingMark in provider) report.message = "Waiting for a VM to report this agent.";
   else if (!authenticated) report.message = "Add this agent's sign-in in the VM Bridge dashboard.";
   else if (report.status !== "ready") report.message = "The VM reported a problem with this agent.";
   return report;
 }
 
 /** A placeholder for an agent no VM has reported yet. */
-export const pendingAgent = (driver: string): ProviderEntry => ({
-  instanceId: driver,
-  driver,
-  enabled: true,
-  installed: false,
-  status: "warning",
-  auth: { status: "unknown" },
-  models: [],
-  version: null,
-  checkedAt: new Date().toISOString(),
-});
+export const pendingAgent = (driver: string): ProviderEntry =>
+  Object.assign(
+    {
+      instanceId: driver,
+      driver,
+      enabled: true,
+      installed: false,
+      status: "warning",
+      auth: { status: "unknown" },
+      models: [],
+      version: null,
+      checkedAt: new Date().toISOString(),
+    },
+    { [pendingMark]: true },
+  );
