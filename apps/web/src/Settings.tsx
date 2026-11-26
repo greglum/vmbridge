@@ -564,17 +564,17 @@ function Password({ source, onLoggedOut }: { source: string | null; onLoggedOut:
   const [current, setCurrent] = useState("");
   const [password, setPassword] = useState("");
   const action = useAction();
-  const logOut = () => void api("/logout", { body: {} }).finally(onLoggedOut);
+  const logOutButton = (
+    <Button type="button" variant="outline" size="lg" className="px-4" onClick={() => void api("/logout", { body: {} }).then(onLoggedOut, onLoggedOut)}>
+      Log out
+    </Button>
+  );
   if (source) {
     return (
       <Section title="Password">
         <div className="flex flex-col gap-4">
           <p className="text-[13px] text-muted-foreground">Change it in {source}. That logs out every browser.</p>
-          <div>
-            <Button type="button" variant="outline" size="lg" className="px-4" onClick={logOut}>
-              Log out
-            </Button>
-          </div>
+          <div>{logOutButton}</div>
         </div>
       </Section>
     );
@@ -602,9 +602,7 @@ function Password({ source, onLoggedOut }: { source: string | null; onLoggedOut:
           <Button type="submit" size="lg" className="px-4" disabled={action.busy || !current || password.length < 8}>
             Change password
           </Button>
-          <Button type="button" variant="outline" size="lg" className="px-4" onClick={logOut}>
-            Log out
-          </Button>
+          {logOutButton}
         </div>
       </form>
     </Section>

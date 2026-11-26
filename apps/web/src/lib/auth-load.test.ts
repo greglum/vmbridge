@@ -126,6 +126,7 @@ test("401 from /auth does not trigger loggedOut listeners (prevents infinite /au
     globalThis.fetch = (async () => new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 })) as unknown as typeof fetch;
 
     await expect(api("/auth")).rejects.toThrow("Unauthorized");
+    await expect(api("/auth?x=1")).rejects.toThrow("Unauthorized");
     expect(loggedOutCalls).toBe(0);
 
     await expect(api("/overview")).rejects.toThrow("Unauthorized");
