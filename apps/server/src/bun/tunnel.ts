@@ -111,6 +111,7 @@ class TunnelSetupError extends Error {}
  */
 export class CloudflareTunnel {
   private child: Subprocess<"ignore", "pipe", "pipe"> | null = null;
+  private halting: Promise<void> | null = null;
   private listener: Promise<TunnelListener> | null = null;
   private state: CloudflareInfo["state"] = "off";
   private url: string | null = null;
@@ -176,10 +177,12 @@ export class CloudflareTunnel {
   }
 
   async stop(): Promise<void> {
-    this.generation++;
+    const generation = ++this.generation;
     clearTimeout(this.retry);
     await this.halt();
+    if (generation !== this.generation) return;
     await this.closeListener();
+    if (generation !== this.generation) return;
     this.update("off", null, null);
   }
 
@@ -216,6 +219,7 @@ export class CloudflareTunnel {
       let lastError: string | null = null;
       let address: string | null = null;
       let connected = false;
+      let checked = false;
       const onLine = (line: string) => {
         const safe = redact(line, token ? [token] : []);
         // Its routine info lines would bury VM Bridge's own output. Warnings, errors and connections stay.
@@ -227,7 +231,10 @@ export class CloudflareTunnel {
         if (safe.includes("Registered tunnel connection") && !connected) {
           connected = true;
           if (mode !== "quick") this.running(`https://${hostname}`);
-          else if (address) void this.check(generation, child, address);
+        }
+        if (mode === "quick" && connected && address && !checked) {
+          checked = true;
+          void this.check(generation, child, address);
         }
       };
       // The reason it stopped is in its last lines, so read them all before handling the exit.
@@ -352,14 +359,43 @@ export class CloudflareTunnel {
     await opening?.then((listener) => listener.stop(true), () => {});
   }
 
-  private async halt() {
-    const child = this.child;
-    this.child = null;
-    if (!child) return;
+  private async halt(): Promise<void> {
+    while (this.halting || this.child) {
+      if (this.halting) {
+        await this.halting;
+        continue;
+      }
+      const child = this.child!;
+      this.child = null;
+      const run = this.terminate(child).finally(() => {
+        if (this.halting === run) this.halting = null;
+      });
+      this.halting = run;
+      await run;
+    }
+  }
+
+  private async terminate(child: Subprocess<"ignore", "pipe", "pipe">): Promise<void> {
+    const waitExit = async (ms: number) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          child.exited.then(() => true),
+          new Promise<false>((resolve) => {
+            timer = setTimeout(() => resolve(false), ms);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
     child.kill("SIGTERM");
-    const exited = await Promise.race([child.exited.then(() => true), Bun.sleep(5_000).then(() => false)]);
-    if (!exited) child.kill("SIGKILL");
-    rmSync(join(this.folder, "cloudflared.pid"), { force: true });
+    let exited = await waitExit(5_000);
+    if (!exited) {
+      child.kill("SIGKILL");
+      exited = await waitExit(1_000);
+    }
+    if (exited && !this.child) rmSync(join(this.folder, "cloudflared.pid"), { force: true });
   }
 
   /**
