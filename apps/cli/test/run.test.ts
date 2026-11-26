@@ -1,12 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createStopHandler } from "../src/index.ts";
 
 const cli = join(import.meta.dir, "../src/index.ts");
-let dir: string;
+let dir: string | undefined;
 
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
+afterEach(() => {
+  if (dir) rmSync(dir, { recursive: true, force: true });
+  dir = undefined;
+});
 
 /** Starts `vmbridge run` on `port` in `dir`, not in a terminal, and resolves once it says it is running. */
 async function launch(port: number, env: Record<string, string> = {}) {
@@ -118,4 +122,103 @@ test("a new start takes over a running VM Bridge, whose devices are told it is r
   second.child.kill("SIGTERM");
   expect(await second.child.exited).toBe(0);
   expect(existsSync(join(dir, "data", "vmbridge.pid"))).toBe(false);
+}, 30_000);
+
+test("duplicate SIGTERM, SIGHUP, or restart signals let graceful shutdown finish while a second Ctrl+C aborts", async () => {
+  let finishStop!: () => void;
+  const stopCalls: boolean[] = [];
+  let cleaned = 0;
+  const exits: number[] = [];
+  const shutdown = createStopHandler({
+    stopServer: ({ restarting }) => {
+      stopCalls.push(restarting);
+      return new Promise<void>((resolve) => (finishStop = resolve));
+    },
+    cleanupPid: () => {
+      cleaned += 1;
+    },
+    exit: (code) => exits.push(code),
+    stopTimeoutMs: 5_000,
+    restartTimeoutMs: 5_000,
+  });
+
+  const first = shutdown.onSignal("SIGTERM");
+  expect(shutdown.isStopping()).toBe(true);
+  await shutdown.onSignal("SIGTERM");
+  await shutdown.onSignal("SIGHUP");
+  await shutdown.onSignal("SIGUSR2");
+  expect(exits).toEqual([]);
+  expect(stopCalls).toEqual([false]);
+
+  finishStop();
+  await first;
+  expect(cleaned).toBe(1);
+  expect(exits).toEqual([0]);
+
+  let finishInterrupt!: () => void;
+  let interruptCleaned = 0;
+  const interruptExits: number[] = [];
+  const interrupt = createStopHandler({
+    stopServer: () => new Promise<void>((resolve) => (finishInterrupt = resolve)),
+    cleanupPid: () => {
+      interruptCleaned += 1;
+    },
+    exit: (code) => interruptExits.push(code),
+    stopTimeoutMs: 5_000,
+    restartTimeoutMs: 5_000,
+  });
+
+  const pending = interrupt.onSignal("SIGINT");
+  await interrupt.onSignal("SIGINT");
+  expect(interruptExits).toEqual([1]);
+  finishInterrupt();
+  await pending;
+  expect(interruptCleaned).toBe(0);
+  expect(interruptExits).toEqual([1]);
+});
+
+test("a SIGTERM during startup network discovery still exits cleanly and removes the pid file", async () => {
+  dir = mkdtempSync(join(tmpdir(), "vmbridge-cli-"));
+  const binDir = join(dir, "bin");
+  mkdirSync(binDir, { recursive: true });
+  const tailscalePidFile = join(dir, "tailscale.pid");
+  const fakeTailscale = join(binDir, "tailscale");
+  writeFileSync(fakeTailscale, `#!/bin/sh\necho $$ > "${tailscalePidFile}"\nsleep 3\nexit 1\n`);
+  chmodSync(fakeTailscale, 0o755);
+
+  const port = await freePort();
+  const child = Bun.spawn([process.execPath, cli, "run", "--host", "127.0.0.1", "--port", String(port)], {
+    env: { PATH: `${binDir}:${process.env.PATH ?? ""}`, HOME: dir, VMBRIDGE_HOME: join(dir, "data") },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const pidPath = join(dir, "data", "vmbridge.pid");
+  try {
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(pidPath) || !existsSync(tailscalePidFile)) {
+      if (Date.now() > deadline) throw new Error("Timed out waiting for startup network discovery.");
+      await Bun.sleep(20);
+    }
+    child.kill("SIGTERM");
+    expect(await child.exited).toBe(0);
+    expect(child.signalCode).toBeNull();
+    expect(existsSync(pidPath)).toBe(false);
+    const stdout = await new Response(child.stdout).text();
+    expect(stdout).not.toContain("is running.");
+  } finally {
+    if (existsSync(tailscalePidFile)) {
+      const pid = Number(readFileSync(tailscalePidFile, "utf8").trim());
+      if (Number.isInteger(pid) && pid > 0) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {}
+      }
+    }
+    if (child.exitCode === null) {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
+  }
 }, 30_000);

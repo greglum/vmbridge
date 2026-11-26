@@ -26,6 +26,70 @@ Saved secrets are encrypted with the key in ${join(dataDir(), "encryption.key")}
 const stopDeadlineMs = 30_000;
 const restartDeadlineMs = 10_000;
 
+export type ShutdownSignal = "SIGINT" | "SIGTERM" | "SIGHUP" | typeof restartSignal;
+
+export interface StopHandlerDeps {
+  stopServer: (options: { restarting: boolean }) => Promise<void>;
+  cleanupPid: () => void;
+  exit?: (code: number) => void;
+  stopTimeoutMs?: number;
+  restartTimeoutMs?: number;
+  onTimeout?: () => void;
+}
+
+/**
+ * Builds the shutdown handler for a running VM Bridge. Only a second Ctrl+C (SIGINT) aborts an in-progress shutdown;
+ * duplicate SIGTERM, SIGHUP, or restart signals (such as `vmbridge stop` right after `launchctl bootout`) are ignored
+ * so graceful cleanup completes.
+ */
+export function createStopHandler({
+  stopServer,
+  cleanupPid,
+  exit = (code) => process.exit(code),
+  stopTimeoutMs = stopDeadlineMs,
+  restartTimeoutMs = restartDeadlineMs,
+  onTimeout = () => console.error("VM Bridge took too long to stop, so it exited without finishing."),
+}: StopHandlerDeps) {
+  let stopping = false;
+  let aborted = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const stop = async (restarting: boolean, forceIfStopping = false) => {
+    // A second Ctrl+C, or a stop that runs past its deadline, ends the process without finishing.
+    if (stopping) {
+      if (forceIfStopping && !aborted) {
+        aborted = true;
+        if (timer) clearTimeout(timer);
+        timer = null;
+        exit(1);
+      }
+      return;
+    }
+    stopping = true;
+    timer = setTimeout(() => {
+      if (aborted) return;
+      aborted = true;
+      onTimeout();
+      exit(1);
+    }, restarting ? restartTimeoutMs : stopTimeoutMs);
+    timer.unref();
+    try {
+      await stopServer({ restarting }).catch(() => {});
+      if (aborted) return;
+      cleanupPid();
+    } finally {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    }
+    exit(0);
+  };
+  return {
+    isStopping: () => stopping,
+    onSignal(signal: ShutdownSignal) {
+      return stop(signal === restartSignal, signal === "SIGINT");
+    },
+  };
+}
+
 /** Reads a line without echoing it. */
 async function readSecret(question: string): Promise<string> {
   process.stdout.write(question);
@@ -125,8 +189,31 @@ async function run(options: { host?: string; port: number }) {
   // A service installed by an older version left its log readable by everyone.
   protectLog();
 
-  await server.tunnelReady();
-  const network = await server.network();
+  // Register before tunnel/network startup waits so signals during startup still stop cloudflared and remove the pid file.
+  const shutdown = createStopHandler({
+    stopServer: (stopOptions) => server.stop(stopOptions),
+    cleanupPid: () => {
+      if (!runningPid()) rmSync(pidFile(), { force: true });
+    },
+  });
+  process.on("SIGINT", () => void shutdown.onSignal("SIGINT"));
+  process.on("SIGTERM", () => void shutdown.onSignal("SIGTERM"));
+  // Closing the terminal window. Without this, VM Bridge would end without stopping cloudflared.
+  process.on("SIGHUP", () => void shutdown.onSignal("SIGHUP"));
+  process.on(restartSignal, () => void shutdown.onSignal(restartSignal));
+
+  let network: Awaited<ReturnType<typeof server.network>>;
+  try {
+    await server.tunnelReady();
+    if (shutdown.isStopping()) return;
+    network = await server.network();
+    if (shutdown.isStopping()) return;
+  } catch (error) {
+    if (shutdown.isStopping()) return;
+    await server.stop({ restarting: false }).catch(() => {});
+    if (!runningPid()) rmSync(pidFile(), { force: true });
+    throw error;
+  }
   const { cloudflare } = network;
   // Whoever has the setup code can choose the password, so it only goes to a terminal, never to a service's log file.
   const setupCode = process.stdout.isTTY ? server.setupCode : null;
@@ -147,25 +234,6 @@ async function run(options: { host?: string; port: number }) {
   else if (server.setupCode) console.log("\nNo dashboard password yet. Set one with `vmbridge password`, or start `vmbridge run` in a terminal for a setup link.");
   else console.log("\nOpen the dashboard to set up providers and pair devices. Press Ctrl+C to stop.");
   if (server.encryptionKey.created) keyNotice(server.encryptionKey.location);
-
-  let stopping = false;
-  const stop = async (restarting: boolean) => {
-    // A second Ctrl+C, or a stop that runs past its deadline, ends the process without finishing.
-    if (stopping) process.exit(1);
-    stopping = true;
-    setTimeout(() => {
-      console.error("VM Bridge took too long to stop, so it exited without finishing.");
-      process.exit(1);
-    }, restarting ? restartDeadlineMs : stopDeadlineMs).unref();
-    await server.stop({ restarting }).catch(() => {});
-    if (!runningPid()) rmSync(pidFile(), { force: true });
-    process.exit(0);
-  };
-  process.on("SIGINT", () => stop(false));
-  process.on("SIGTERM", () => stop(false));
-  // Closing the terminal window. Without this, VM Bridge would end without stopping cloudflared.
-  process.on("SIGHUP", () => stop(false));
-  process.on(restartSignal, () => stop(true));
 }
 
 async function backgroundNotice(pid: number) {
@@ -229,8 +297,10 @@ async function main() {
   }
 }
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}
 
