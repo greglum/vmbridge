@@ -160,4 +160,44 @@ describe("a sleeping VM's threads", () => {
     expect(woken).toEqual([]);
     close();
   });
+
+  test("size older history pages by UTF-8 bytes rather than UTF-16 code units", async () => {
+    const { store, get, close } = setup();
+    // Each row is ~200K UTF-16 code units but ~600 KB in UTF-8, so 5 rows exceed 1 MiB in UTF-8
+    // even though their combined string `.length` stays under 1,048,576.
+    const items = Array.from({ length: 6 }, (_, index) => ({
+      id: `m${index}`,
+      type: "assistant_message",
+      status: "completed",
+      runId: null,
+      attemptId: null,
+      ordinal: index + 1,
+      text: "あ".repeat(200_000),
+    }));
+    store.saveProjection("t2", "vm1", "2026-11-25T00:00:00.000Z", null, {
+      thread: { id: "t2", title: "CJK thread" },
+      updatedAt: "2026-11-25T00:00:00.000Z",
+      turnItems: items,
+      visibleTurnItems: items.map((item, position) => ({ position, visibility: "local", sourceThreadId: "t2", sourceItemId: item.id, item })),
+    });
+    const makeCursor = (itemId: string, position: number) =>
+      Buffer.from(JSON.stringify({ v: 1, seq: 1, st: "t2", si: itemId, p: position })).toString("base64url");
+
+    const seen: string[] = [];
+    let pages = 0;
+    let next: string | null = makeCursor("m5", 5);
+    while (next) {
+      const { status, body } = await get(`/api/orchestration/threads/t2/history?cursor=${next}`);
+      expect(status).toBe(200);
+      const pageItems = body.items as Wire[];
+      expect(pageItems.length).toBe(1);
+      expect(new TextEncoder().encode(JSON.stringify(pageItems)).byteLength).toBeLessThanOrEqual(1_048_576);
+      seen.unshift(...ids(pageItems));
+      next = body.nextCursor as string | null;
+      pages++;
+    }
+    expect(pages).toBe(5);
+    expect(seen).toEqual(["m0", "m1", "m2", "m3", "m4"]);
+    close();
+  });
 });

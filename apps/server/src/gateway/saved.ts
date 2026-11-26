@@ -38,8 +38,10 @@ function decodeCursor(cursor: string): Cursor | null {
   }
 }
 
+const encoder = new TextEncoder();
+
 function encodeCursor(cursor: Cursor): string {
-  const bytes = new TextEncoder().encode(JSON.stringify(cursor));
+  const bytes = encoder.encode(JSON.stringify(cursor));
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
@@ -96,7 +98,7 @@ export function historyPage(projection: Projection, query: URLSearchParams, snap
   let start = end;
   let bytes = 0;
   while (start > 0) {
-    const size = JSON.stringify(rows[start - 1]).length;
+    const size = encoder.encode(JSON.stringify(rows[start - 1])).byteLength;
     const full = start < end && (end - start >= pageRows || bytes + size > pageBytes);
     if (full && !(target !== -1 && target < start)) break;
     bytes += size;
