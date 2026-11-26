@@ -73,7 +73,13 @@ export class Traffic {
     list.push(entry);
     if (list.length > (request ? keptRequests : keptEvents)) list.shift();
     if (entry.kind === "provider" || entry.kind === "system") this.keep(entry);
-    for (const listener of this.listeners) listener(entry);
+    for (const listener of this.listeners) {
+      try {
+        listener(entry);
+      } catch {
+        // A failing or closed subscriber must not abort callers or starve other listeners.
+      }
+    }
   }
 
   /**

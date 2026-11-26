@@ -4,7 +4,6 @@ import {
   machineNameMaxLength,
   providerIds,
   vmSizes,
-  type LiveMessage,
   type BridgeNetworkInfo,
   type Overview,
   type ProviderId,
@@ -14,6 +13,7 @@ import {
   type VmSize,
   type BridgeUpdate,
 } from "@vmbridge/contracts";
+import { adminEvents } from "./admin-events.ts";
 import { analyticsReport } from "./analytics.ts";
 import { InvalidSignIn, type AgentAuth, type TokenInput } from "./agent-auth/profiles.ts";
 import { InvalidPassword, TooManyAttempts, type DashboardAuth } from "./auth/dashboard.ts";
@@ -221,7 +221,9 @@ export class Admin {
       }
       return json({ ok: true }, 202);
     }
-    if (path === "/events" && method === "GET") return this.events(request);
+    if (path === "/events" && method === "GET") {
+      return adminEvents(request, { traffic: this.deps.traffic, fleet, hub, auth, overview: () => this.overview() });
+    }
     if (path === "/traffic" && method === "GET") return json(this.deps.traffic.recent);
     if (path === "/usage" && method === "GET") {
       const { from, to } = timeRange(request);
@@ -768,52 +770,5 @@ export class Admin {
 
   private skillsPending(vm: VmRow, skills: SkillsState) {
     return vm.sandboxId !== null && vm.skills !== skills.fingerprint && (skills.skills.length > 0 || skills.instructions.length > 0 || vm.skills !== null);
-  }
-
-  /** Server-sent events: every traffic event, and a fresh overview whenever the fleet changes. */
-  private events(request: Request) {
-    const { traffic, fleet, hub, auth } = this.deps;
-    const encoder = new TextEncoder();
-    let cleanup = () => {};
-    let closed = false;
-    const stream = new ReadableStream<Uint8Array>({
-      start: (controller) => {
-        const close = () => {
-          if (closed) return;
-          closed = true;
-          cleanup();
-          controller.close();
-        };
-        const send = (live: LiveMessage) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(live)}\n\n`));
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const changed = () => {
-          timer ??= setTimeout(() => {
-            timer = undefined;
-            send({ type: "overview", overview: this.overview() });
-          }, 200);
-        };
-        const unsubscribe = traffic.subscribe((event) => send({ type: "traffic", event }));
-        const heartbeat = setInterval(() => controller.enqueue(encoder.encode(": ping\n\n")), 25_000);
-        fleet.on("changed", changed);
-        hub.on("shell", changed);
-        // The cookie was checked when the stream opened. Stop sending once that session ends.
-        const unwatch = auth.watch(request, close);
-        send({ type: "overview", overview: this.overview() });
-        cleanup = () => {
-          clearTimeout(timer);
-          clearInterval(heartbeat);
-          unsubscribe();
-          unwatch();
-          fleet.off("changed", changed);
-          hub.off("shell", changed);
-        };
-        request.signal.addEventListener("abort", close);
-      },
-      cancel: () => {
-        closed = true;
-        cleanup();
-      },
-    });
-    return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" } });
   }
 }

@@ -91,4 +91,16 @@ describe("request noise", () => {
     traffic.record({ kind: "http", operation: `GET /api/${"x".repeat(8000)}`, status: "error" });
     expect(traffic.recent[0]!.operation.length).toBeLessThanOrEqual(200);
   });
+
+  test("a throwing subscriber does not abort record() or starve later subscribers", () => {
+    const traffic = new Traffic();
+    const received: TrafficEvent[] = [];
+    traffic.subscribe(() => {
+      throw new TypeError("Controller is already closed");
+    });
+    traffic.subscribe((event) => received.push(event));
+    expect(() => traffic.record({ kind: "rpc", operation: "project.list", status: "ok" })).not.toThrow();
+    expect(traffic.recent).toHaveLength(1);
+    expect(received.map((event) => event.operation)).toEqual(["project.list"]);
+  });
 });
