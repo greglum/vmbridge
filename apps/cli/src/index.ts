@@ -38,9 +38,9 @@ export interface StopHandlerDeps {
 }
 
 /**
- * Builds the shutdown handler for a running VM Bridge. Only a second Ctrl+C (SIGINT) aborts an in-progress shutdown;
- * duplicate SIGTERM, SIGHUP, or restart signals (such as `vmbridge stop` right after `launchctl bootout`) are ignored
- * so graceful cleanup completes.
+ * Builds the shutdown handler for a running VM Bridge. Shutdowns triggered by signals or startup failures share one
+ * bounded teardown; duplicate SIGTERM, SIGHUP, or restart signals (such as `vmbridge stop` right after
+ * `launchctl bootout`) are ignored, and only a second Ctrl+C (SIGINT) aborts an in-progress shutdown.
  */
 export function createStopHandler({
   stopServer,
@@ -51,41 +51,64 @@ export function createStopHandler({
   onTimeout = () => console.error("VM Bridge took too long to stop, so it exited without finishing."),
 }: StopHandlerDeps) {
   let stopping = false;
-  let aborted = false;
+  let sawSigint = false;
+  let exited = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const stop = async (restarting: boolean, forceIfStopping = false) => {
-    // A second Ctrl+C, or a stop that runs past its deadline, ends the process without finishing.
-    if (stopping) {
-      if (forceIfStopping && !aborted) {
-        aborted = true;
-        if (timer) clearTimeout(timer);
-        timer = null;
-        exit(1);
-      }
-      return;
-    }
+
+  const clearTimer = () => {
+    if (!timer) return;
+    clearTimeout(timer);
+    timer = null;
+  };
+
+  const finish = (code: number) => {
+    if (exited) return;
+    exited = true;
+    clearTimer();
+    exit(code);
+  };
+
+  const stop = async (restarting: boolean, exitCode: number) => {
+    if (stopping) return;
     stopping = true;
     timer = setTimeout(() => {
-      if (aborted) return;
-      aborted = true;
+      if (exited) return;
       onTimeout();
-      exit(1);
+      finish(1);
     }, restarting ? restartTimeoutMs : stopTimeoutMs);
-    timer.unref();
     try {
-      await stopServer({ restarting }).catch(() => {});
-      if (aborted) return;
-      cleanupPid();
+      try {
+        await stopServer({ restarting });
+      } catch {}
+      if (exited) return;
+      try {
+        cleanupPid();
+      } catch {}
     } finally {
-      if (timer) clearTimeout(timer);
-      timer = null;
+      clearTimer();
     }
-    exit(0);
+    finish(exitCode);
   };
+
   return {
     isStopping: () => stopping,
     onSignal(signal: ShutdownSignal) {
-      return stop(signal === restartSignal, signal === "SIGINT");
+      // A second Ctrl+C, or a stop that runs past its deadline, ends the process without finishing.
+      if (signal === "SIGINT") {
+        if (stopping) {
+          if (sawSigint) {
+            finish(1);
+          } else {
+            sawSigint = true;
+          }
+          return Promise.resolve();
+        }
+        sawSigint = true;
+      }
+      return stop(signal === restartSignal, 0);
+    },
+    stopOnError() {
+      return stop(false, 1);
     },
   };
 }
@@ -184,12 +207,8 @@ async function run(options: { host?: string; port: number }) {
   // Bridge would end with nothing to start it, so its dashboard shows `vmbridge update` instead.
   const asService = compiled && (await service.pid()) === process.pid;
   const server = await start({ ...options, ...(asService ? { installUpdate: updateFromDashboard } : {}) });
-  mkdirSync(dataDir(), { recursive: true, mode: 0o700 });
-  writeFileSync(pidFile(), String(process.pid));
-  // A service installed by an older version left its log readable by everyone.
-  protectLog();
 
-  // Register before tunnel/network startup waits so signals during startup still stop cloudflared and remove the pid file.
+  // Register right after start so signals and startup errors share one bounded teardown.
   const shutdown = createStopHandler({
     stopServer: (stopOptions) => server.stop(stopOptions),
     cleanupPid: () => {
@@ -204,15 +223,19 @@ async function run(options: { host?: string; port: number }) {
 
   let network: Awaited<ReturnType<typeof server.network>>;
   try {
+    mkdirSync(dataDir(), { recursive: true, mode: 0o700 });
+    writeFileSync(pidFile(), String(process.pid));
+    // A service installed by an older version left its log readable by everyone.
+    protectLog();
     await server.tunnelReady();
     if (shutdown.isStopping()) return;
     network = await server.network();
     if (shutdown.isStopping()) return;
   } catch (error) {
     if (shutdown.isStopping()) return;
-    await server.stop({ restarting: false }).catch(() => {});
-    if (!runningPid()) rmSync(pidFile(), { force: true });
-    throw error;
+    console.error(error instanceof Error ? error.message : String(error));
+    await shutdown.stopOnError();
+    return;
   }
   const { cloudflare } = network;
   // Whoever has the setup code can choose the password, so it only goes to a terminal, never to a service's log file.

@@ -177,6 +177,119 @@ test("duplicate SIGTERM, SIGHUP, or restart signals let graceful shutdown finish
   expect(interruptExits).toEqual([1]);
 });
 
+test("SIGTERM followed by SIGINT waits until a second SIGINT before forcing exit", async () => {
+  let finishStop!: () => void;
+  let cleaned = 0;
+  const exits: number[] = [];
+  const shutdown = createStopHandler({
+    stopServer: () => new Promise<void>((resolve) => (finishStop = resolve)),
+    cleanupPid: () => {
+      cleaned += 1;
+    },
+    exit: (code) => exits.push(code),
+    stopTimeoutMs: 5_000,
+    restartTimeoutMs: 5_000,
+  });
+
+  const pending = shutdown.onSignal("SIGTERM");
+  await shutdown.onSignal("SIGINT");
+  expect(exits).toEqual([]);
+
+  await shutdown.onSignal("SIGINT");
+  expect(exits).toEqual([1]);
+
+  finishStop();
+  await pending;
+  expect(cleaned).toBe(0);
+  expect(exits).toEqual([1]);
+});
+
+test("startup failure teardown ignores SIGUSR2 while pending and preserves failure exit even if cleanupPid throws", async () => {
+  let finishStop!: () => void;
+  const stopCalls: boolean[] = [];
+  let cleanupAttempts = 0;
+  const exits: number[] = [];
+  const shutdown = createStopHandler({
+    stopServer: ({ restarting }) => {
+      stopCalls.push(restarting);
+      return new Promise<void>((resolve) => (finishStop = resolve));
+    },
+    cleanupPid: () => {
+      cleanupAttempts += 1;
+      throw new Error("EACCES");
+    },
+    exit: (code) => exits.push(code),
+    stopTimeoutMs: 5_000,
+    restartTimeoutMs: 5_000,
+  });
+
+  const pending = shutdown.stopOnError();
+  expect(shutdown.isStopping()).toBe(true);
+  await shutdown.onSignal("SIGUSR2");
+  expect(stopCalls).toEqual([false]);
+  expect(exits).toEqual([]);
+
+  finishStop();
+  await pending;
+  expect(stopCalls).toEqual([false]);
+  expect(cleanupAttempts).toBe(1);
+  expect(exits).toEqual([1]);
+});
+
+test("forces exit when stopServer hangs past the shutdown deadline", async () => {
+  let releaseStop!: () => void;
+  let cleaned = 0;
+  let timeouts = 0;
+  const exits: number[] = [];
+  let resolveExited!: () => void;
+  const exited = new Promise<void>((resolve) => (resolveExited = resolve));
+  const shutdown = createStopHandler({
+    stopServer: () => new Promise<void>((resolve) => (releaseStop = resolve)),
+    cleanupPid: () => {
+      cleaned += 1;
+    },
+    exit: (code) => {
+      exits.push(code);
+      resolveExited();
+    },
+    onTimeout: () => {
+      timeouts += 1;
+    },
+    stopTimeoutMs: 15,
+    restartTimeoutMs: 15,
+  });
+
+  const pending = shutdown.onSignal("SIGTERM");
+  await exited;
+  expect(timeouts).toBe(1);
+  expect(exits).toEqual([1]);
+
+  releaseStop();
+  await pending;
+  expect(cleaned).toBe(0);
+  expect(exits).toEqual([1]);
+});
+
+test("keeps the event loop alive until shutdown deadline expires in a standalone process", async () => {
+  const script = `
+    import { createStopHandler } from ${JSON.stringify(cli)};
+    const h = createStopHandler({
+      stopServer: () => new Promise(() => {}),
+      cleanupPid() {},
+      stopTimeoutMs: 40,
+      onTimeout() {},
+    });
+    for (const s of ["SIGINT", "SIGTERM", "SIGHUP", "SIGUSR2"]) process.on(s, () => void h.onSignal(s));
+    void h.stopOnError();
+  `;
+  const child = Bun.spawn([process.execPath, "-e", script], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(await child.exited).toBe(1);
+});
+
 test("a SIGTERM during startup network discovery still exits cleanly and removes the pid file", async () => {
   dir = mkdtempSync(join(tmpdir(), "vmbridge-cli-"));
   const binDir = join(dir, "bin");
