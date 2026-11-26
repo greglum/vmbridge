@@ -158,6 +158,7 @@ export class AgentAuth {
     this.logins.set(login.id, login);
     void completeDeviceCode(code, login.abort.signal)
       .then((file) => {
+        login.abort.signal.throwIfAborted();
         this.saveCodex(file, name);
         login.status = "done";
       })
