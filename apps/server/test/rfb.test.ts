@@ -49,23 +49,47 @@ describe("ViewOnlyFilter", () => {
     expect([...filter.push(frameRequest)!]).toEqual([...frameRequest]);
   });
 
-  test("rejects ClientFence messages whose payload exceeds the 64-byte protocol maximum", () => {
+  test("rejects non-None security type and exclusive ClientInit (shared = 0), and allows nonzero shared flags", () => {
+    // Non-None security selection (e.g., VNC auth = 2) is rejected and latches rejection.
+    const badSecurity = new Uint8Array([...enc.encode("RFB 003.008\n"), 2, 1]);
+    const badSecurityFilter = new ViewOnlyFilter();
+    expect(badSecurityFilter.push(badSecurity)).toBeNull();
+    expect(badSecurityFilter.push(handshake38)).toBeNull();
+
+    // Full handshake with shared = 0 is rejected outright and never forwarded.
+    const exclusive = new Uint8Array([...enc.encode("RFB 003.008\n"), 1, 0]);
+    expect(new ViewOnlyFilter().push(exclusive)).toBeNull();
+
+    // Split right before ClientInit: the 0 byte is rejected, never forwarded, and latches rejection.
+    const split = new ViewOnlyFilter();
+    expect([...split.push(exclusive.subarray(0, 13))!]).toEqual([...exclusive.subarray(0, 13)]);
+    expect(split.push(exclusive.subarray(13, 14))).toBeNull();
+    expect(split.push(frameRequest)).toBeNull();
+
+    // Per RFC 6143 §7.3.1, any nonzero shared-flag byte requests shared access.
+    for (const shared of [1, 2, 0xff]) {
+      const filter = new ViewOnlyFilter();
+      const valid = new Uint8Array([...enc.encode("RFB 003.008\n"), 1, shared]);
+      expect([...filter.push(valid)!]).toEqual([...valid]);
+      expect([...filter.push(frameRequest)!]).toEqual([...frameRequest]);
+    }
+  });
+
+  test("rejects oversized ClientFence immediately when split header completes and latches rejection", () => {
     const okFilter = new ViewOnlyFilter();
     expect(okFilter.push(handshake38)).not.toBeNull();
     const validFence = new Uint8Array([248, 0, 0, 0, 0, 0, 0, 1, 64, ...new Uint8Array(64).fill(0x41)]);
     expect([...okFilter.push(validFence)!]).toEqual([...validFence]);
 
-    const badFilter = new ViewOnlyFilter();
-    expect(badFilter.push(handshake38)).not.toBeNull();
-    const oversizedFence = new Uint8Array([248, 0, 0, 0, 0, 0, 0, 1, 65, ...new Uint8Array(65).fill(0x41)]);
-    expect(badFilter.push(oversizedFence)).toBeNull();
-  });
-
-  test("latches rejection so subsequent chunks can never pass after a rejected frame", () => {
-    const filter = new ViewOnlyFilter();
-    const badSecurity = new Uint8Array([...enc.encode("RFB 003.008\n"), 2, 1]);
-    expect(filter.push(badSecurity)).toBeNull();
-    expect(filter.push(handshake38)).toBeNull();
-    expect(filter.push(frameRequest)).toBeNull();
+    const splitFilter = new ViewOnlyFilter();
+    expect(splitFilter.push(handshake38)).not.toBeNull();
+    // Send first 5 bytes of the 9-byte ClientFence header; wait for the rest without forwarding.
+    const partial = splitFilter.push(new Uint8Array([248, 0, 0, 0, 0]));
+    expect(partial).not.toBeNull();
+    expect(partial!.length).toBe(0);
+    // Completing the 9-byte header with length = 65 rejects immediately without waiting for payload.
+    expect(splitFilter.push(new Uint8Array([0, 0, 1, 65]))).toBeNull();
+    // Rejection is latched so a subsequent valid FramebufferUpdateRequest is also rejected.
+    expect(splitFilter.push(frameRequest)).toBeNull();
   });
 });

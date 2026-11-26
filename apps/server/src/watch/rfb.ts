@@ -5,7 +5,7 @@
  * being skipped over: guessing at the length of a message it does not know would lose its place in the stream.
  *
  * The handshake is RFB 3.8 with no VNC security (Kubi's ticket opens the socket): the client's 12-byte version, the
- * one-byte security type, which must be None (1), and the one-byte ClientInit.
+ * one-byte security type, which must be None (1), and the one-byte ClientInit, which must be shared (nonzero).
  */
 
 const rfbVersion = new TextEncoder().encode("RFB 003.008\n");
@@ -83,6 +83,8 @@ export class ViewOnlyFilter {
           if (data[i] !== rfbVersion[pos]) return this.fail();
         } else if (pos === rfbVersion.length) {
           if (data[i] !== securityNone) return this.fail();
+        } else if (data[i] === 0) {
+          return this.fail();
         }
       }
       this.handshakeOffset += taken;
