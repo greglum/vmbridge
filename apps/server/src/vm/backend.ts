@@ -39,9 +39,32 @@ export class Backend {
     return this.socket?.readyState === WebSocket.OPEN;
   }
 
-  private url(path: string) {
-    const base = new URL(this.preview.url);
-    const url = new URL(path, base.origin);
+  private url(path: string, query?: URLSearchParams) {
+    if (!path.startsWith("/") || path.startsWith("//") || path.startsWith("/\\") || /[\u0000-\u001f\u007f]/.test(path)) {
+      throw new Error(`Invalid backend path for VM ${this.vmId}: path must stay on the VM origin.`);
+    }
+    let base: URL;
+    try {
+      base = new URL(this.preview.url);
+    } catch {
+      throw new Error(`Invalid preview URL for VM ${this.vmId}.`);
+    }
+    if (base.protocol !== "http:" && base.protocol !== "https:") {
+      throw new Error(`Invalid preview URL for VM ${this.vmId}.`);
+    }
+    let url: URL;
+    try {
+      url = new URL(path, base.origin);
+    } catch {
+      throw new Error(`Invalid backend path for VM ${this.vmId}: path must stay on the VM origin.`);
+    }
+    if (url.origin !== base.origin || url.username !== "" || url.password !== "") {
+      throw new Error(`Invalid backend path for VM ${this.vmId}: path must stay on the VM origin.`);
+    }
+    if (query) {
+      for (const key of new Set(query.keys())) url.searchParams.delete(key);
+      for (const [key, value] of query) url.searchParams.append(key, value);
+    }
     // Some providers carry preview credentials in the query string. They replace any the client sent under the same
     // name, which would otherwise reach the provider's proxy in place of the real ones.
     for (const key of new Set(base.searchParams.keys())) url.searchParams.delete(key);
@@ -58,8 +81,9 @@ export class Backend {
   }
 
   async http(path: string, init: RequestInit = {}): Promise<Response> {
+    const url = this.url(path);
     try {
-      return await fetch(this.url(path), {
+      return await fetch(url, {
         ...init,
         headers: this.headers(init.headers),
         // A redirect could carry the bearer token to another origin.
@@ -118,11 +142,10 @@ export class Backend {
    * ticket of VM Bridge's own session.
    */
   async media(path: string, query: URLSearchParams, timeoutMs = 15_000): Promise<WebSocket> {
+    const url = this.url(path, query);
     const ticket = await this.http("/api/auth/websocket-ticket/media", { method: "POST", signal: AbortSignal.timeout(timeoutMs) });
     if (!ticket.ok) throw new Error(`The T3 server on VM ${this.vmId} refused a media ticket (${ticket.status}).`);
-    const url = this.url(path);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    for (const [key, value] of query) url.searchParams.set(key, value);
     url.searchParams.set("wsTicket", ((await ticket.json()) as { ticket: string }).ticket);
     try {
       return await this.openSocket(url, this.preview.headers ?? {}, timeoutMs);
