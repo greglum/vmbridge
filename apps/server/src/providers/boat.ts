@@ -25,8 +25,39 @@ interface BoatSandbox {
 
 const machines = { small: "small", medium: "default", large: "large" } as const;
 const running = new Set(["ready", "idle", "running"]);
-const settling = new Set(["stopping", "archiving", "securing", "provisioning", "starting", "resuming", "queued"]);
+const stopping = new Set(["stopping", "archiving", "securing"]);
+const settling = new Set([...stopping, "provisioning", "starting", "resuming", "queued"]);
 const failed = new Set(["error", "failed", "deleted"]);
+
+/** Waits for an in-progress Boat stop to finish before resuming; fails fast if it never finishes stopping or enters a failed state. */
+export async function wakeBoatSandbox<T>(
+  sandboxId: string,
+  ops: {
+    get: (id: string) => Promise<{ state: string }>;
+    resume: (id: string) => Promise<void>;
+    waitRunning: (id: string) => Promise<void>;
+    connect: (id: string) => Promise<T>;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+    stopTimeoutMs?: number;
+  },
+): Promise<T> {
+  const wait = ops.sleep ?? sleep;
+  const now = ops.now ?? Date.now;
+  const deadline = now() + (ops.stopTimeoutMs ?? 3 * 60_000);
+  let { state } = await ops.get(sandboxId);
+  // A stop must finish before Boat accepts a resume.
+  while (stopping.has(state)) {
+    const remaining = deadline - now();
+    if (remaining <= 0) break;
+    await wait(Math.min(1000, remaining));
+    ({ state } = await ops.get(sandboxId));
+  }
+  if (stopping.has(state)) throw new Error(`Boat VM ${sandboxId} is still ${state}; try again.`);
+  if (!running.has(state) && !settling.has(state)) await ops.resume(sandboxId);
+  await ops.waitRunning(sandboxId);
+  return ops.connect(sandboxId);
+}
 
 /** Boat stops a VM this long after it starts. VM Bridge sleeps idle VMs much sooner; this caps cost if it is down. */
 const ttlSeconds = 12 * 60 * 60;
@@ -182,21 +213,17 @@ export const boatProvider: ProviderDefinition = {
       },
 
       async wake(vm) {
-        const deadline = Date.now() + 3 * 60_000;
-        let { state } = await get(vm.sandboxId);
-        // A stop must finish before Boat accepts a resume.
-        while (["stopping", "archiving", "securing"].includes(state) && Date.now() < deadline) {
-          await sleep(1000);
-          ({ state } = await get(vm.sandboxId));
-        }
-        if (!running.has(state) && !settling.has(state)) {
-          await api.request("POST", "/sandboxes/{sandboxId}/resume", {
-            params: { sandboxId: vm.sandboxId },
-            body: { ttlSeconds },
-          });
-        }
-        await waitRunning(vm.sandboxId);
-        return connect(vm.sandboxId);
+        return wakeBoatSandbox(vm.sandboxId, {
+          get,
+          resume: async (sandboxId) => {
+            await api.request("POST", "/sandboxes/{sandboxId}/resume", {
+              params: { sandboxId },
+              body: { ttlSeconds },
+            });
+          },
+          waitRunning,
+          connect,
+        });
       },
 
       async keepAlive(box) {
