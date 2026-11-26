@@ -158,7 +158,7 @@ describe("dashboard key", () => {
       await rehashing;
       await auth.setKey("new password");
       release();
-      expect(await login).not.toBeNull();
+      expect(await login).toBeNull();
     } finally {
       spy.mockRestore();
     }

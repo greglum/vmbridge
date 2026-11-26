@@ -51,17 +51,30 @@ export class DashboardAuth {
 
   async setKey(key: string): Promise<void> {
     checkKey(key);
-    this.secrets.set(passwordHashSecret, await this.passwords.hash(key));
-    // A new key ends every existing dashboard session.
-    this.db.run("DELETE FROM admin_sessions");
+    const hash = await this.passwords.hash(key);
+    this.db.transaction(() => {
+      this.secrets.set(passwordHashSecret, hash);
+      // A new key ends every existing dashboard session.
+      this.db.run("DELETE FROM admin_sessions");
+    });
     this.checkWatched();
   }
 
   /** Sets a new key only when `current` is the key in use. Returns false when it is not. Throws when the address is throttled. */
   async changeKey(current: string, next: string, address: string): Promise<boolean> {
-    if (!(await this.verify(current, address))) return false;
-    await this.setKey(next);
-    return true;
+    const verifiedHash = await this.verify(current, address);
+    if (!verifiedHash) return false;
+    checkKey(next);
+    const nextHash = await this.passwords.hash(next);
+    const updated = this.db.transaction(() => {
+      if (this.secrets.get(passwordHashSecret) !== verifiedHash) return false;
+      this.secrets.set(passwordHashSecret, nextHash);
+      // A new key ends every existing dashboard session.
+      this.db.run("DELETE FROM admin_sessions");
+      return true;
+    });
+    if (updated) this.checkWatched();
+    return updated;
   }
 
   /**
@@ -87,14 +100,25 @@ export class DashboardAuth {
     checkKey(key);
     // Spent before hashing the password, so a second request racing this one cannot use it too.
     this.setupCode = null;
-    await this.setKey(key);
-    return this.session(secure);
+    const hash = await this.passwords.hash(key);
+    const cookie = this.db.transaction(() => {
+      if (this.hasKey()) return null;
+      this.secrets.set(passwordHashSecret, hash);
+      this.db.run("DELETE FROM admin_sessions");
+      return this.session(secure);
+    });
+    if (cookie) this.checkWatched();
+    return cookie;
   }
 
   /** Returns a Set-Cookie value, or null when the key is wrong. Throws when the address is throttled. */
   async login(key: string, address: string, secure: boolean): Promise<string | null> {
-    if (!(await this.verify(key, address))) return null;
-    return this.session(secure);
+    const verifiedHash = await this.verify(key, address);
+    if (!verifiedHash) return null;
+    return this.db.transaction(() => {
+      if (this.secrets.get(passwordHashSecret) !== verifiedHash) return null;
+      return this.session(secure);
+    });
   }
 
   private session(secure: boolean): string {
@@ -179,20 +203,39 @@ export class DashboardAuth {
     this.globalFailures.splice(0, expired === -1 ? this.globalFailures.length : expired);
   }
 
-  /** Checks a key against the one in use, throttling failed attempts. */
-  private async verify(key: string, address: string): Promise<boolean> {
+  /** Checks a key against the one in use, throttling failed attempts. Returns the verified current hash or null. */
+  private async verify(key: string, address: string): Promise<string | null> {
     const succeeded = this.throttle(address);
-    const hash = this.secrets.get(passwordHashSecret);
-    const { ok, outdated } = hash ? await this.passwords.verify(key, hash) : { ok: false, outdated: false };
-    if (!ok) return false;
-    succeeded();
-    // Swaps a hash from an older version for the current kind, keeping every session. Checked again after hashing,
-    // with no await before the write, so a password changed meanwhile is never put back.
-    if (outdated) {
-      const replacement = await this.passwords.hash(key);
-      if (this.secrets.get(passwordHashSecret) === hash) this.secrets.set(passwordHashSecret, replacement);
+    for (let attempts = 0; attempts < 2; attempts++) {
+      const hash = this.secrets.get(passwordHashSecret);
+      const { ok, outdated } = hash ? await this.passwords.verify(key, hash) : { ok: false, outdated: false };
+      if (!ok || !hash) return null;
+      const current = this.secrets.get(passwordHashSecret);
+      if (current !== hash) {
+        // Another login may have upgraded the same password's hash; recheck once against the current hash.
+        if (current) continue;
+        return null;
+      }
+      succeeded();
+      // Swaps a hash from an older version for the current kind, keeping every session. Checked again inside a
+      // transaction so a password changed meanwhile (here or from the CLI) is never put back.
+      if (outdated) {
+        const replacement = await this.passwords.hash(key);
+        const swapped = this.db.transaction(() => {
+          if (this.secrets.get(passwordHashSecret) !== hash) return false;
+          this.secrets.set(passwordHashSecret, replacement);
+          return true;
+        });
+        if (swapped) return replacement;
+        const latest = this.secrets.get(passwordHashSecret);
+        if (latest && (await this.passwords.verify(key, latest)).ok && this.secrets.get(passwordHashSecret) === latest) {
+          return latest;
+        }
+        return null;
+      }
+      return hash;
     }
-    return true;
+    return null;
   }
 }
 

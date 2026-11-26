@@ -25,7 +25,7 @@ export class BunSql implements Sql {
   }
 
   transaction<T>(fn: () => T): T {
-    return this.database.transaction(fn)();
+    return this.database.transaction(fn).immediate();
   }
 
   close() {
