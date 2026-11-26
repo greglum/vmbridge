@@ -15,8 +15,9 @@ import { githubName } from "./gateway/repos.ts";
 import { hasLiveWork, type Shell } from "./gateway/types.ts";
 import type { Skills } from "./skills.ts";
 import { Bases } from "./vm/bases.ts";
+import { cloneProject, registerProject } from "./vm/project.ts";
 import { syncSkills } from "./vm/skills.ts";
-import { checkoutRoot, credentialsFingerprint, prepareVm, quote, readCodexAuth, resolveT3Version, startT3, t3Port, writeCodexAuth, writeCredentials, type VmCredentials } from "./vm/runtime.ts";
+import { credentialsFingerprint, prepareVm, readCodexAuth, resolveT3Version, startT3, t3Port, writeCodexAuth, writeCredentials, type VmCredentials } from "./vm/runtime.ts";
 
 type FleetEvents = {
   /** A VM's T3 server is connected and subscribed. */
@@ -84,9 +85,6 @@ export function providerValues(settings: Settings, secrets: Secrets, id: Provide
   }
   return values;
 }
-
-const repoName = (url: string) =>
-  new URL(url).pathname.split("/").filter(Boolean).pop()?.replace(/\.git$/, "") || "repository";
 
 /** Where a new top-level thread went. `notice` is set when that VM had no room for it. */
 export interface ThreadPlacement {
@@ -867,58 +865,16 @@ export class Fleet extends EventEmitter<FleetEvents> {
     const release = this.lease(vmId);
     try {
       progress("Cloning the repository");
-      const checkoutPath = await this.clone(vmId, project);
+      const box = this.boxes.get(vmId);
+      if (!box) throw new Error(`VM ${vmId} is not connected.`);
+      const checkoutPath = await cloneProject(box, project);
       progress("Registering the project with T3");
-      await this.register(backend, project, checkoutPath);
+      await registerProject(backend, project, checkoutPath);
       this.store.setCheckout(projectId, vmId, checkoutPath);
       this.emit("changed");
     } finally {
       release();
     }
-  }
-
-  private async clone(vmId: string, project: ProjectRow): Promise<string> {
-    const box = this.boxes.get(vmId);
-    if (!box) throw new Error(`VM ${vmId} is not connected.`);
-    const path = `${checkoutRoot}/${repoName(project.url)}`;
-    const branch = project.branch ? `--branch ${quote(project.branch)} ` : "";
-    const result = await box.run(
-      `set -eu
-. /workspace/.vmbridge/env
-if [ -d ${quote(`${path}/.git`)} ]; then
-  [ "$(git -C ${quote(path)} remote get-url origin)" = ${quote(project.url)} ] || { echo "${path} holds another repository" >&2; exit 3; }
-else
-  rm -rf ${quote(`${path}.cloning`)}
-  GIT_TERMINAL_PROMPT=0 git clone ${branch}-- ${quote(project.url)} ${quote(`${path}.cloning`)}
-  mv ${quote(`${path}.cloning`)} ${quote(path)}
-fi`,
-      { timeoutMs: 10 * 60_000 },
-    );
-    if (!result.ok) {
-      const output = result.stderr.slice(-400);
-      if (/not found|could not read|authentication|403|404/i.test(output)) {
-        throw new Error("The VM could not read this repository. Check GitHub access in the VM Bridge dashboard.");
-      }
-      throw new Error(`Cloning failed: ${output}`);
-    }
-    return path;
-  }
-
-  private async register(backend: Backend, project: ProjectRow, checkoutPath: string) {
-    const { projects } = await backend.json<{ projects: { id: string; workspaceRoot: string }[] }>("/api/projects");
-    if (projects.some((p) => p.id === project.id)) return;
-    const response = await backend.http("/api/projects/mutate", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        type: "project.create",
-        commandId: crypto.randomUUID(),
-        projectId: project.id,
-        title: project.title,
-        workspaceRoot: checkoutPath,
-      }),
-    });
-    if (!response.ok) throw new Error(`T3 refused to register the project (${response.status}).`);
   }
 
   /**
