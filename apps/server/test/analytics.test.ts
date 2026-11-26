@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, test } from "bun:test";
+import { Admin, type AdminDeps } from "../src/admin.ts";
 import { analyticsReport, dayStarts, maxAnalyticsSpanMs } from "../src/analytics.ts";
 import { openDatabase } from "../src/bun/sqlite.ts";
 import type { Fleet } from "../src/fleet.ts";
@@ -77,6 +78,21 @@ describe("days", () => {
     expect(() => dayStarts(Number.NaN, monday, "UTC")).toThrow(RangeError);
     expect(() => dayStarts(monday, Number.POSITIVE_INFINITY, "UTC")).toThrow(RangeError);
     expect(() => dayStarts(-1e16, monday, "UTC")).toThrow(RangeError);
+  });
+
+  test("handles midnight fall-back rollbacks and year-99 local dates without shifting days", () => {
+    // America/St_Johns reached 2009-11-01 00:00 at 02:30Z, then rolled back at 02:31Z to 2009-10-31 23:01.
+    // A range wholly inside the repeated Oct 31 hour belongs only to Oct 31, not Nov 1.
+    expect(dayStarts(Date.UTC(2009, 10, 1, 2, 45), Date.UTC(2009, 10, 1, 2, 46), "America/St_Johns")).toEqual([
+      Date.UTC(2009, 9, 31, 2, 30),
+    ]);
+    // Accepted lower boundary (0100-01-01T00:00Z) in a zone west of UTC has local year 99, not 1999.
+    const minFrom = Date.UTC(100, 0, 1);
+    const [bucket] = dayStarts(minFrom, minFrom + minute, "America/New_York");
+    expect(bucket).toBeDefined();
+    expect(new Date(bucket!).getUTCFullYear()).toBe(99);
+    expect(bucket!).toBeLessThan(minFrom);
+    expect(minFrom - bucket!).toBeLessThan(day);
   });
 });
 
@@ -229,6 +245,69 @@ describe("report", () => {
     // Client clock ahead of server clock (from > now) yields an empty day list rather than a future bucket.
     const empty = analyticsReport(store, usage, to + hour, to + 2 * hour, "UTC", to);
     expect(empty.days).toEqual([]);
+  });
+
+  test("assigns events and awake time to the right local day across a midnight fall-back rollback", () => {
+    const { store, usage, addVm, wake, sleep } = setup();
+    const vm = addVm("a", "boat");
+    // America/St_Johns on 2009-11-01:
+    //   02:20Z..02:30Z -> Oct 31 (10m)
+    //   02:30Z..02:31Z -> Nov 1  (1m)
+    //   02:31Z..03:30Z -> Oct 31 (59m, after 00:01 -> 23:01 rollback)
+    //   03:30Z..03:40Z -> Nov 1  (10m)
+    const from = Date.UTC(2009, 10, 1, 2, 20);
+    const to = Date.UTC(2009, 10, 1, 3, 40);
+    wake("a", from);
+    sleep("a", to);
+    store.recordVmEvent(vm, "wake", 1000, Date.UTC(2009, 10, 1, 2, 25)); // Oct 31 (first pass)
+    store.recordVmEvent(vm, "wake", 1000, Date.UTC(2009, 10, 1, 2, 30, 30)); // Nov 1 (first pass)
+    store.recordVmEvent(vm, "wake", 1000, Date.UTC(2009, 10, 1, 2, 45)); // Oct 31 (rolled back)
+    store.recordVmEvent(vm, "wake", 1000, Date.UTC(2009, 10, 1, 3, 35)); // Nov 1 (second pass)
+
+    const across = analyticsReport(store, usage, from, to, "America/St_Johns", to);
+    expect(across.days.map((entry) => [entry.start, entry.wakes, entry.providers[0]?.awakeMs ?? 0])).toEqual([
+      [Date.UTC(2009, 9, 31, 2, 30), 2, 69 * minute],
+      [Date.UTC(2009, 10, 1, 2, 30), 2, 11 * minute],
+    ]);
+
+    const rolledBackOnly = analyticsReport(
+      store,
+      usage,
+      Date.UTC(2009, 10, 1, 2, 45),
+      Date.UTC(2009, 10, 1, 2, 46),
+      "America/St_Johns",
+      to,
+    );
+    expect(rolledBackOnly.days.map((entry) => [entry.start, entry.wakes, entry.providers[0]?.awakeMs ?? 0])).toEqual([
+      [Date.UTC(2009, 9, 31, 2, 30), 1, minute],
+    ]);
+  });
+});
+
+describe("admin /analytics endpoint", () => {
+  test("returns distinct 400 messages for invalid time zone, oversized span, and invalid timestamps", async () => {
+    const { store, usage } = setup();
+    const admin = new Admin({
+      network: { allows: async () => true },
+      auth: { authenticated: () => true },
+      store,
+      usage,
+    } as unknown as AdminDeps);
+    const get = (query: string) =>
+      admin.fetch(new Request(`http://127.0.0.1/admin/api/analytics?${query}`), { address: "127.0.0.1", secure: false });
+
+    const badTz = await get(`from=${monday}&to=${monday + day}&tz=Mars/Olympus`);
+    expect(badTz.status).toBe(400);
+    expect(await badTz.json()).toEqual({ error: "Unknown time zone." });
+
+    const pastFrom = Date.UTC(2024, 0, 1);
+    const overSpan = await get(`from=${pastFrom}&to=${pastFrom + 367 * day}&tz=UTC`);
+    expect(overSpan.status).toBe(400);
+    expect(await overSpan.json()).toEqual({ error: "Time range exceeds the maximum analytics span." });
+
+    const outOfBounds = await get(`from=-1e16&to=0&tz=UTC`);
+    expect(outOfBounds.status).toBe(400);
+    expect(await outOfBounds.json()).toEqual({ error: "Time range must use valid timestamps." });
   });
 });
 

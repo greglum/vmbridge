@@ -21,24 +21,40 @@ const hourMs = 3_600_000;
 const dayMs = 24 * hourMs;
 /** Maximum span for daily buckets, keeping dayStarts bounded on wide ranges. */
 export const maxAnalyticsSpanMs = 366 * dayMs;
-const minTimestampMs = Date.UTC(100, 0, 1);
-const maxTimestampMs = Date.UTC(9999, 11, 31);
 
-/**
- * The start of each calendar day in `timeZone` that overlaps `[from, to)`.
- * Throws a RangeError for an unknown time zone, invalid timestamps, or a span over `maxAnalyticsSpanMs`.
- */
-export function dayStarts(from: number, to: number, timeZone: string): number[] {
-  const format = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "numeric",
-    day: "numeric",
-    hour: "numeric",
-    minute: "numeric",
-    second: "numeric",
-  });
+function utcTimestamp(year: number, month: number, day: number, hour = 0, minute = 0, second = 0): number {
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second, 0);
+  return date.getTime();
+}
+
+const minTimestampMs = utcTimestamp(100, 1, 1);
+const maxTimestampMs = utcTimestamp(9999, 12, 31);
+
+interface DaySegment {
+  start: number;
+  end: number;
+  dayIndex: number;
+}
+
+function daySchedule(from: number, to: number, timeZone: string): { starts: number[]; segments: DaySegment[] } {
+  let format: Intl.DateTimeFormat;
+  try {
+    format = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+    });
+  } catch (error) {
+    if (error instanceof RangeError) throw new RangeError("Unknown time zone.");
+    throw error;
+  }
   if (
     !Number.isFinite(from) ||
     !Number.isFinite(to) ||
@@ -49,55 +65,82 @@ export function dayStarts(from: number, to: number, timeZone: string): number[] 
   ) {
     throw new RangeError("Time range must use valid timestamps.");
   }
-  if (from >= to) return [];
+  if (from >= to) return { starts: [], segments: [] };
   if (to - from > maxAnalyticsSpanMs) {
     throw new RangeError("Time range exceeds the maximum analytics span.");
   }
-  const parts = (ms: number) => {
-    const values = Object.fromEntries(format.formatToParts(ms).map((part) => [part.type, Number(part.value)]));
-    return {
-      year: values.year!,
-      month: values.month!,
-      day: values.day!,
-      hour: values.hour! % 24,
-      minute: values.minute!,
-      second: values.second!,
-    };
+  // Local calendar date (UTC midnight) and UTC offset at `ms` (floored to whole seconds).
+  const inspect = (ms: number) => {
+    const sec = Math.floor(ms / 1000) * 1000;
+    const values = Object.fromEntries(format.formatToParts(sec).map((part) => [part.type, Number(part.value)]));
+    const day = utcTimestamp(values.year!, values.month!, values.day!);
+    const local = utcTimestamp(values.year!, values.month!, values.day!, values.hour!, values.minute!, values.second!);
+    return { day, offset: local - sec };
   };
-  const dayUtc = (ms: number) => {
-    const local = parts(ms);
-    return Date.UTC(local.year, local.month - 1, local.day);
-  };
-  // How far the zone's wall clock is ahead of UTC at `ms`.
-  const offset = (ms: number) => {
-    const local = parts(ms);
-    return Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, local.second) - Math.floor(ms / 1000) * 1000;
-  };
-  // Earliest instant whose local date in `timeZone` is at least `year-month-day`.
-  // Fast path covers ordinary days; binary search handles midnight DST transitions and skipped calendar days.
-  const dayStart = (year: number, month: number, day: number) => {
-    const utc = Date.UTC(year, month - 1, day);
-    const guess = utc - offset(utc - offset(utc));
-    if (dayUtc(guess) === utc && dayUtc(guess - 1000) < utc) return guess;
-    let lo = Math.floor((utc - 26 * hourMs) / 1000);
-    let hi = Math.floor((utc + 26 * hourMs) / 1000);
-    while (lo + 1 < hi) {
-      const mid = Math.floor((lo + hi) / 2);
-      if (dayUtc(mid * 1000) < utc) lo = mid;
-      else hi = mid;
+  // Earliest instant strictly after `start` whose local calendar date differs from `startInfo.day`.
+  // Fast path covers ordinary days and midnight spring-forwards; binary search locates offset transitions
+  // inside the day, including midnight fall-backs that roll back into the previous calendar date.
+  const segmentEnd = (start: number, startInfo = inspect(start)) => {
+    let cur = Math.floor(start / 1000) * 1000;
+    let info = startInfo;
+    const { day } = info;
+    for (;;) {
+      const expected = day + dayMs - info.offset;
+      if (inspect(expected - 1000).offset === info.offset) {
+        const atExpected = inspect(expected);
+        if (atExpected.day !== day) return { at: expected, next: atExpected };
+        cur = expected;
+        info = atExpected;
+        continue;
+      }
+      let lo = cur / 1000;
+      let hi = (expected - 1000) / 1000;
+      while (lo + 1 < hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (inspect(mid * 1000).offset === info.offset) lo = mid;
+        else hi = mid;
+      }
+      const transition = hi * 1000;
+      const atTransition = inspect(transition);
+      if (atTransition.day !== day) return { at: transition, next: atTransition };
+      cur = transition;
+      info = atTransition;
     }
-    return hi * 1000;
   };
 
-  const first = parts(from);
-  const starts: number[] = [];
-  for (let day = first.day; ; day++) {
-    const start = dayStart(first.year, first.month, day);
-    if (starts.length && start >= to) break;
-    if (start === starts.at(-1)) continue;
-    starts.push(start);
+  // Start well before `from` so we always see the earliest start of any local day that overlaps `[from, to)`,
+  // even when a midnight fall-back splits a calendar date into two non-contiguous UTC segments.
+  const firstStart = new Map<number, number>();
+  const rawSegments: { start: number; end: number; day: number }[] = [];
+  const overlappingDays = new Set<number>();
+
+  let { at: cur, next: info } = segmentEnd(from - 3 * dayMs);
+  while (cur < to) {
+    const { day } = info;
+    const { at: end, next } = segmentEnd(cur, info);
+    if (!firstStart.has(day)) firstStart.set(day, cur);
+    if (end > from) {
+      overlappingDays.add(day);
+      rawSegments.push({ start: cur, end, day });
+    }
+    cur = end;
+    info = next;
   }
-  return starts;
+
+  const orderedDays = [...overlappingDays].sort((a, b) => a - b);
+  const dayIndexByUtc = new Map(orderedDays.map((day, index) => [day, index]));
+  return {
+    starts: orderedDays.map((day) => firstStart.get(day)!),
+    segments: rawSegments.map(({ start, end, day }) => ({ start, end, dayIndex: dayIndexByUtc.get(day)! })),
+  };
+}
+
+/**
+ * The start of each calendar day in `timeZone` that overlaps `[from, to)`.
+ * Throws a RangeError for an unknown time zone, invalid timestamps, or a span over `maxAnalyticsSpanMs`.
+ */
+export function dayStarts(from: number, to: number, timeZone: string): number[] {
+  return daySchedule(from, to, timeZone).starts;
 }
 
 export function median(values: number[]): number | null {
@@ -115,7 +158,7 @@ const add = (a: Estimate, b: Estimate): Estimate => ({ amount: a.amount + b.amou
  */
 export function analyticsReport(store: Store, usage: Usage, from: number, until: number, timeZone: string, now = Date.now()): AnalyticsReport {
   const to = Math.min(until, now);
-  const starts = dayStarts(from, to, timeZone);
+  const { starts, segments } = daySchedule(from, to, timeZone);
   const days = starts.map(
     (start): AnalyticsDay & { threadIds: Set<string>; byProvider: Map<ProviderId, ProviderDay>; errorCounts: Map<ProviderId | null, number> } => ({
       start,
@@ -132,18 +175,19 @@ export function analyticsReport(store: Store, usage: Usage, from: number, until:
       errorCounts: new Map(),
     }),
   );
-  const dayIndex = (ms: number) => {
+  const segmentIndex = (ms: number) => {
     let lo = 0;
-    let hi = starts.length - 1;
+    let hi = segments.length - 1;
     while (lo < hi) {
       const mid = Math.ceil((lo + hi) / 2);
-      if (starts[mid]! <= ms) lo = mid;
+      if (segments[mid]!.start <= ms) lo = mid;
       else hi = mid - 1;
     }
     return lo;
   };
+  const dayIndex = (ms: number) => (segments.length ? segments[segmentIndex(ms)]!.dayIndex : -1);
 
-  // VM time, split at midnights.
+  // VM time, split at local-date segment boundaries.
   const sizes = new Map<string, { provider: ProviderId; size: VmSize; vms: Set<string>; awakeMs: number }>();
   for (const interval of usage.intervals(from, to, now)) {
     const sizeKey = `${interval.provider}:${interval.size}`;
@@ -152,11 +196,13 @@ export function analyticsReport(store: Store, usage: Usage, from: number, until:
     size.vms.add(interval.vmId);
     if (interval.state === "awake") size.awakeMs += interval.endedAt - interval.startedAt;
 
-    for (let index = dayIndex(interval.startedAt); index < days.length; index++) {
-      const day = days[index]!;
-      const start = Math.max(interval.startedAt, day.start);
-      const end = Math.min(interval.endedAt, starts[index + 1] ?? Infinity);
+    if (!segments.length) continue;
+    for (let index = segmentIndex(interval.startedAt); index < segments.length; index++) {
+      const segment = segments[index]!;
+      const start = Math.max(interval.startedAt, segment.start);
+      const end = Math.min(interval.endedAt, segment.end);
       if (end <= start) break;
+      const day = days[segment.dayIndex]!;
       const awakeMs = interval.state === "awake" ? end - start : 0;
       const asleepMs = interval.state === "asleep" ? end - start : 0;
       const part = estimate(interval.provider, interval.size, awakeMs, asleepMs);
