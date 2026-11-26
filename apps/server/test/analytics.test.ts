@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, test } from "bun:test";
-import { analyticsReport, dayStarts } from "../src/analytics.ts";
+import { analyticsReport, dayStarts, maxAnalyticsSpanMs } from "../src/analytics.ts";
 import { openDatabase } from "../src/bun/sqlite.ts";
 import type { Fleet } from "../src/fleet.ts";
 import { Hub } from "../src/gateway/hub.ts";
@@ -32,6 +32,51 @@ describe("days", () => {
 
   test("an unknown time zone is refused", () => {
     expect(() => dayStarts(0, day, "Mars/Olympus")).toThrow(RangeError);
+    expect(() => dayStarts(monday, monday, "Mars/Olympus")).toThrow(RangeError);
+  });
+
+  test("handles midnight DST spring-forward transitions without slipping into the previous day", () => {
+    // Havana springs forward 2026-03-08 00:00 -> 01:00 (UTC-5 -> UTC-4), so Mar 8 starts at 05:00Z, not 04:00Z (Mar 7 23:00).
+    expect(dayStarts(Date.UTC(2026, 2, 7, 12), Date.UTC(2026, 2, 9, 12), "America/Havana")).toEqual([
+      Date.UTC(2026, 2, 7, 5),
+      Date.UTC(2026, 2, 8, 5),
+      Date.UTC(2026, 2, 9, 4),
+    ]);
+    // Range wholly inside 2026-03-07 23:30..23:45 Havana stays on Mar 7 alone.
+    expect(dayStarts(Date.UTC(2026, 2, 8, 4, 30), Date.UTC(2026, 2, 8, 4, 45), "America/Havana")).toEqual([
+      Date.UTC(2026, 2, 7, 5),
+    ]);
+    // Santiago (2026-09-06 00:00 -> 01:00) and Azores (2026-03-29 00:00 -> 01:00) behave the same way.
+    expect(dayStarts(Date.UTC(2026, 8, 5, 12), Date.UTC(2026, 8, 7, 12), "America/Santiago")).toEqual([
+      Date.UTC(2026, 8, 5, 4),
+      Date.UTC(2026, 8, 6, 4),
+      Date.UTC(2026, 8, 7, 3),
+    ]);
+    expect(dayStarts(Date.UTC(2026, 2, 28, 12), Date.UTC(2026, 2, 30, 12), "Atlantic/Azores")).toEqual([
+      Date.UTC(2026, 2, 28, 1),
+      Date.UTC(2026, 2, 29, 1),
+      Date.UTC(2026, 2, 30, 0),
+    ]);
+  });
+
+  test("continues past skipped calendar days across a date-line jump", () => {
+    // Samoa skipped 2011-12-30 entirely: 2011-12-29 23:59:59 UTC-10 was followed by 2011-12-31 00:00:00 UTC+14.
+    expect(dayStarts(Date.UTC(2011, 11, 29, 12), Date.UTC(2012, 0, 1, 12), "Pacific/Apia")).toEqual([
+      Date.UTC(2011, 11, 29, 10),
+      Date.UTC(2011, 11, 30, 10),
+      Date.UTC(2011, 11, 31, 10),
+      Date.UTC(2012, 0, 1, 10),
+    ]);
+  });
+
+  test("returns no days for empty or inverted ranges and rejects oversized or invalid ranges", () => {
+    expect(dayStarts(monday, monday, "UTC")).toEqual([]);
+    expect(dayStarts(monday + hour, monday, "UTC")).toEqual([]);
+    expect(dayStarts(monday, monday + maxAnalyticsSpanMs, "UTC")).toHaveLength(366);
+    expect(() => dayStarts(monday, monday + maxAnalyticsSpanMs + 1, "UTC")).toThrow(RangeError);
+    expect(() => dayStarts(Number.NaN, monday, "UTC")).toThrow(RangeError);
+    expect(() => dayStarts(monday, Number.POSITIVE_INFINITY, "UTC")).toThrow(RangeError);
+    expect(() => dayStarts(-1e16, monday, "UTC")).toThrow(RangeError);
   });
 });
 
@@ -166,6 +211,24 @@ describe("report", () => {
       [{ provider: "boxd", count: 1 }],
       [{ provider: "boat", count: 1 }, { provider: null, count: 1 }],
     ]);
+  });
+
+  test("splits awake time accurately across a midnight DST spring-forward and handles future ranges", () => {
+    const { store, usage, addVm, wake, sleep } = setup();
+    addVm("a", "boat");
+    // 2026-03-07 23:30 to 2026-03-08 01:30 in America/Havana (1 hour total across the skipped midnight).
+    const from = Date.UTC(2026, 2, 8, 4, 30);
+    const to = Date.UTC(2026, 2, 8, 5, 30);
+    wake("a", from);
+    sleep("a", to);
+    const dst = analyticsReport(store, usage, from, to, "America/Havana", to);
+    expect(dst.days.map((entry) => [entry.start, entry.providers[0]?.awakeMs ?? 0])).toEqual([
+      [Date.UTC(2026, 2, 7, 5), 30 * minute],
+      [Date.UTC(2026, 2, 8, 5), 30 * minute],
+    ]);
+    // Client clock ahead of server clock (from > now) yields an empty day list rather than a future bucket.
+    const empty = analyticsReport(store, usage, to + hour, to + 2 * hour, "UTC", to);
+    expect(empty.days).toEqual([]);
   });
 });
 

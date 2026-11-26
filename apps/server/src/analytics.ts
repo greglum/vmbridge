@@ -17,9 +17,16 @@ import { estimate } from "./pricing.ts";
 import type { Store, VmEvent } from "./store.ts";
 import type { Usage } from "./usage.ts";
 
+const hourMs = 3_600_000;
+const dayMs = 24 * hourMs;
+/** Maximum span for daily buckets, keeping dayStarts bounded on wide ranges. */
+export const maxAnalyticsSpanMs = 366 * dayMs;
+const minTimestampMs = Date.UTC(100, 0, 1);
+const maxTimestampMs = Date.UTC(9999, 11, 31);
+
 /**
- * The midnight starting each calendar day in `timeZone` that overlaps `from` to `to`.
- * Throws a RangeError for an unknown time zone.
+ * The start of each calendar day in `timeZone` that overlaps `[from, to)`.
+ * Throws a RangeError for an unknown time zone, invalid timestamps, or a span over `maxAnalyticsSpanMs`.
  */
 export function dayStarts(from: number, to: number, timeZone: string): number[] {
   const format = new Intl.DateTimeFormat("en-US", {
@@ -32,26 +39,62 @@ export function dayStarts(from: number, to: number, timeZone: string): number[] 
     minute: "numeric",
     second: "numeric",
   });
+  if (
+    !Number.isFinite(from) ||
+    !Number.isFinite(to) ||
+    from < minTimestampMs ||
+    from > maxTimestampMs ||
+    to < minTimestampMs ||
+    to > maxTimestampMs
+  ) {
+    throw new RangeError("Time range must use valid timestamps.");
+  }
+  if (from >= to) return [];
+  if (to - from > maxAnalyticsSpanMs) {
+    throw new RangeError("Time range exceeds the maximum analytics span.");
+  }
   const parts = (ms: number) => {
     const values = Object.fromEntries(format.formatToParts(ms).map((part) => [part.type, Number(part.value)]));
-    return { year: values.year!, month: values.month!, day: values.day!, hour: values.hour!, minute: values.minute!, second: values.second! };
+    return {
+      year: values.year!,
+      month: values.month!,
+      day: values.day!,
+      hour: values.hour! % 24,
+      minute: values.minute!,
+      second: values.second!,
+    };
+  };
+  const dayUtc = (ms: number) => {
+    const local = parts(ms);
+    return Date.UTC(local.year, local.month - 1, local.day);
   };
   // How far the zone's wall clock is ahead of UTC at `ms`.
   const offset = (ms: number) => {
     const local = parts(ms);
     return Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, local.second) - Math.floor(ms / 1000) * 1000;
   };
-  // Twice, so a day whose offset differs from the guess's (a DST change) still lands on its own midnight.
-  const midnight = (year: number, month: number, day: number) => {
+  // Earliest instant whose local date in `timeZone` is at least `year-month-day`.
+  // Fast path covers ordinary days; binary search handles midnight DST transitions and skipped calendar days.
+  const dayStart = (year: number, month: number, day: number) => {
     const utc = Date.UTC(year, month - 1, day);
-    return utc - offset(utc - offset(utc));
+    const guess = utc - offset(utc - offset(utc));
+    if (dayUtc(guess) === utc && dayUtc(guess - 1000) < utc) return guess;
+    let lo = Math.floor((utc - 26 * hourMs) / 1000);
+    let hi = Math.floor((utc + 26 * hourMs) / 1000);
+    while (lo + 1 < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (dayUtc(mid * 1000) < utc) lo = mid;
+      else hi = mid;
+    }
+    return hi * 1000;
   };
 
   const first = parts(from);
   const starts: number[] = [];
   for (let day = first.day; ; day++) {
-    const start = midnight(first.year, first.month, day);
-    if (starts.length && (start >= to || start === starts.at(-1))) break;
+    const start = dayStart(first.year, first.month, day);
+    if (starts.length && start >= to) break;
+    if (start === starts.at(-1)) continue;
     starts.push(start);
   }
   return starts;
@@ -90,9 +133,14 @@ export function analyticsReport(store: Store, usage: Usage, from: number, until:
     }),
   );
   const dayIndex = (ms: number) => {
-    let index = 0;
-    while (index + 1 < starts.length && starts[index + 1]! <= ms) index++;
-    return index;
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (starts[mid]! <= ms) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
   };
 
   // VM time, split at midnights.
@@ -124,7 +172,8 @@ export function analyticsReport(store: Store, usage: Usage, from: number, until:
 
   const events = store.vmEvents(from, to);
   for (const event of events) {
-    const day = days[dayIndex(event.at)]!;
+    const day = days[dayIndex(event.at)];
+    if (!day) continue;
     if (event.kind === "create") day.created++;
     else if (event.kind === "delete") day.deleted++;
     else if (event.kind === "wake") day.wakes++;
@@ -135,9 +184,11 @@ export function analyticsReport(store: Store, usage: Usage, from: number, until:
   const repoTurns = new Map<string, { threads: Set<string>; turns: number }>();
   const agentTurns = new Map<string, AgentActivity & { threadIds: Set<string> }>();
   for (const turn of turns) {
-    const day = days[dayIndex(turn.at)]!;
-    day.turns++;
-    day.threadIds.add(turn.threadId);
+    const day = days[dayIndex(turn.at)];
+    if (day) {
+      day.turns++;
+      day.threadIds.add(turn.threadId);
+    }
     if (turn.repo) {
       const repo = githubName(turn.repo) ?? turn.repo;
       const entry = repoTurns.get(repo) ?? { threads: new Set(), turns: 0 };
@@ -154,7 +205,8 @@ export function analyticsReport(store: Store, usage: Usage, from: number, until:
   }
 
   for (const error of store.errorsIn(from, to)) {
-    const counts = days[dayIndex(error.at)]!.errorCounts;
+    const counts = days[dayIndex(error.at)]?.errorCounts;
+    if (!counts) continue;
     counts.set(error.provider, (counts.get(error.provider) ?? 0) + 1);
   }
 
