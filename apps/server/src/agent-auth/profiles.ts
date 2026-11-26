@@ -66,16 +66,19 @@ const slug = (text: string) =>
     .slice(0, 40) || "default";
 
 /** Asks a service to list models with the token. Only a 401 means the token is wrong. */
-async function checkToken(url: string, headers: Record<string, string>, service: string) {
+async function checkToken(url: string, headers: Record<string, string>, service: string, ignoreTransient = false) {
   let response: Response;
   try {
     response = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
   } catch {
+    if (ignoreTransient) return;
     throw new InvalidSignIn(`Could not reach ${service}.`);
   }
+  void response.body?.cancel().catch(() => {});
   // 403 means the token is real but may not list models, which is enough for a sign-in check.
   if (response.ok || response.status === 403) return;
   if (response.status === 401) throw new InvalidSignIn(`${service} rejected that token.`);
+  if (ignoreTransient && (response.status === 429 || response.status >= 500)) return;
   throw new InvalidSignIn(`${service} answered ${response.status}.`);
 }
 
@@ -120,14 +123,18 @@ export class AgentAuth {
 
   /** Checks a Claude or OpenCode token with its service, then saves it. */
   async addToken(input: TokenInput, detail: string | null = null): Promise<AgentProfile> {
+    return this.verifyAndSaveToken(input, detail, false);
+  }
+
+  private async verifyAndSaveToken(input: TokenInput, detail: string | null, ignoreTransient: boolean): Promise<AgentProfile> {
     let baseUrl: string | undefined;
     if (input.method === "setup-token") {
-      await checkToken("https://api.anthropic.com/v1/models", anthropicHeaders(input.token), "Anthropic");
+      await checkToken("https://api.anthropic.com/v1/models", anthropicHeaders(input.token), "Anthropic", ignoreTransient);
     } else if (input.method === "auth-token") {
       baseUrl = input.baseUrl ? this.parseBaseUrl(input.baseUrl) : undefined;
-      await checkToken(`${baseUrl ?? "https://api.anthropic.com"}/v1/models`, anthropicHeaders(input.token), baseUrl ? new URL(baseUrl).host : "Anthropic");
+      await checkToken(`${baseUrl ?? "https://api.anthropic.com"}/v1/models`, anthropicHeaders(input.token), baseUrl ? new URL(baseUrl).host : "Anthropic", ignoreTransient);
     } else {
-      await checkToken("https://opencode.ai/inference/v1/models", { authorization: `Bearer ${input.token}` }, "OpenCode");
+      await checkToken("https://opencode.ai/inference/v1/models", { authorization: `Bearer ${input.token}` }, "OpenCode", ignoreTransient);
     }
     const fallback = { "setup-token": "Claude subscription", "auth-token": "Anthropic token", "api-key": "OpenCode" }[input.method];
     return this.save({
@@ -202,7 +209,8 @@ export class AgentAuth {
     this.claudeLogins.delete(id);
     try {
       const { token, email } = await exchangeSetupToken(signIn, code);
-      return await this.addToken({ agent: "claude", method: "setup-token", name, token }, email);
+      // The one-time OAuth code is already spent, so do not discard a freshly minted token on a transient models check failure.
+      return await this.verifyAndSaveToken({ agent: "claude", method: "setup-token", name, token }, email, true);
     } catch (error) {
       throw error instanceof ClaudeCodeRejected ? new InvalidSignIn(error.message) : error;
     }

@@ -129,6 +129,41 @@ describe("Claude sign-in", () => {
     expect(auth.finishClaudeLogin(login.id, "the-code#someone-else", "")).rejects.toBeInstanceOf(InvalidSignIn);
     expect(calls).toHaveLength(0);
   });
+
+  test("keeps a freshly minted Claude token when the follow-up models check hits a transient error, but rejects 401", async () => {
+    const { auth } = setup();
+    const first = auth.startClaudeLogin();
+    const firstState = new URL(first.url).searchParams.get("state")!;
+    fakeFetch((target) =>
+      target.endsWith("/oauth/token")
+        ? Response.json({ access_token: "sk-ant-oat01-transient", account: { email_address: "me@example.com" } })
+        : new Response("overloaded", { status: 529 }),
+    );
+    const saved = await auth.finishClaudeLogin(first.id, `code-1#${firstState}`, "Work");
+    expect(saved).toMatchObject({ agent: "claude", method: "setup-token", name: "Work", detail: "me@example.com", inUse: true });
+    expect(await auth.vmSecrets()).toEqual({ claudeOAuthToken: "sk-ant-oat01-transient" });
+
+    const second = auth.startClaudeLogin();
+    const secondState = new URL(second.url).searchParams.get("state")!;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      if (String(input).endsWith("/oauth/token")) return Response.json({ access_token: "sk-ant-oat01-timeout" });
+      throw new Error("timeout");
+    }) as typeof fetch;
+    const savedOnTimeout = await auth.finishClaudeLogin(second.id, `code-2#${secondState}`, "Backup");
+    expect(savedOnTimeout.name).toBe("Backup");
+
+    const third = auth.startClaudeLogin();
+    const thirdState = new URL(third.url).searchParams.get("state")!;
+    fakeFetch((target) =>
+      target.endsWith("/oauth/token") ? Response.json({ access_token: "sk-ant-oat01-rejected" }) : new Response("{}", { status: 401 }),
+    );
+    await expect(auth.finishClaudeLogin(third.id, `code-3#${thirdState}`, "Rejected")).rejects.toBeInstanceOf(InvalidSignIn);
+    expect(auth.list().map((profile) => profile.name).sort()).toEqual(["Backup", "Work"]);
+
+    // Manual token entry still surfaces transient errors so the user can retry with the pasted token.
+    fakeFetch(() => new Response("unavailable", { status: 503 }));
+    await expect(auth.addToken({ agent: "claude", method: "setup-token", name: "Manual", token: "sk-ant-oat01-manual" })).rejects.toBeInstanceOf(InvalidSignIn);
+  });
 });
 
 describe("Codex sign-in", () => {
